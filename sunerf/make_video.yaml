@@ -1,0 +1,30 @@
+# wavelengths: [193]
+wavelengths: [171, 193, 211, 304]
+path_to_save_video : "/home/miraflorista/results_video/"
+# path_to_save_video : "/home/andres_munoz_j/results_apr_2014-211/video/synth"
+path_spice_kernel: "/home/andres_munoz_j/4piuvsun/sunerf/maps/evaluation/spice_kernels/"
+irradiance_model_path : "/home/andres_munoz_j/irradiance_models/epoch_120_step_19359.ckpt"
+irradiance_normalization_path : "/home/andres_munoz_j/irradiance_models/eve_normalization.npy"
+eve_wl_names: "/home/jupyter/converted_data/eve_wl_names.npy"
+
+Render:
+  fps: 24
+  batch_size: 2048
+  strides: 8
+  half_fov: 1.5   # Half Field of view in solar radii
+  r_decay: 1.15   # Solar radius afte which absorption and emission are dimmed
+  tau_decay: 0.1  # strength of the exponential dimming
+  r_cut: 1.35     # Value after wich all absorption and emission are set to zero
+
+
+Real:
+  SDO_files_path : "/mnt/apr-2014/sdo_2014_04"
+  iti_files_path : "/mnt/apr-2014/stereo_2014_04_converted"
+  sunerf_models_path: "/home/andres_munoz_j/real/nerf_v2_models"  # MODIFY HERE  
+  checkpoints_remote_path: "gs://us-4pieuvirradiance-dev-data/sunerf_v2_checkpoints"
+  checkpoints_local_path: "/home/miraflorista/sunerf_checkpoints"
+
+Synthetic:
+  synth_data : False # If synthetic data is true, only this data path will be used
+  synth_files_path : "/home/andres_munoz_j/PSI"   # MODIFY HERE
+  synth_models_path: "/home/andres_munoz_j/PSI/models"  # MODIFY HERE
