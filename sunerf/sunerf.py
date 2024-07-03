@@ -209,8 +209,7 @@ if __name__ == '__main__':
         sunerf.load_state_dict(torch.load(chk_path, map_location=torch.device('cpu'))['state_dict'])
 
     checkpoint_callback = ModelCheckpoint(dirpath=args.path_to_save,
-                                          save_top_k=5,
-                                          monitor='train/loss',
+                                          save_last=True,
                                           every_n_train_steps=config_data["Training"]["log_every_n_steps"])
 
     logger = WandbLogger(project=args.wandb_project, offline=False, entity="4pi-euv",

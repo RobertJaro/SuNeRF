@@ -8,7 +8,7 @@ import numpy as np
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 from astropy.io.fits import getheader
-from iti.data.editor import AIAPrepEditor
+from itipy.data.editor import AIAPrepEditor
 from sunpy.coordinates import frames
 from sunpy.map import Map
 

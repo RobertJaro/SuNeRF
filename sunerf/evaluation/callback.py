@@ -3,7 +3,7 @@ from typing import Optional
 import numpy as np
 import torch
 import wandb
-from matplotlib import pyplot as plt, cm
+from matplotlib import pyplot as plt
 from matplotlib.colors import Normalize
 
 from sunerf.data.utils import sdo_img_norm
@@ -41,7 +41,7 @@ def plot_samples(channel_map, channel_map_coarse, height_map, absorption_map, te
 def log_overview(images, poses, times, cmap):
     dirs = np.stack([np.sum([0, 0, -1] * pose[:3, :3], axis=-1) for pose in poses])
     origins = poses[:, :3, -1]
-    colors = cm.get_cmap('viridis')(Normalize()(times))
+    colors = plt.get_cmap('viridis')(Normalize()(times))
     # fix arrow heads (2) + shaft color (2) --> 3 color elements
     cs = colors.tolist()
     for c in colors:
