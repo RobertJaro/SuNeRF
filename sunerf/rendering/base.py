@@ -56,7 +56,7 @@ class SuNeRFRendering(nn.Module):
         query_points_time = torch.cat([query_points, exp_times], -1)  # --> (x, y, z, t)
 
         # Coarse model pass.
-        coarse_out = self._render(self.coarse_model, query_points_time, rays_d, z_vals)
+        coarse_out = self._render(self.coarse_model, query_points_time, rays_d, rays_o, z_vals)
 
         outputs = {'z_vals_stratified': z_vals, 'coarse_image': coarse_out['image']}
 
@@ -71,7 +71,7 @@ class SuNeRFRendering(nn.Module):
         exp_times = times[:, None].repeat(1, query_points.shape[1], 1)
         query_points_time = torch.cat([query_points, exp_times], -1)
 
-        fine_out = self._render(self.fine_model, query_points_time, rays_d, z_vals_combined)
+        fine_out = self._render(self.fine_model, query_points_time, rays_d, rays_o, z_vals_combined)
 
         # Store outputs.
         outputs['z_vals_hierarchical'] = z_hierarch
