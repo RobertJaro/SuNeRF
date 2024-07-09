@@ -5,8 +5,9 @@ import torch
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 from matplotlib import pyplot as plt
-from matplotlib.colors import Normalize, PowerNorm
-from matplotlib.scale import FuncScale
+from matplotlib.colors import PowerNorm
+from sunerf.train.model import PositionalEncoder
+from sunerf.utilities.data_loader import normalize_datetime
 from sunpy.coordinates import HeliographicCarrington
 from sunpy.coordinates.utils import GreatArc
 from sunpy.map import Map, all_coordinates_from_map
@@ -15,8 +16,6 @@ from tqdm import tqdm
 
 from sunerf.data.utils import sdo_cmaps
 from sunerf.evaluation.loader import SuNeRFLoader
-from sunerf.train.model import PositionalEncoder
-from sunerf.utilities.data_loader import normalize_datetime
 
 chk_path = '/mnt/nerf-data/sunerf_ensemble/ensemble_4/save_state.snf'
 result_path = '/mnt/results/topo_map'

@@ -5,13 +5,13 @@ import numpy as np
 import torch
 from astropy import units as u
 from matplotlib import pyplot as plt
-from matplotlib.colors import SymLogNorm, Normalize
+from matplotlib.colors import SymLogNorm
 from sunpy.map import Map
 from tqdm import tqdm
 
+from sunerf.baseline.reprojection import create_heliographic_map, create_new_observer
 from sunerf.data.utils import sdo_cmaps, psi_norms
 from sunerf.evaluation.loader import SuNeRFLoader
-from sunerf.utilities.reprojection import create_heliographic_map, create_new_observer
 
 chk_paths = ['/mnt/results/psi_models/psi_193.snf',
              '/mnt/results/sunerf_v2_checkpoints/psi_ensemble_1.snf',
@@ -70,7 +70,7 @@ diff_imgs = np.array(diff_imgs)[sort_idx]
 reprojected_imgs = np.array(reprojected_imgs)[sort_idx]
 uncertainty_imgs = np.array(uncertainty_imgs)[sort_idx]
 
-v_min_max = 20#np.abs(diff_imgs).max()
+v_min_max = 20  # np.abs(diff_imgs).max()
 diff_norm = SymLogNorm(vmin=-v_min_max, vmax=v_min_max, linthresh=2, clip=True)
 # v_min_max = np.abs(uncertainty_imgs).max()
 unc_norm = SymLogNorm(vmin=0, vmax=v_min_max, linthresh=2, clip=True)

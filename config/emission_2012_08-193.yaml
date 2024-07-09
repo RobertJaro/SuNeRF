@@ -1,0 +1,53 @@
+path_to_save: "/mnt/data/runs/193_crop_v02"
+work_directory: '/mnt/data/workspace/batches'
+
+data:
+  data_path: "/mnt/data/workspace/prep_2012_08/193/*"
+  debug: True
+  cmap: "sdoaia193"
+
+logging:
+  project: "sunerf"
+  name: "193_crop"
+
+training:
+  log_every_n_steps: 10000
+
+#
+#training:
+#  batch_size: 1024                                        # number of rays per gradient step (power of 2)
+#  num_workers: 64                                         # number of workers for data loading
+#  log_every_n_steps: 10000                                # log images and save states between epochs
+#  epochs: 1
+#
+#model:
+#  Encoders:
+#    d_input : 4             # Number of input dimensions (x,y,z,t)
+#    n_freqs : 10            # Number of encoding functions for samples
+#    log_space : True        # If set, frequencies scale in log space
+#    n_freqs_views : 4       # Number of encoding functions for views
+#
+#  Stratified sampling:
+#    n_samples : 64                  # Number of spatial samples per ray
+#    perturb : True                  # If set, applies noise to sample positions
+#    near : -1.3
+#    far : 1.3
+#    non_uniform_sampling: False      # Switch between the radial sampling in which near and far are radial distances (False)
+#    grid_exponent : 7               # Exponent that defines how packed the grid is closer to the Sun in non-uniform sampling
+#    # and the box sampling with more points close to the solar surface (True)
+#
+#  Model:
+#    d_filter : 512          # Dimensions of linear layer filters
+#    n_layers : 8            # Number of layers in network bottleneck
+#    skip : []               # Layers at which to apply input residual
+#    use_fine_model : True   # If set, creates a fine model
+#    d_filter_fine : 512     # Dimensions of linear layer filters of fine network
+#    n_layers_fine : 8       # Number of layers in fine network bottleneck
+#    d_output : 2 # wavelength absorption + emission
+#
+#  Hierarchical sampling:
+#    n_samples_hierarchical : 128   # Number of samples per ray
+#    perturb_hierarchical : False  # If set, applies noise to sample positions
+#
+#  Optimizer:
+#    lr : 5e-4 # Learning rate

@@ -1,20 +1,18 @@
 import os
-
-import numpy as np
-import pandas as pd
 import shutil
-from astropy import units as u
-from astropy.coordinates import SkyCoord
 from datetime import datetime
 
+import matplotlib.axes as maxes
+import numpy as np
+import pandas as pd
+from astropy import units as u
+from astropy.coordinates import SkyCoord
 from astropy.visualization import ImageNormalize, AsinhStretch
-from iti.data.editor import AIAPrepEditor
 from matplotlib import pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from sunpy.coordinates import frames
 from sunpy.map import Map, make_fitswcs_header
 from tqdm import tqdm
-import matplotlib.axes as maxes
 
 from sunerf.data.utils import sdo_cmaps, sdo_norms
 from sunerf.evaluation.loader import SuNeRFLoader
@@ -37,6 +35,7 @@ cmap = sdo_cmaps[loader.wavelength]
 
 # find center point on sphere
 center = spherical_to_cartesian(1, 18 * np.pi / 180, 190 * np.pi / 180)
+
 
 def _plot(time, outputs):
     # channel map
@@ -87,6 +86,7 @@ def _plot(time, outputs):
     fig.savefig(os.path.join(result_path, f'{time.isoformat(timespec="minutes")}.jpg'), dpi=200, transparent=True)
     plt.close(fig)
 
+
 def _create_header(time):
     observer = SkyCoord(sdo_map.heliographic_longitude, sdo_map.heliographic_latitude, distance * u.solRad,
                         obstime=time, frame='heliographic_stonyhurst')
@@ -113,7 +113,8 @@ def _create_header(time):
 result_path = '/mnt/results/evaluation_eruption/video_2'
 os.makedirs(result_path, exist_ok=True)
 for time in tqdm(pd.date_range(datetime(2012, 8, 31, 19), datetime(2012, 8, 31, 23), 100)):
-    outputs = loader.load_observer_image(sdo_map.carrington_latitude.value, -sdo_map.carrington_longitude.value, time.to_pydatetime(),
+    outputs = loader.load_observer_image(sdo_map.carrington_latitude.value, -sdo_map.carrington_longitude.value,
+                                         time.to_pydatetime(),
                                          distance=distance, batch_size=4096, strides=2, center=center)
     _plot(time, outputs)
 

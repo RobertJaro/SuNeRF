@@ -1,18 +1,14 @@
-
-
-
 import os
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
-from datetime import datetime
+from astropy import units as u
 from matplotlib import pyplot as plt
-from sunpy.map import Map
 from tqdm import tqdm
 
 from sunerf.data.utils import sdo_cmaps
 from sunerf.evaluation.loader import SuNeRFLoader
-from astropy import units as u
 
 chk_path = '/mnt/results/sunerf_v2_checkpoints/fov_211.snf'
 video_path = '/mnt/results/video_211_fov'

@@ -1,0 +1,10 @@
+path_to_save: "/mnt/data/runs/psi_193_v01"
+work_directory: '/mnt/data/workspace/batches'
+
+data:
+  data_path: "/mnt/data/workspace/prep_psi/193/*"
+  cmap: "sdoaia193"
+
+logging:
+  project: "sunerf"
+  name: "psi 193"

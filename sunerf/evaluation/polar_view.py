@@ -14,9 +14,9 @@ from matplotlib.colors import Normalize, SymLogNorm
 from sunpy.map import Map
 from tqdm import tqdm
 
+from sunerf.baseline.reprojection import create_heliographic_map, create_new_observer
 from sunerf.data.utils import sdo_cmaps, sdo_norms
 from sunerf.evaluation.loader import SuNeRFLoader
-from sunerf.utilities.reprojection import create_heliographic_map, create_new_observer
 
 chk_path = '/mnt/nerf-data/sunerf_ensemble/ensemble_4/save_state.snf'
 video_path = '/mnt/results/polar_view'

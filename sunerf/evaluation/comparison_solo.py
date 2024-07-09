@@ -11,7 +11,7 @@ from sunpy.map import Map
 from sunerf.data.utils import sdo_cmaps, sdo_norms, loadAIAMap
 from sunerf.evaluation.loader import SuNeRFLoader
 
-chk_path = '/mnt/results/sunerf_v2_checkpoints/2022_02.snf'#'/mnt/nerf-data/transfer_runs/2022_02/save_state.snf'
+chk_path = '/mnt/results/sunerf_v2_checkpoints/2022_02.snf'  # '/mnt/nerf-data/transfer_runs/2022_02/save_state.snf'
 video_path = '/mnt/results/comparison_solo'
 
 os.makedirs(video_path, exist_ok=True)
@@ -23,16 +23,19 @@ solo_map = Map('/mnt/nerf-data/so_2022_02/solo_l2_eui_fsi304_image_20220218t0000
 ###################################### PLOT oribts ########################################
 fig = plt.figure(figsize=(5, 4))
 ax = fig.add_subplot(projection='polar')
-ax.plot(sdo_map.carrington_longitude.to('rad'), sdo_map.dsun.to(u.AU), 'o', label='SDO', color='tab:blue', markersize=10)
-ax.plot(stereo_a_map.carrington_longitude.to('rad'), sdo_map.dsun.to(u.AU), 'o', label='STEREO A', color='tab:green', markersize=10)
-ax.plot(solo_map.carrington_longitude.to('rad'), sdo_map.dsun.to(u.AU), 'o', label='Solar Orbiter', color='tab:orange', markersize=10)
+ax.plot(sdo_map.carrington_longitude.to('rad'), sdo_map.dsun.to(u.AU), 'o', label='SDO', color='tab:blue',
+        markersize=10)
+ax.plot(stereo_a_map.carrington_longitude.to('rad'), sdo_map.dsun.to(u.AU), 'o', label='STEREO A', color='tab:green',
+        markersize=10)
+ax.plot(solo_map.carrington_longitude.to('rad'), sdo_map.dsun.to(u.AU), 'o', label='Solar Orbiter', color='tab:orange',
+        markersize=10)
 ax.plot(0, 0, 'o', color='yellow', markersize=30)
-ax.plot(0, 0, 'o', label='Sun', color='yellow', markersize=10) # dummy for legend
+ax.plot(0, 0, 'o', label='Sun', color='yellow', markersize=10)  # dummy for legend
 ax.set_rticks([0.6, 1, 1.4])
 ax.tick_params(labeltop=False, labelbottom=True, labelleft=False, labelright=True)
 ax.set_thetamin(180)
 ax.set_thetamax(270)
-ax.legend(facecolor='white', framealpha=1,bbox_to_anchor=(0.25, 1.15), fontsize='large')
+ax.legend(facecolor='white', framealpha=1, bbox_to_anchor=(0.25, 1.15), fontsize='large')
 ax.text(np.radians(285), 1, 'Distance [AU]',
         rotation=270, ha='center', va='center', fontsize='x-large')
 fig.savefig(os.path.join(video_path, 'orbits.png'), dpi=300, transparent=True)
@@ -42,17 +45,16 @@ plt.close()
 # crop sdo
 sr = sdo_map.rsun_obs
 sdo_map = sdo_map.submap(bottom_left=SkyCoord(-sr * 1.1, -sr * 1.1, frame=sdo_map.coordinate_frame),
-                       top_right=SkyCoord(sr * 1.1, sr * 1.1, frame=sdo_map.coordinate_frame))
+                         top_right=SkyCoord(sr * 1.1, sr * 1.1, frame=sdo_map.coordinate_frame))
 # crop stereo
 sr = stereo_a_map.rsun_obs
 stereo_a_map = stereo_a_map.submap(bottom_left=SkyCoord(-sr * 1.1, -sr * 1.1, frame=stereo_a_map.coordinate_frame),
-                       top_right=SkyCoord(sr * 1.1, sr * 1.1, frame=stereo_a_map.coordinate_frame))
+                                   top_right=SkyCoord(sr * 1.1, sr * 1.1, frame=stereo_a_map.coordinate_frame))
 # crop solo
 sr = solo_map.rsun_obs
 solo_map = solo_map.rotate(recenter=True)
 solo_map = solo_map.submap(bottom_left=SkyCoord(-sr * 1.1, -sr * 1.1, frame=solo_map.coordinate_frame),
-                       top_right=SkyCoord(sr * 1.1, sr * 1.1, frame=solo_map.coordinate_frame))
-
+                           top_right=SkyCoord(sr * 1.1, sr * 1.1, frame=solo_map.coordinate_frame))
 
 # norm = sdo_norms[304]
 norm = ImageNormalize(stretch=AsinhStretch(0.005), clip=True)

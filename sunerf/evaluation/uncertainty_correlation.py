@@ -1,12 +1,10 @@
 import glob
 import os
-from random import choice, sample
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from astropy import units as u
-from astropy.nddata import block_reduce
 from matplotlib.colors import LogNorm
 from scipy.stats import spearmanr
 from sunpy.map import Map
@@ -36,7 +34,7 @@ loader = ensemble_loaders[0]
 cmap = sdo_cmaps[loader.wavelength]
 
 files = sorted(glob.glob(os.path.join(data_path, '*.fits')))
-files = [f for f in files if Map(f).carrington_latitude.value > 7] # only consider test set
+files = [f for f in files if Map(f).carrington_latitude.value > 7]  # only consider test set
 
 ssim = []
 psnr = []
@@ -98,11 +96,8 @@ axs[1].set_xlim(0, None)
 axs[1].set_ylim(0, None)
 axs[1].set_aspect(1 / axs[1].get_data_ratio())
 
-
 fig.savefig(os.path.join(result_path, f'correlation.jpg'), dpi=300)
 plt.close()
 
-
 print(f'CORRELATION: {pearson_corr}')
 print(spearmanr(errors, uncs))
-

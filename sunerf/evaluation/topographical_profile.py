@@ -4,13 +4,13 @@ import numpy as np
 import torch
 from astropy.visualization import ImageNormalize, AsinhStretch
 from matplotlib import pyplot as plt
+from sunerf.train.model import PositionalEncoder
+from sunerf.utilities.data_loader import normalize_datetime
 from sunpy.map import Map
 from torch import nn
 from tqdm import tqdm
 
 from sunerf.data.utils import sdo_cmaps
-from sunerf.train.model import PositionalEncoder
-from sunerf.utilities.data_loader import normalize_datetime
 
 chk_path = '/mnt/nerf-data/sunerf_ensemble/ensemble_4/save_state.snf'
 result_path = '/mnt/results/topo_map'
@@ -28,7 +28,6 @@ time = stereo_a_map.date.to_datetime()
 time = normalize_datetime(time)
 
 target_lon = 300
-
 
 ############################ 2D profile #################################
 lat = np.linspace(90, 270, int(1e5), dtype=np.float32) * np.pi / 180

@@ -1,12 +1,11 @@
 import glob
 import os
+import pickle
 
 import numpy as np
-import pickle
 import torch
 from astropy import units as u
 from matplotlib import pyplot as plt
-from matplotlib.colors import SymLogNorm, LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from skimage.metrics import structural_similarity
 from sunpy.map import Map
@@ -14,7 +13,6 @@ from tqdm import tqdm
 
 from sunerf.data.utils import sdo_cmaps, psi_norms
 from sunerf.evaluation.loader import SuNeRFLoader
-from sunerf.utilities.reprojection import create_heliographic_map, create_new_observer
 
 wl = 171
 model_path = f'/mnt/results/psi_models/psi_{wl}.snf'
@@ -61,12 +59,12 @@ ssim = np.array(ssim)
 mae_percent = np.array(mae_percent)
 me_percent = np.array(me_percent)
 
-with open(os.path.join(result_path, 'evaluation.pickle'),'wb') as f:
-    pickle.dump({'lat': lat, 'psnr': psnr, 'ssim':ssim, 'mae_percent': mae_percent, 'me_percent':me_percent}, f)
+with open(os.path.join(result_path, 'evaluation.pickle'), 'wb') as f:
+    pickle.dump({'lat': lat, 'psnr': psnr, 'ssim': ssim, 'mae_percent': mae_percent, 'me_percent': me_percent}, f)
 
 with open(os.path.join(result_path, 'metrics.txt'), 'w') as f:
     print(f'ALL', file=f)
-    print(f'PSNR; {np.mean(psnr)}',file=f)
+    print(f'PSNR; {np.mean(psnr)}', file=f)
     print(f'SSIM; {np.mean(ssim)}', file=f)
     print(f'MAE; {np.mean(mae_percent)}', file=f)
     print(f'ME; {np.mean(me_percent)}', file=f)

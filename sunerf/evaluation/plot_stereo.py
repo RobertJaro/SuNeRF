@@ -1,4 +1,3 @@
-import os
 from astropy.coordinates import SkyCoord
 from astropy.visualization import AsinhStretch, ImageNormalize
 from matplotlib import pyplot as plt

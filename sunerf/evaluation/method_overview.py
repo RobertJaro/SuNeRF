@@ -5,16 +5,15 @@ import numpy as np
 import torch
 from astropy import units as u
 from iti.data.editor import AIAPrepEditor
+from sunerf.utilities.data_loader import normalize_datetime
 from sunpy.map import Map, all_coordinates_from_map
 from sunpy.map.mapbase import PixelPair
 from torch import nn
 
+from sunerf.data.ray_sampling import get_rays
 from sunerf.data.utils import sdo_norms, sdo_cmaps
 from sunerf.evaluation.loader import SuNeRFLoader
 from sunerf.train.coordinate_transformation import pose_spherical
-from sunerf.train.ray_sampling import get_rays
-from sunerf.train.volume_render import nerf_forward, raw2outputs
-from sunerf.utilities.data_loader import normalize_datetime
 
 results_path = '/mnt/results/method_overview'
 os.makedirs(results_path, exist_ok=True)
@@ -43,7 +42,6 @@ plt.close(fig)
 ###########################
 chk_path = '/mnt/nerf-data/sunerf_ensemble/ensemble_4/save_state.snf'
 
-
 os.makedirs(results_path, exist_ok=True)
 
 W = 2048
@@ -69,7 +67,7 @@ t_time = torch.tensor(time)[None].cuda()
 
 sampling_kwargs = loader.sampling_kwargs
 query_points, z_vals = sampling_kwargs['sample_stratified'](
-	ray_o, ray_d, sampling_kwargs['near'], sampling_kwargs['far'], n_samples=512, perturb=False)
+    ray_o, ray_d, sampling_kwargs['near'], sampling_kwargs['far'], n_samples=512, perturb=False)
 # add time to query points
 exp_times = t_time[:, None].repeat(1, query_points.shape[1], 1)
 query_points_time = torch.cat([query_points, exp_times], -1)  # --> (x, y, z, t)
@@ -82,8 +80,8 @@ raw = raw.reshape(list(query_points.shape[:2]) + [raw.shape[-1]])
 dists = z_vals[..., 1:] - z_vals[..., :-1]
 dists = torch.cat([dists[..., :1], dists], dim=-1)
 dists = dists * torch.norm(ray_d[..., None, :], dim=-1)
-emission = torch.exp(raw[..., 0]) * dists # emission per sampled point [n_rays, n_samples]
-absorption = torch.exp(-nn.functional.relu(raw[..., 1]) * dists) # transmission per sampled point [n_rays, n_samples]
+emission = torch.exp(raw[..., 0]) * dists  # emission per sampled point [n_rays, n_samples]
+absorption = torch.exp(-nn.functional.relu(raw[..., 1]) * dists)  # transmission per sampled point [n_rays, n_samples]
 
 q = z_vals[0].detach().cpu().numpy()
 e = emission[0].detach().cpu().numpy()

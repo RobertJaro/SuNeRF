@@ -1,17 +1,13 @@
-
-
-
 import os
 
 import numpy as np
 import pandas as pd
+from astropy import units as u
 from matplotlib import pyplot as plt
-from sunpy.map import Map
 from tqdm import tqdm
 
 from sunerf.data.utils import sdo_cmaps
 from sunerf.evaluation.loader import SuNeRFLoader
-from astropy import units as u
 
 chk_path = '/mnt/results/2012_08_31_v1/save_state.snf'
 video_path = '/mnt/results/video_304_eruption'

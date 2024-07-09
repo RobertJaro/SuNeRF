@@ -6,8 +6,8 @@ from skimage.metrics import structural_similarity
 from sunpy.map import Map
 from tqdm import tqdm
 
+from sunerf.baseline.reprojection import create_heliographic_map, create_new_observer
 from sunerf.data.utils import psi_norms
-from sunerf.utilities.reprojection import create_heliographic_map, create_new_observer
 
 wl = 211
 result_path = f'/mnt/results/comparison_simulation_{wl}'
@@ -43,7 +43,6 @@ for i, f in enumerate(tqdm(files)):
     lat += [s_map.carrington_latitude.value]
     lon += [s_map.carrington_longitude.value]
 
-
 lat = np.array(lat)
 psnr = np.array(psnr)
 ssim = np.array(ssim)
@@ -52,7 +51,7 @@ me_percent = np.array(me_percent)
 
 with open(os.path.join(result_path, 'baseline_metrics.txt'), 'w') as f:
     print(f'ALL', file=f)
-    print(f'PSNR; {np.mean(psnr)}',file=f)
+    print(f'PSNR; {np.mean(psnr)}', file=f)
     print(f'SSIM; {np.mean(ssim)}', file=f)
     print(f'MAE; {np.mean(mae_percent)}', file=f)
     print(f'ME; {np.mean(me_percent)}', file=f)

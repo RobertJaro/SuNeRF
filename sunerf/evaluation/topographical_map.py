@@ -4,16 +4,15 @@ from datetime import datetime
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
-from matplotlib.colors import Normalize
+from sunerf.train.model import PositionalEncoder
+from sunerf.utilities.data_loader import normalize_datetime
 from sunpy.map import Map
 from torch import nn
 from tqdm import tqdm
 
+from sunerf.baseline.reprojection import create_heliographic_map
 from sunerf.data.utils import sdo_cmaps
-from sunerf.train.model import PositionalEncoder
-from sunerf.train.volume_render import cumprod_exclusive
-from sunerf.utilities.data_loader import normalize_datetime
-from sunerf.utilities.reprojection import create_heliographic_map
+from sunerf.rhoT_stash.volume_render import cumprod_exclusive
 
 chk_path = '/mnt/nerf-data/sunerf_ensemble/ensemble_4/save_state.snf'
 result_path = '/mnt/results/topo_map'
@@ -70,22 +69,22 @@ for target_lon in tqdm(lons):
     longitude_slices += [emission]
 
 fig = plt.figure(figsize=(20, 10))
-plt.imshow(np.stack(longitude_slices, 1)[..., 0], extent=(lons.min(), lons.max(), -90, 90), cmap=sdo_cmaps[193], origin='lower')
+plt.imshow(np.stack(longitude_slices, 1)[..., 0], extent=(lons.min(), lons.max(), -90, 90), cmap=sdo_cmaps[193],
+           origin='lower')
 plt.axis('off')
 fig.tight_layout(pad=0)
 fig.savefig(os.path.join(result_path, 'sunerf_map_crop.jpg'), dpi=300)
 plt.close(fig)
 
 fig = plt.figure(figsize=(16, 8))
-plt.imshow(np.stack(longitude_slices, 1)[..., 0], extent=(lons.min(), lons.max(), -90, 90), cmap=sdo_cmaps[193], origin='lower')
+plt.imshow(np.stack(longitude_slices, 1)[..., 0], extent=(lons.min(), lons.max(), -90, 90), cmap=sdo_cmaps[193],
+           origin='lower')
 plt.xlabel('Carrington Longitude', fontsize='x-large')
 plt.ylabel('Carrington Latitude', fontsize='x-large')
 # plt.axvline(296, color='red')
 # plt.axvline(260, color='blue')
 fig.savefig(os.path.join(result_path, 'sunerf_map.jpg'), dpi=300)
 plt.close(fig)
-
-
 
 ##################################### Create comparison synchronic map #####################################
 stereo_a_map = Map('/mnt/nerf-data/prep_2012_08/193/2012-08-30T00:00:00_A.fits')

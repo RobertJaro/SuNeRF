@@ -5,11 +5,11 @@ import numpy as np
 import torch
 from matplotlib import pyplot as plt
 from matplotlib.colors import Normalize
+from sunerf.train.model import PositionalEncoder
+from sunerf.utilities.data_loader import normalize_datetime
 from torch import nn
 
 from sunerf.data.utils import sdo_cmaps
-from sunerf.train.model import PositionalEncoder
-from sunerf.utilities.data_loader import normalize_datetime
 
 chk_path = '/mnt/nerf-data/sunerf_ensemble/ensemble_4/save_state.snf'
 result_path = '/mnt/results/voxel_volume'
@@ -25,7 +25,6 @@ model = nn.DataParallel(state['fine_model']).to(device)
 time = datetime(2012, 8, 30)
 time = normalize_datetime(time)
 
-
 ############################### compute map ###################################
 
 n_points = 256
@@ -39,7 +38,7 @@ bs = 8096 * 2
 with torch.no_grad():
     for i in range(inp_tensor.shape[0] // bs + 1):
         x = inp_tensor[i * bs: (i + 1) * bs]
-        x = torch.cat([x, torch.ones_like(x)[..., :1] * time], -1) # add time
+        x = torch.cat([x, torch.ones_like(x)[..., :1] * time], -1)  # add time
         x = x.to(device)
         x = x.view(-1, 4)
         x = encoder(x)
@@ -71,13 +70,11 @@ v = np.linspace(0, np.pi, 100)
 x = 1 * np.outer(np.cos(u), np.sin(v))
 y = 1 * np.outer(np.sin(u), np.sin(v))
 z = 1 * np.outer(np.ones(np.size(u)), np.cos(v))
-ax.plot_surface(x, y, z,  rstride=4, cstride=4, color='white', linewidth=1)
+ax.plot_surface(x, y, z, rstride=4, cstride=4, color='white', linewidth=1)
 ax.view_init(elev=45., azim=0)
 
 plt.tight_layout(pad=0)
 fig.savefig(os.path.join(result_path, 'volume.jpg'), dpi=300, transparent=True)
 plt.close(fig)
-
-
 
 ##################################### Create comparison synchronic map #####################################

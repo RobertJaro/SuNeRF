@@ -9,6 +9,8 @@ from astropy.coordinates import SkyCoord
 from astropy.visualization import ImageNormalize, AsinhStretch
 from matplotlib import pyplot as plt
 from matplotlib.colors import Normalize
+from sunerf.train.model import PositionalEncoder
+from sunerf.utilities.data_loader import normalize_datetime
 from sunpy.coordinates import HeliographicCarrington
 from sunpy.coordinates.utils import GreatArc
 from sunpy.map import Map
@@ -16,8 +18,6 @@ from torch import nn
 from tqdm import tqdm
 
 from sunerf.data.utils import sdo_cmaps, sdo_norms
-from sunerf.train.model import PositionalEncoder
-from sunerf.utilities.data_loader import normalize_datetime
 
 chk_path = '/mnt/nerf-data/eruption/save_state.snf'
 result_path = '/mnt/results/evaluation_eruption_slice'
@@ -42,7 +42,7 @@ n_points = 512
 
 # time = sdo_map.date.to_datetime()
 e_norm = ImageNormalize(vmin=0, vmax=10, stretch=AsinhStretch(0.005))
-a_norm = Normalize(vmin=0, vmax=0.011)#0.012
+a_norm = Normalize(vmin=0, vmax=0.011)  # 0.012
 
 ############################ Map overview #################################
 start = SkyCoord(target_lon * u.deg, -5 * u.deg, frame=HeliographicCarrington,
@@ -50,7 +50,6 @@ start = SkyCoord(target_lon * u.deg, -5 * u.deg, frame=HeliographicCarrington,
 end = SkyCoord(target_lon * u.deg, -35 * u.deg, frame=HeliographicCarrington,
                obstime=sdo_map.date, observer=sdo_map.observer_coordinate)
 great_arc = GreatArc(start, end)
-
 
 fig = plt.figure(figsize=(5, 5))
 ax = plt.subplot(111, projection=sdo_map)
