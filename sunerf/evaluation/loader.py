@@ -42,11 +42,11 @@ class SuNeRFLoader:
 
     @property
     def start_time(self):
-        return self.unnormalize_datetime(np.min(self.times))
+        return np.min(self.times)
 
     @property
     def end_time(self):
-        return self.unnormalize_datetime(np.max(self.times))
+        return np.max(self.times)
 
     def load_observer_image(self, lat: float, lon: float, time: datetime,
                             distance: float = (1 * u.AU).to(u.solRad).value,
