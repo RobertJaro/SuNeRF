@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 from sunerf.model.model import NeRF
-from sunerf.train.sampling import SphericalSampler, HierarchicalSampler
+from sunerf.train.sampling import SphericalSampler, HierarchicalSampler, StratifiedSampler
 
 
 class SuNeRFRendering(nn.Module):
@@ -19,8 +19,10 @@ class SuNeRFRendering(nn.Module):
 
         # setup sampling strategy
         sampling_type = sampling_config.pop('type')
-        if sampling_type == 'stratified':
+        if sampling_type == 'spherical':
             self.sampler = SphericalSampler(Rs_per_ds=Rs_per_ds, **sampling_config)
+        elif sampling_type == 'stratified':
+            self.sampler = StratifiedSampler(Rs_per_ds=Rs_per_ds, **sampling_config)
         else:
             raise ValueError(f'Unknown sampling type {sampling_type}')
 

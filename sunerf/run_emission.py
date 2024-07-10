@@ -9,6 +9,7 @@ from pytorch_lightning.loggers import WandbLogger
 
 from sunerf.data.loader.single_channel import SingleChannelDataModule
 from sunerf.model.sunerf import save_state, EmissionSuNeRFModule
+from sunerf.train.callback import TestImageCallback
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -55,6 +56,11 @@ if __name__ == '__main__':
     save_path = os.path.join(path_to_save, 'save_state.snf')
     save_callback = LambdaCallback(on_validation_end=lambda *args: save_state(sunerf, data_module, save_path))
 
+    test_image_callback = TestImageCallback(data_module.validation_dataset_mapping[0],
+                                            data_module.config['resolution'],
+                                            cmap=data_module.config['cmap'])
+    callbacks = [checkpoint_callback, save_callback, test_image_callback]
+
     N_GPUS = torch.cuda.device_count()
     trainer = Trainer(max_epochs=epochs,
                       logger=logger,
@@ -64,7 +70,7 @@ if __name__ == '__main__':
                       num_sanity_val_steps=-1,  # validate all points to check the first image
                       val_check_interval=log_every_n_steps,
                       gradient_clip_val=0.5,
-                      callbacks=[checkpoint_callback, save_callback])
+                      callbacks=callbacks)
 
     trainer.fit(sunerf, data_module, ckpt_path=ckpt_path)
     trainer.save_checkpoint(os.path.join(path_to_save, 'final.ckpt'))

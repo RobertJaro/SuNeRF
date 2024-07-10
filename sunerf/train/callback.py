@@ -29,11 +29,11 @@ class BaseCallback(Callback):
 
 class TestImageCallback(BaseCallback):
 
-    def __init__(self, name, image_shape, image_scaling, cmap='gray'):
+    def __init__(self, name, image_shape, cmap='gray'):
         super().__init__(name)
         self.image_shape = image_shape
         self.cmap = plt.get_cmap(cmap)
-        self.image_scaling = image_scaling
+        self.normalize = ImageNormalize(vmin=0, vmax=1, stretch=AsinhStretch(0.005), clip=True)
 
     def on_validation_epoch_end(self, trainer, pl_module):
         outputs = self.get_validation_outputs(pl_module)
@@ -43,19 +43,19 @@ class TestImageCallback(BaseCallback):
         # reshape
         outputs = {k: v.view(*self.image_shape, *v.shape[1:]).cpu().numpy() for k, v in outputs.items()}
 
-        fine_image = self.image_scaling(outputs['fine_image'])
-        coarse_image = self.image_scaling(outputs['coarse_image'])
-        target_image = self.image_scaling(outputs['target_image'])
+        fine_image = self.normalize(outputs['fine_image'])
+        target_image = self.normalize(outputs['target_image'])
+        coarse_image = self.normalize(outputs['coarse_image'])
 
         plot_samples(fine_image, coarse_image, outputs['height_map'], outputs['absorption_map'],
                      target_image, outputs['z_vals_stratified'], outputs['z_vals_hierarchical'],
-                     outputs['distance'], self.cmap)
+                     outputs['distance'].mean(), self.cmap)
 
         val_loss = ((fine_image - target_image) ** 2).mean()
         val_ssim = structural_similarity(target_image[..., 0], fine_image[..., 0], data_range=1)
         val_psnr = -10. * np.log10(val_loss)
 
-        wandb.log('validation', {'loss': val_loss, 'ssim': val_ssim, 'psnr': val_psnr})
+        wandb.log({'validation.loss': val_loss, 'validation.ssim': val_ssim, 'validation.psnr': val_psnr})
 
 
 def plot_samples(fine_image, coarse_image, height_map, absorption_map, target_image, z_vals_stratified,
@@ -68,7 +68,7 @@ def plot_samples(fine_image, coarse_image, height_map, absorption_map, target_im
     ax[0].imshow(target_image[..., 0], cmap=cmap, norm=sdo_img_norm)
     ax[0].set_title(f'Target')
     ax[1].imshow(fine_image[..., 0], cmap=cmap, norm=sdo_img_norm)
-    ax[1].set_title(f'Prediction')
+    ax[1].set_title(f'Fine')
     ax[2].imshow(coarse_image[..., 0], cmap=cmap, norm=sdo_img_norm)
     ax[2].set_title(f'Coarse')
     ax[3].imshow(height_map, cmap='plasma', vmin=1, vmax=1.3)

@@ -1,7 +1,7 @@
 import torch
 from astropy import units as u
 
-from sunerf.rendering.base import SuNeRFRendering
+from sunerf.rendering.base_tracing import SuNeRFRendering
 
 
 class ThompsonScattering(SuNeRFRendering):

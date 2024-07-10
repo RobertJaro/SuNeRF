@@ -33,9 +33,6 @@ class SphericalSampler(torch.nn.Module):
         c = rays_o.pow(2).sum(-1) - self.solar_R ** 2
         dist_inner = (-b - torch.sqrt(b.pow(2) - 4 * a * c)) / (2 * a)
 
-        dist_near = distance + dist_near
-        dist_far = distance + dist_far
-
         intersect_solar_surface = ~torch.isnan(dist_inner)
         dist_far[intersect_solar_surface] = dist_inner[intersect_solar_surface]
 
@@ -56,6 +53,53 @@ class SphericalSampler(torch.nn.Module):
 
         return {'points': pts, 'z_vals': z_vals}
 
+class StratifiedSampler(torch.nn.Module):
+
+    def __init__(self, Rs_per_ds, distance=1.3, n_samples=64, perturb=True):
+        super().__init__()
+        self.perturb = perturb
+
+        self.register_buffer('distance', torch.tensor(distance / Rs_per_ds, dtype=torch.float32))
+        self.register_buffer('solar_R', torch.tensor(1 / Rs_per_ds, dtype=torch.float32))
+
+        t_vals = torch.linspace(0., 1., n_samples)[None]
+        self.register_buffer('t_vals', torch.tensor(t_vals, dtype=torch.float32))
+
+    def forward(self, rays_o: torch.Tensor, rays_d: torch.Tensor):
+        r"""
+        Sample from near to solar surface. If no points are on the solar surface this
+        """
+
+        # convert near and far from center to actual distance
+        distance = rays_o.pow(2).sum(-1).pow(0.5)
+
+        # solve quadratic equation --> find points at 1 solar radii
+        a = rays_d.pow(2).sum(-1)
+        b = (2 * rays_o * rays_d).sum(-1)
+        # stop sampling at solar surface
+        c = rays_o.pow(2).sum(-1) - self.solar_R ** 2
+        dist_inner = (-b - torch.sqrt(b.pow(2) - 4 * a * c)) / (2 * a)
+
+        dist_near = distance - self.distance
+        dist_far = distance + self.distance
+
+        # replace endpoint with solar surface
+        intersect_solar_surface = ~torch.isnan(dist_inner)
+        dist_far[intersect_solar_surface] = dist_inner[intersect_solar_surface]
+
+        z_vals = dist_near[:, None] * (1. - self.t_vals) + dist_far[:, None] * (self.t_vals)
+
+        # Draw uniform samples from bins along ray
+        if self.perturb:
+            mids = .5 * (z_vals[:, 1:] + z_vals[:, :-1])
+            upper = torch.concat([mids, z_vals[:, -1:]], dim=1)
+            lower = torch.concat([z_vals[:, :1], mids], dim=1)
+            t_rand = torch.rand(z_vals.shape, device=z_vals.device)
+            z_vals = lower + (upper - lower) * t_rand
+
+        pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
+
+        return {'points': pts, 'z_vals': z_vals}
 
 class HierarchicalSampler(torch.nn.Module):
 

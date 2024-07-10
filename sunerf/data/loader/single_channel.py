@@ -7,7 +7,7 @@ from dateutil.parser import parse
 
 from sunerf.data.dataset import MmapDataset, ArrayDataset
 from sunerf.data.date_util import normalize_datetime
-from sunerf.data.loader.base import BaseDataModule, get_data
+from sunerf.data.loader.base_loader import BaseDataModule, get_data
 from sunerf.train.callback import log_overview
 
 
@@ -74,14 +74,14 @@ class SingleChannelDataModule(BaseDataModule):
         valid_rays = valid_rays.reshape((-1, 2, 3))
         valid_times = np.ones_like(valid_images) * valid_times[:, None, None]
         valid_times = valid_times.reshape(-1, 1)
-        valid_images = valid_images.reshape(-1, valid_images.shape[-2], valid_images.shape[-1])
+        valid_images = valid_images.reshape(-1, 1)
 
         valid_dataset = ArrayDataset({'target_image': valid_images, 'rays': valid_rays, 'time': valid_times},
                                      batch_size=batch_size)
 
         config = {'type': 'emission', 'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt, 'ref_time': ref_time,
                   'wcs': data_dict['wcs'], 'resolution': data_dict['resolution'], 'wavelength': data_dict['wavelength'],
-                  'times': o_times}
+                  'times': o_times, 'cmap': cmap}
         super().__init__({'tracing': train_dataset}, {'test_image': valid_dataset},
                          start_time=o_times.min(), end_time=o_times.max(),
                          Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt, ref_time=ref_time,

@@ -6,6 +6,7 @@ from itertools import repeat
 import numpy as np
 from astropy import units as u
 from pytorch_lightning import LightningDataModule
+from sunpy.coordinates import frames
 from sunpy.map import Map, all_coordinates_from_map
 from torch.utils.data import DataLoader, RandomSampler
 from tqdm import tqdm
@@ -94,7 +95,7 @@ def _load_map_data(data):
                           s_map.dsun.to_value(u.solRad) / Rs_per_ds).float().numpy()
 
     image = s_map.data.astype(np.float32)
-    img_coords = all_coordinates_from_map(s_map)
+    img_coords = all_coordinates_from_map(s_map).transform_to(frames.Helioprojective)
     all_rays = np.stack(get_rays(img_coords, pose), -2)
 
     all_rays = all_rays.reshape((-1, 2, 3))

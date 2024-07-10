@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from sunerf.rendering.base import SuNeRFRendering, cumprod_exclusive
+from sunerf.rendering.base_tracing import SuNeRFRendering, cumprod_exclusive
 
 
 class EmissionRadiativeTransfer(SuNeRFRendering):

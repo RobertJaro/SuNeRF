@@ -5,8 +5,8 @@ from pytorch_lightning import LightningModule
 from torch import nn
 from torch.optim.lr_scheduler import ExponentialLR
 
-from sunerf.data.loader.base import BaseDataModule
-from sunerf.rendering.base import SuNeRFRendering
+from sunerf.data.loader.base_loader import BaseDataModule
+from sunerf.rendering.base_tracing import SuNeRFRendering
 from sunerf.rendering.emission import EmissionRadiativeTransfer
 from sunerf.train.scaling import ImageAsinhScaling
 
@@ -69,13 +69,13 @@ def save_state(sunerf: BaseSuNeRFModule, data_module: BaseDataModule, save_path)
         # data scaling
         'Rs_per_ds': data_module.Rs_per_ds,
         'seconds_per_dt': data_module.seconds_per_dt,
-        'ref_time': data_module.ref_time,
+        'ref_time': data_module.ref_time
     }, save_path)
 
 
 class EmissionSuNeRFModule(BaseSuNeRFModule):
     def __init__(self, Rs_per_ds, seconds_per_dt, image_scaling_config,
-                 lambda_image=1.0, lambda_regularization=0,
+                 lambda_image=1.0, lambda_regularization=1.0,
                  sampling_config=None, hierarchical_sampling_config=None,
                  model_config=None, **kwargs):
 
@@ -132,13 +132,13 @@ class EmissionSuNeRFModule(BaseSuNeRFModule):
     def validation_step(self, batch, batch_nb, **kwargs):
         dataloader_idx = kwargs['dataloader_idx'] if 'dataloader_idx' in kwargs else 0
         if dataloader_idx == 0:
-            rays, time, target_img = batch['rays'], batch['time'], batch['target_image']
+            rays, time, target_image = batch['rays'], batch['time'], batch['target_image']
             rays_o, rays_d = rays[:, 0], rays[:, 1]
 
             outputs = self.rendering(rays_o, rays_d, time)
 
-            distance = rays_o.pow(2).sum(-1).pow(0.5).mean()
-            return {'target_img': target_img,
+            distance = rays_o.pow(2).sum(-1).pow(0.5)
+            return {'target_image': target_image,
                     'fine_image': outputs['fine_image'],
                     'coarse_image': outputs['coarse_image'],
                     'height_map': outputs['height_map'],
