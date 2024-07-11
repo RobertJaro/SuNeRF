@@ -46,8 +46,8 @@ def pose_spherical(theta, phi, radius, shift=None):
     """
     c2w = trans_unit
     c2w = trans_t(radius) @ c2w
-    c2w = rot_phi(phi / 180. * np.pi) @ c2w
-    c2w = rot_theta(theta / 180. * np.pi) @ c2w
+    c2w = rot_phi(phi) @ c2w
+    c2w = rot_theta(theta) @ c2w
     c2w = torch.Tensor(np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]])) @ c2w
     if shift is not None:
         c2w = trans_shift(*shift) @ c2w

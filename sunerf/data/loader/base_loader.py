@@ -90,8 +90,8 @@ def _load_map_data(data):
     s_map = Map(map_path)
     time = s_map.date.datetime
 
-    pose = pose_spherical(-s_map.carrington_longitude.to(u.deg).value,
-                          s_map.carrington_latitude.to(u.deg).value,
+    pose = pose_spherical(-s_map.carrington_longitude.to(u.rad).value,
+                          s_map.carrington_latitude.to(u.rad).value,
                           s_map.dsun.to_value(u.solRad) / Rs_per_ds).float().numpy()
 
     image = s_map.data.astype(np.float32)

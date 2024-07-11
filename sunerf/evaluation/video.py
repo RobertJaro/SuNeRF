@@ -14,12 +14,14 @@ parser = argparse.ArgumentParser('Create video of ecliptic and polar views')
 parser.add_argument('--chk_path', type=str)
 parser.add_argument('--video_path', type=str)
 parser.add_argument('--resolution', type=int, default=512)
+parser.add_argument('--batch_size', type=int, default=4096)
 args = parser.parse_args()
 
 chk_path = args.chk_path
 video_path = args.video_path
 resolution = args.resolution
 resolution = (resolution, resolution) * u.pix
+batch_size = args.batch_size
 
 os.makedirs(video_path, exist_ok=True)
 
@@ -28,29 +30,28 @@ loader = SuNeRFLoader(chk_path)
 cmap = sdo_cmaps[loader.wavelength.to_value(u.angstrom)]
 avg_time = loader.start_time + (loader.end_time - loader.start_time) / 2
 
-au = (1 * u.AU).to(u.solRad).value
 n_points = 20
 
 points_1 = zip(np.ones(n_points) * 0,
                np.linspace(0, 360, n_points),
                [avg_time] * n_points,
-               np.ones(n_points) * 1 * au)
+               np.ones(n_points))
 
 points_2 = zip(np.linspace(0, 360, n_points),
                np.ones(n_points) * 0,
                [avg_time] * n_points,
-               np.ones(n_points) * 1 * au)
+               np.ones(n_points))
 
 points_3 = zip(np.linspace(0, 180, n_points),
                np.linspace(0, 360, n_points),
                [avg_time] * n_points,
-               np.linspace(1 * au, 2 * au, n_points), )
+               np.linspace(1, 0.2, n_points), )
 
 # combine coordinates
 points = list(points_1) + list(points_2) + list(points_3)
 
 for i, (lat, lon, time, d) in tqdm(list(enumerate(points)), total=len(points)):
-    outputs = loader.load_observer_image(lat, lon, time, distance=d, batch_size=4096 * 1, resolution=resolution)
+    outputs = loader.load_observer_image(lat * u.deg, lon * u.deg, time, distance=d * u.AU, batch_size=batch_size, resolution=resolution)
     fig, ax = plt.subplots(1, 1, figsize=(5, 5))
     ax.imshow(outputs['image'], cmap=cmap, norm=ImageNormalize(vmin=0, vmax=1, stretch=AsinhStretch(0.005)), origin='lower')
     # axs[1].imshow(outputs['height_map'], cmap='plasma', vmin=1, vmax=1.2, origin='lower')
