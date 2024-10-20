@@ -4,12 +4,9 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from sunpy.map import Map
 from torch import nn
 
 from sunerf.model.model import GenericModel
-
-from astropy import units as u
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -36,7 +33,6 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.MSELoss()
 
-
     temperature_tensor = torch.tensor(np.log10(temperature)).float().to(device)[:, None]
     response_tensor = torch.tensor(np.log10(response)).float().to(device).T
     test_temperature = torch.linspace(temperature_tensor.min(), temperature_tensor.max(), 200).to(device)[:, None]
@@ -57,7 +53,8 @@ if __name__ == '__main__':
                 axs = [axs] if response.shape[0] == 1 else axs
                 for i, ax in enumerate(axs):
                     ax.plot(temperature, response[i], 'o', color='black')
-                    ax.plot((10 ** test_temperature).cpu().numpy(), (10 ** test_output).cpu().numpy()[:, i], color='red')
+                    ax.plot((10 ** test_temperature).cpu().numpy(), (10 ** test_output).cpu().numpy()[:, i],
+                            color='red')
                     ax.loglog()
                 fig.tight_layout()
                 plt.savefig(args.out_file.replace('.pt', '.jpg'))

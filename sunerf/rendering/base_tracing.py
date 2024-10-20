@@ -70,7 +70,6 @@ class SuNeRFRendering(nn.Module):
 
         fine_out = self._render(self.fine_model, query_points_time, rays_d, rays_o, z_vals_combined, **kwargs)
 
-
         # compute regularization of absorption
         distance = query_points.pow(2).sum(-1).pow(0.5)
         height_map = (fine_out['weights'] * distance).sum(-1)
@@ -122,7 +121,7 @@ def cumprod_exclusive(tensor: torch.Tensor, dim=1) -> torch.Tensor:
     elif dim == 1:
         cumprod[:, 0] = 1.
     elif dim == 2:
-        cumprod[:,:, 0] = 1.
+        cumprod[:, :, 0] = 1.
     elif dim == -1:
         cumprod[..., 0] = 1.
     else:

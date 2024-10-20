@@ -1,5 +1,6 @@
 import os
 
+import numpy as np
 import torch
 from pytorch_lightning import LightningModule
 from torch import nn
@@ -159,23 +160,34 @@ class EmissionSuNeRFModule(BaseSuNeRFModule):
 
 class PlasmaSuNeRFModule(BaseSuNeRFModule):
     def __init__(self, Rs_per_ds, seconds_per_dt,
-                 image_scaling_config, temperature_response_config,
+                 image_scaling_config, temperature_response_config, opacity_config=None,
                  lambda_image=1.0, lambda_regularization=1.0,
                  sampling_config=None, hierarchical_sampling_config=None,
                  model_config=None, **kwargs):
+
+        temperature_response = {k: np.load(c['file'])['response'] for k, c in temperature_response_config.items()}
+        temperature_response = {k: nn.Parameter(torch.tensor(v.T, dtype=torch.float32), requires_grad=False) for k, v in
+                                temperature_response.items()}
+        # assert same number of temperature bins for all instruments
+        assert len(set([v.shape[0] for v in
+                        temperature_response.values()])) == 1, "Number of temperature bins must be the same for all instruments."
+
+        temperature = np.load(list(temperature_response_config.values())[0]['file'])['temperature']
+        log_T = torch.from_numpy(temperature).float()
         # setup rendering
-        rendering = PlasmaRadiativeTransfer(Rs_per_ds=Rs_per_ds,
+        rendering = PlasmaRadiativeTransfer(log_T=log_T,
+                                            Rs_per_ds=Rs_per_ds,
                                             sampling_config=sampling_config,
                                             hierarchical_sampling_config=hierarchical_sampling_config,
-                                            model_config=model_config)
+                                            model_config=model_config,
+                                            absorption=opacity_config is not None)
         super().__init__(Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt,
                          rendering=rendering, **kwargs)
 
+        self.temperature_response = nn.ParameterDict(temperature_response)
+
         self.lambda_image = lambda_image
         self.lambda_regularization = lambda_regularization
-
-        temperature_response = {k: torch.load(c['model']) for k, c in temperature_response_config.items()}
-        self.temperature_response = nn.ModuleDict(temperature_response)
 
         instrument_scaling = {k: nn.Parameter(torch.tensor(c['scaling'], dtype=torch.float32),
                                               requires_grad=c['learnable'])
@@ -231,12 +243,14 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
             target_image = image_scaling(target_image)
             # optimize coarse model
             coarse_image = image_scaling(out_coarse_image)
-            coarse_loss = (coarse_image - target_image) / target_image.mean(0, keepdim=True)
-            coarse_loss = coarse_loss.pow(2).mean()
+            # coarse_loss = (coarse_image - target_image) / target_image.mean(0, keepdim=True)
+            # coarse_loss = coarse_loss.pow(2).mean()
+            coarse_loss = self.mse_loss(coarse_image, target_image)
             # optimize fine model
             fine_image = image_scaling(out_fine_image)
-            fine_loss = (fine_image - target_image) / target_image.mean(0, keepdim=True)
-            fine_loss = fine_loss.pow(2).mean()
+            # fine_loss = (fine_image - target_image) / target_image.mean(0, keepdim=True)
+            # fine_loss = fine_loss.pow(2).mean()
+            fine_loss = self.mse_loss(fine_image, target_image)
 
             loss = self.lambda_image * (coarse_loss + fine_loss)
             total_loss += loss
@@ -275,6 +289,8 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
                                      absorption_model=absorption_model)
 
             image_scaling = self.image_scaling[self.validation_dataset_mapping[dataloader_idx]]
+
+            image = torch.nan_to_num(image, nan=0.0)
 
             # print('IMG MIN MAX', image.min(), image.max())
             # print('IMG SCALING MIN MAX', image_scaling(image).min(), image_scaling(image).max())

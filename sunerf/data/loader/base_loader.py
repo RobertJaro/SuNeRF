@@ -103,6 +103,7 @@ def _load_map_data(data):
 
     return {'image': image, 'pose': pose, 'rays': all_rays, 'time': time}
 
+
 class BatchesDataset(Dataset):
 
     def __init__(self, batches_file_paths, batch_size=2 ** 13, **kwargs):
@@ -126,6 +127,7 @@ class BatchesDataset(Dataset):
 
     def clear(self):
         [os.remove(f) for f in self.batches_file_paths.values()]
+
 
 class TensorsDataset(BatchesDataset):
 

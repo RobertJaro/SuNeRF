@@ -4,12 +4,14 @@ from typing import Tuple
 import numpy as np
 import torch
 from astropy import units as u
+from astropy.coordinates import SkyCoord
 from sunpy.coordinates import frames
-from sunpy.map import Map, all_coordinates_from_map
-from torch import nn
+from sunpy.map import Map, all_coordinates_from_map, make_fitswcs_header
+from tqdm import tqdm
 
 from sunerf.data.date_util import normalize_datetime, unnormalize_datetime
 from sunerf.data.ray_sampling import get_rays
+from sunerf.evaluation.util import convert_spherical_to_cartesian
 from sunerf.train.coordinate_transformation import pose_spherical
 
 
@@ -55,11 +57,7 @@ class SuNeRFLoader:
     def load_observer_image(self, lat: u, lon: u, time: datetime,
                             distance=(1 * u.AU).to(u.solRad),
                             center: Tuple[float, float, float] = None, resolution=None,
-                            batch_size: int = 4096, instrument_key=None):
-        instrument_key = instrument_key if instrument_key is not None else list(self.temperature_response.keys())[0]
-        absorption_model = self.absorption_model
-        instrument_scaling = self.instrument_scaling[instrument_key]
-        temperature_response = self.temperature_response[instrument_key]
+                            **kwargs):
         # convert to pose
         target_pose = pose_spherical(-lon.to_value(u.rad), lat.to_value(u.rad), distance.to_value(u.solRad),
                                      center).numpy()
@@ -70,20 +68,49 @@ class SuNeRFLoader:
         else:
             img_coords = all_coordinates_from_map(self.ref_map).transform_to(frames.Helioprojective)
 
+        return self.load_pose(img_coords, target_pose, time, **kwargs)
+
+    @torch.no_grad()
+    def load_image(self, lat: u, lon: u,
+                   time: datetime,
+                   distance=(1 * u.AU).to(u.solRad),
+                   hpc_lat: u = 0 * u.arcsec, hpc_lon: u = 0 * u.arcsec,
+                   resolution=(256, 256) * u.pix, scale=[2400 / 256, 2400 / 256] * u.arcsec / u.pix,
+                   **kwargs):
+
+        obs = SkyCoord(0 * u.deg, 0 * u.deg, distance, frame=frames.HeliographicStonyhurst, obstime=time)
+        reference_coord = SkyCoord(hpc_lat, hpc_lon, obstime=time, observer=obs,
+                                   frame=frames.Helioprojective)
+        mock_data = np.zeros([int(r.to_value(u.pix)) for r in resolution])
+        header = make_fitswcs_header(mock_data, reference_coord, scale=scale)
+        ref_map = Map(mock_data, header)
+
+        # convert to pose
+        target_pose = pose_spherical(-lon.to_value(u.rad), lat.to_value(u.rad), distance.to_value(u.solRad)).numpy()
+        # load image coordinates
+        img_coords = all_coordinates_from_map(ref_map).transform_to(frames.Helioprojective)
+
+        return self.load_pose(img_coords, target_pose, time, **kwargs)
+
+    def load_pose(self, img_coords, target_pose, time, batch_size=int(2 ** 10), instrument_key=None):
+        # load rays
         rays_o, rays_d = get_rays(img_coords, target_pose)
         rays_o, rays_d = torch.from_numpy(rays_o), torch.from_numpy(rays_d)
-
         img_shape = rays_o.shape[:2]
+
         flat_rays_o = rays_o.reshape([-1, 3]).to(self.device)
         flat_rays_d = rays_d.reshape([-1, 3]).to(self.device)
-
         time = normalize_datetime(time, self.seconds_per_dt, self.ref_time)
         flat_time = torch.ones_like(flat_rays_o[:, 0:1]) * time
+
         # make batches
         rays_o, rays_d, time = torch.split(flat_rays_o, batch_size), \
             torch.split(flat_rays_d, batch_size), \
             torch.split(flat_time, batch_size)
-
+        instrument_key = instrument_key if instrument_key is not None else list(self.temperature_response.keys())[0]
+        absorption_model = self.absorption_model
+        instrument_scaling = self.instrument_scaling[instrument_key]
+        temperature_response = self.temperature_response[instrument_key]
         outputs = {}
         for b_rays_o, b_rays_d, b_time in zip(rays_o, rays_d, time):
             b_outs = self.rendering(b_rays_o, b_rays_d, b_time,
@@ -105,18 +132,43 @@ class SuNeRFLoader:
         return unnormalize_datetime(time, self.seconds_per_dt, self.ref_time)
 
     @torch.no_grad()
-    def load_coords(self, query_points_npy, batch_size=2048):
+    def load_coords(self, query_points_npy, batch_size=2048, progress=True):
         target_shape = query_points_npy.shape[:-1]
         query_points = torch.from_numpy(query_points_npy).float()
 
         flat_query_points = query_points.reshape(-1, 4)
         n_batches = np.ceil(len(flat_query_points) / batch_size).astype(int)
 
-        out_list = []
-        for j in range(n_batches):
+        out_dict = {'log_ne': [], 'total_ne': [], 'mean_log_T': [], 'total_log_ne': []}
+        iter = range(n_batches) if not progress else tqdm(range(n_batches))
+        for j in iter:
             batch = flat_query_points[j * batch_size:(j + 1) * batch_size].to(self.device)
             out = self.model(batch)
-            out_list.append(out.detach().cpu())
+            for k, v in out.items():
+                if k not in out_dict:
+                    continue
+                out_dict[k].append(v.detach().cpu())
+            # set temperature from model
 
-        output = torch.cat(out_list, 0).view(*target_shape, -1).numpy()
+        output = {k: torch.cat(v).reshape(*target_shape, *v[0].shape[1:]).numpy() for k, v in out_dict.items()}
+        output['log_T'] = out['log_T'].detach().cpu()  # TODO move
+
         return output
+
+    def load_slice(self, latitude_range=None,
+                   longitude_range=None,
+                   time: datetime = None,
+                   radius_range=None, **kwargs):
+        latitude_range = np.arange(-90, 90, 1) * u.deg if latitude_range is None else latitude_range
+        longitude_range = np.arange(0, 360, 1) * u.deg if longitude_range is None else longitude_range
+        radius_range = np.linspace(1, 2, 10) * u.solRad if radius_range is None else radius_range
+
+        time = self.ref_time if time is None else time
+
+        coords = np.stack(np.meshgrid(latitude_range.to_value(u.rad),
+                                      longitude_range.to_value(u.rad),
+                                      radius_range.to_value(u.solRad), indexing='ij'), -1)
+        x, y, z = convert_spherical_to_cartesian(coords[..., 2], coords[..., 0], coords[..., 1])
+        t = np.ones_like(x) * self.normalize_datetime(time)
+        cartesian_coords = np.stack([x, y, z, t], -1)
+        return self.load_coords(cartesian_coords, **kwargs)

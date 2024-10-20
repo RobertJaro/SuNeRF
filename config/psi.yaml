@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf/psi_v03"
-work_directory: "/glade/derecho/scratch/rjarolim/sunerf/psi_v03"
+base_path: "/glade/work/rjarolim/sunerf/psi_v05"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/psi_v05"
 
 data:
   data_config:
@@ -15,7 +15,7 @@ logging:
   name: "PSI"
 
 training:
-  log_every_n_steps: 1000
+  log_every_n_steps: 2000
 
 model:
   model_config:
@@ -24,4 +24,4 @@ model:
   image_scaling_config:
     PSI: { vmax: 1.0 }
   temperature_response_config:
-    PSI: { model: '/glade/work/rjarolim/sunerf/response/psi_mean.pt', scaling: 0.0, n_channels: 1, learnable: False }
+    PSI: { file: '/glade/work/rjarolim/sunerf/response/psi_interpolated.npz', scaling: 0.0, n_channels: 1, learnable: False }

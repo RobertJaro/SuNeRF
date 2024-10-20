@@ -1,5 +1,4 @@
 import torch
-from torch import nn
 
 from sunerf.model.model import EmissionModel
 from sunerf.rendering.base_tracing import SuNeRFRendering, cumprod_exclusive
@@ -34,11 +33,11 @@ class EmissionRadiativeTransfer(SuNeRFRendering):
         # emission ([..., 0]; epsilon(z)) and absorption ([..., 1]; kappa(z)) coefficient per unit volume
         # dtau = - kappa dz
         # I' / I = - kappa dz --> I' emerging intensity; I incident intensity;
-        emission = raw['emission'][..., 0] # torch.exp(raw[..., 0])
+        emission = raw['emission'][..., 0]  # torch.exp(raw[..., 0])
         intensity = emission * dists  # emission per sampled point [n_rays, n_samples]
 
         # transmission per sampled point [n_rays, n_samples]
-        alpha = raw['alpha'][..., 0] #nn.functional.relu(raw[..., 1])
+        alpha = raw['alpha'][..., 0]  # nn.functional.relu(raw[..., 1])
         absorption = torch.exp(-alpha * dists)
         # [1, .9, 1, 0, 0, 1] --> less dense objects transmit light (1); dense objects absorbe light (0)
 

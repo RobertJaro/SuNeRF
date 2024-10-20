@@ -10,12 +10,11 @@ sra_data = readsav(sra_file)
 
 data = readsav(geny_file)
 
-temperature = data['p0'][0][5] # (61, )
-
+temperature = data['p0'][0][5]  # (61, )
 
 # 6 = electrons; 7 = photons
 # response units = 1e44 EM
-response = data['p0'][0][7] # 4, 4, 61
+response = data['p0'][0][7]  # 4, 4, 61
 response = response[:, 1, :]
 
 wavelengths = data['p0'][0][8][:, 0]
@@ -28,8 +27,7 @@ plt.legend()
 plt.loglog()
 plt.show()
 
-
 np.savez(save_file,
-         temperature =temperature,
+         temperature=temperature,
          response=response,
          wavelengths=wavelengths)

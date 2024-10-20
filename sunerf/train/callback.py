@@ -12,10 +12,10 @@ from matplotlib.colors import Normalize
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from pytorch_lightning import Callback
 from skimage.metrics import structural_similarity
-from sunpy.visualization.colormaps import cm
 
 from sunerf.data.date_util import unnormalize_datetime
 from sunerf.data.utils import sdo_img_norm
+
 
 class BaseCallback(Callback):
 
@@ -44,18 +44,18 @@ class AbsorptionCallback(BaseCallback):
         # reshape
         outputs = {k: v.view(*self.image_shape, *v.shape[1:]).cpu().numpy() for k, v in outputs.items()}
 
-        nu = outputs['nu'][..., 0]
-        log_nu = outputs['log_nu'][..., 0]
+        kappa = outputs['kappa'][..., 0]
+        log_kappa = outputs['log_kappa'][..., 0]
         log_ne = outputs['log_ne'][..., 0]
         log_T = outputs['log_T'][..., 0]
-        alpha = 10 ** (2 * log_ne - log_nu)
+        alpha = 10 ** (log_kappa + log_ne)
 
-        extent  = [log_T[0, 0], log_T[-1, -1], log_ne[0, 0], log_ne[-1, -1]]
+        extent = [log_T[0, 0], log_T[-1, -1], log_ne[0, 0], log_ne[-1, -1]]
 
         fig, axs = plt.subplots(1, 2, figsize=(10, 5))
 
         ax = axs[0]
-        im = ax.imshow(nu.T, cmap='viridis', norm='log', extent=extent, origin='lower')
+        im = ax.imshow(kappa.T, cmap='viridis', norm='log', extent=extent, origin='lower')
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
         plt.colorbar(im, cax=cax)
@@ -98,8 +98,8 @@ class TestImageCallback(BaseCallback):
         coarse_image = self.normalize(outputs['coarse_image'])
 
         self.plot_samples(fine_image, coarse_image, outputs['height_map'], outputs['absorption_map'],
-                     target_image, outputs['z_vals_stratified'], outputs['z_vals_hierarchical'],
-                     outputs['distance'].mean(), self.cmap)
+                          target_image, outputs['z_vals_stratified'], outputs['z_vals_hierarchical'],
+                          outputs['distance'].mean(), self.cmap)
 
         val_loss = ((fine_image - target_image) ** 2).mean()
         val_ssim = structural_similarity(target_image[..., 0], fine_image[..., 0], data_range=1)
@@ -158,9 +158,10 @@ class PlasmaImageCallback(BaseCallback):
         for i, cmap in enumerate(cmaps):
             cmap = plt.get_cmap(cmap)
             self.plot_samples(fine_image[..., i], coarse_image[..., i],
-                         target_image[..., i], outputs['z_vals_stratified'], outputs['z_vals_hierarchical'],
-                         outputs['distance'].mean(), cmap, title=f'{cmap.name}')
-        self.plot_integrated_quantities(outputs['height_map'], outputs['mean_T'], outputs['total_ne'], outputs['mean_absorption'],)
+                              target_image[..., i], outputs['z_vals_stratified'], outputs['z_vals_hierarchical'],
+                              outputs['distance'].mean(), cmap, title=f'{cmap.name}')
+        self.plot_integrated_quantities(outputs['height_map'], outputs['mean_T'], outputs['total_ne'],
+                                        outputs['mean_absorption'], )
 
         val_loss = ((fine_image - target_image) ** 2).mean()
         val_ssim = []
@@ -170,7 +171,6 @@ class PlasmaImageCallback(BaseCallback):
         val_psnr = -10. * np.log10(val_loss)
 
         wandb.log({'validation.loss': val_loss, 'validation.ssim': val_ssim, 'validation.psnr': val_psnr})
-
 
     def plot_integrated_quantities(self, height_map, mean_T, total_ne, absorption):
         fig, axs = plt.subplots(1, 4, figsize=(20, 4))
@@ -190,7 +190,7 @@ class PlasmaImageCallback(BaseCallback):
         ax.set_title(f'mean log(T)')
 
         ax = axs[2]
-        im = ax.imshow(total_ne, cmap='viridis')
+        im = ax.imshow(total_ne, cmap='viridis', norm='log')
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
         plt.colorbar(im, cax=cax)
@@ -206,8 +206,6 @@ class PlasmaImageCallback(BaseCallback):
         fig.tight_layout()
         wandb.log({'integrated_quantities': fig})
         plt.close('all')
-
-
 
     def plot_samples(self, fine_image, coarse_image, target_image, z_vals_stratified,
                      z_vals_hierach, distance, cmap, title='comparison'):
@@ -292,7 +290,7 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, ref_time):
         cmap = copy.deepcopy(get_cmap(cmap))
         cmap.set_bad('green', 1.)
         masked_img = np.ma.array(img[..., 0], mask=np.isnan(img[..., 0]))
-        ax.imshow(masked_img, norm=norm, cmap=cmap)
+        ax.imshow(masked_img, norm=norm, cmap=cmap, origin='lower')
         ax.set_axis_off()
         ax.set_title('Time: %s' % unnormalize_datetime(times[i], seconds_per_dt, ref_time).isoformat(' '))
 

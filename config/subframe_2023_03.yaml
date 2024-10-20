@@ -1,0 +1,34 @@
+base_path: "/glade/work/rjarolim/sunerf/subframe_v03"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/subframe_v03"
+
+data:
+  data_config:
+    - type: 'AIA'
+      key: 'AIA_FD'
+      data_path: '/glade/work/rjarolim/data/sunerf/2023_03/prep/aia_fd/*.fits'
+      static: True
+    - type: 'AIA'
+      key: 'AIA_SUB'
+      data_path: '/glade/work/rjarolim/data/sunerf/2023_03/prep/aia_sub/*.fits'
+      static: False
+  debug: False
+  batch_size: 512
+  num_workers: 16
+
+logging:
+  project: "sunerf"
+  name: "2023-03 subframe"
+
+training:
+  log_every_n_steps: 10000
+
+model:
+  image_scaling_config:
+    AIA_FD: { vmax: 1.0 }
+    AIA_SUB: { vmax: 1.0 }
+  temperature_response_config:
+    AIA_FD: { file: '/glade/work/rjarolim/sunerf/response/aia_interpolated.npz', scaling: 0.0, learnable: False }
+    AIA_SUB: { file: '/glade/work/rjarolim/sunerf/response/aia_interpolated.npz', scaling: 0.0, learnable: False }
+  opacity_config: True
+#  sampling_config: {type: 'spherical', distance: 1.5}
+

@@ -1,7 +1,5 @@
 import argparse
-import glob
 import os
-from datetime import timedelta
 
 import numpy as np
 from astropy import units as u
@@ -23,8 +21,8 @@ def _rename_euvi(f, t):
     os.rename(f, os.path.join(base_path, new_filename))
     # print(f, 'to', new_filename)
 
-def _download_euvi(time_range, channels, cadence, source):
 
+def _download_euvi(time_range, channels, cadence, source):
     target_wl = Fido.search(time_range, a.Instrument.secchi, a.Detector.euvi,
                             a.Source(source), a.Wavelength(284 * u.AA), a.Sample(cadence * u.h))
     target_times = target_wl['vso']['Start Time']
@@ -47,6 +45,7 @@ if __name__ == '__main__':
     parser.add_argument('--t_end', type=str, required=False, default=None)
     parser.add_argument('--cadence', type=float, required=False, default=1, help='Cadence in hours')
     parser.add_argument('--channels', type=int, nargs='+', required=False, default=[171, 195, 284, 304])
+    parser.add_argument('--sources', type=str, nargs='+', required=False, default=['STEREO_A', 'STEREO_B'])
     args = parser.parse_args()
 
     os.makedirs(args.download_dir, exist_ok=True)
@@ -57,5 +56,5 @@ if __name__ == '__main__':
 
     time_range = a.Time(start_time, end_time)
 
-    _download_euvi(time_range, args.channels, cadence, 'STEREO_A')
-    _download_euvi(time_range, args.channels, cadence, 'STEREO_B')
+    for source in args.sources:
+        _download_euvi(time_range, args.channels, cadence, source)

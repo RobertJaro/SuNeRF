@@ -85,7 +85,7 @@ class MultiInstrumentDataModule(BaseDataModule):
 
 class GenericEUVDataset(TensorsDataset):
     def __init__(self, file_dict, working_dir, Rs_per_ds=1, seconds_per_dt=86400, ref_time=None,
-                 batch_size=int(2 ** 10), debug=False, test=False, cmaps=None, scaling=1, **kwargs):
+                 batch_size=int(2 ** 10), debug=False, test=False, cmaps=None, scaling=1, static=True, **kwargs):
         data_config = {}
         wavelengths = sorted(list(file_dict.keys()))
         # load reference info
@@ -130,6 +130,12 @@ class GenericEUVDataset(TensorsDataset):
 
         data_dict['image'] = image_stack / scaling
 
+        # set to same time if static
+        if static:
+            times = data_dict['time']
+            ref_time = min(times) if ref_time is None else ref_time
+            data_dict['time'] = [ref_time] * len(times)
+
         # expand and normalize times
         times = data_dict['time']
         ref_time = min(times) if ref_time is None else ref_time
@@ -152,6 +158,9 @@ class AIADataset(GenericEUVDataset):
 
     def __init__(self, data_path, wavelengths=None, scaling=10000, **kwargs):
         wavelengths = [94, 131, 171, 193, 211, 304, 335] if wavelengths is None else wavelengths
+        cmaps_dict = {94: 'sdoaia94', 131: 'sdoaia131', 171: 'sdoaia171', 193: 'sdoaia193',
+                      211: 'sdoaia211', 304: 'sdoaia304', 335: 'sdoaia335'}
+        cmaps = [cmaps_dict[wl] for wl in wavelengths]
 
         files = sorted(glob.glob(data_path))
         assert len(files) > 0, f'No files found in {data_path}'
@@ -161,6 +170,8 @@ class AIADataset(GenericEUVDataset):
         date_dict = {wl: [] for wl in wavelengths}
         for f in files:
             wl = int(fits.getheader(f)['WAVELNTH'])
+            if wl not in wavelengths:
+                continue
             date = parse(fits.getheader(f)['DATE-OBS'])
             file_dict[wl].append(f)
             date_dict[wl].append(date)
@@ -174,16 +185,17 @@ class AIADataset(GenericEUVDataset):
             file_dict[wl] = [f[np.argmin(np.abs(dates - t), axis=0)] for t in ref_dates]
 
         super().__init__(file_dict,
-                         cmaps=['sdoaia94', 'sdoaia131', 'sdoaia171', 'sdoaia193', 'sdoaia211', 'sdoaia304',
-                                'sdoaia335'],
+                         cmaps=cmaps,
                          scaling=scaling,
                          **kwargs)
 
 
 class EUVIDataset(GenericEUVDataset):
 
-    def __init__(self, data_path, wavelengths=None, **kwargs):
+    def __init__(self, data_path, wavelengths=None, scaling=7000, **kwargs):
         wavelengths = [171, 195, 284, 304] if wavelengths is None else wavelengths
+        cmaps = {171: 'sdoaia171', 195: 'sdoaia193', 284: 'sdoaia211', 304: 'sdoaia304'}
+        cmaps = [cmaps[wl] for wl in wavelengths]
 
         files = sorted(glob.glob(data_path))
         assert len(files) > 0, f'No files found in {data_path}'
@@ -193,6 +205,8 @@ class EUVIDataset(GenericEUVDataset):
         date_dict = {wl: [] for wl in wavelengths}
         for f in files:
             wl = int(fits.getheader(f)['WAVELNTH'])
+            if wl not in wavelengths:
+                continue
             date = parse(fits.getheader(f)['DATE-OBS'])
             file_dict[wl].append(f)
             date_dict[wl].append(date)
@@ -206,8 +220,8 @@ class EUVIDataset(GenericEUVDataset):
             file_dict[wl] = [f[np.argmin(np.abs(dates - t), axis=0)] for t in ref_dates]
 
         super().__init__(file_dict,
-                         cmaps=['sdoaia171', 'sdoaia193', 'sdoaia211', 'sdoaia304'],
-                         scaling=7000,
+                         cmaps=cmaps,
+                         scaling=scaling,
                          **kwargs)
 
 
@@ -225,7 +239,7 @@ class PSIDataset(GenericEUVDataset):
 
 class AbsorptionTestDataset(Dataset):
 
-    def __init__(self, n_logT=100, n_logNe=100, logT_range=(4, 8), logNe_range=(-1, 4), batch_size=1024):
+    def __init__(self, n_logT=100, n_logNe=100, logT_range=(3.7, 8), logNe_range=(-3, 4), batch_size=1024):
         self.data = np.stack(np.meshgrid(np.linspace(*logT_range, n_logT),
                                          np.linspace(*logNe_range, n_logNe), indexing='ij'), -1)
         self.image_shape = (n_logT, n_logNe)

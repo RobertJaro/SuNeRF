@@ -1,17 +1,19 @@
 import torch
 from torch import nn
 
-from sunerf.model.model import EmissionModel, PlasmaModel
+from sunerf.model.model import PlasmaModel
 from sunerf.rendering.base_tracing import SuNeRFRendering, cumprod_exclusive
 
 
 class PlasmaRadiativeTransfer(SuNeRFRendering):
 
-    def __init__(self, model_config=None, **kwargs):
+    def __init__(self, log_T, model_config=None, absorption=True, **kwargs):
         model_config = {} if model_config is None else model_config
-        coarse_model = PlasmaModel(**model_config)
-        fine_model = PlasmaModel(**model_config)
+        coarse_model = PlasmaModel(log_T=log_T, **model_config)
+        fine_model = PlasmaModel(log_T=log_T, **model_config)
         super().__init__(coarse_model=coarse_model, fine_model=fine_model, **kwargs)
+        self.absorption = absorption
+        print('Using absorption:', absorption)
 
     def raw2outputs(self, raw: dict, z_vals: torch.Tensor, rays_d: torch.Tensor,
                     temperature_response: nn.Module, instrument_scaling: nn.Parameter, absorption_model: nn.Module,
@@ -33,10 +35,16 @@ class PlasmaRadiativeTransfer(SuNeRFRendering):
         dists = dists * torch.norm(rays_d[..., None, :], dim=-1)
         dists = dists[:, :, None]
 
-        log_T = raw['log_T']
-        log_ne = raw['log_ne']
-        T = raw['T']
-        ne = raw['ne']
+        # emission_measure = raw['emission_measure']
+        # ne = raw['ne']
+        # T = raw['T']
+        # log_ne = raw['log_ne']
+        # log_T = raw['log_T']
+
+        log_ne = raw['log_ne']  # n_batches, n_samples, n_T_bins --> EM per bin
+        total_ne = raw['total_ne']
+        mean_log_T = raw['mean_log_T']
+        total_log_ne = raw['total_log_ne']
 
         # intensity = raw['emission']
         # alpha = raw['alpha']
@@ -45,14 +53,19 @@ class PlasmaRadiativeTransfer(SuNeRFRendering):
 
         # find channel response for temperature and weight by electron density squared
         # assume dirac delta function for T distribution
-        response = temperature_response(log_T)
-        intensity = 10 ** (response + 2 * log_ne + instrument_scaling)
+
+        # intensity = torch.einsum('...ij,...i->...j', temperature_response, emission_measure)
+        intensity = temperature_response[None, None, :, :] + 2 * log_ne[..., None]
+        intensity = 10 ** (intensity + instrument_scaling)
+        intensity = intensity.sum(-2)  # integrate over temperature bins
         #
         # # learn absorption based on electron density
-        absorption_input = torch.cat([log_ne, log_T], dim=-1)
-        log_nu = absorption_model(absorption_input)['log_nu']
-        alpha = 10 ** (log_nu + 2 * log_ne) # alpha = nu * ne^2 = 10^log_nu * 10^( log_ne)^2 = 10^(log_nu + 2 * log_ne)
-        alpha = log_ne * 0.0 # ignore absorption for now
+        if self.absorption:
+            absorption_input = torch.cat([total_log_ne, mean_log_T], dim=-1)
+            log_kappa = absorption_model(absorption_input)['log_kappa']
+            alpha = 10 ** (log_kappa + total_log_ne)
+        else:
+            alpha = torch.zeros_like(dists)  # ignore absorption for now
 
         # transmission per sampled point [n_rays, n_samples]
         absorption = torch.exp(-alpha * dists)
@@ -72,9 +85,9 @@ class PlasmaRadiativeTransfer(SuNeRFRendering):
         weights = emerging_intensity.mean(-1)
         weights = weights / (weights.sum(1)[:, None] + 1e-10)
 
-        total_density = ne.sum(1)
-        mean_T = (ne * log_T).sum(1) / total_density
-        mean_absorption = (1 - absorption).mean((1, -1))
+        mean_log_T = (mean_log_T * total_ne).sum(1) / total_ne.sum(1)
+        total_density = total_ne.sum(1)
+        mean_absorption = (1 - absorption).sum(1).mean(-1)
 
         # print('MIN/MAX log T', log_T.min(), log_T.max(), log_T.shape)
         # print('MIN/MAX log ne', log_ne.min(), log_ne.max(), log_ne.shape)
@@ -86,4 +99,4 @@ class PlasmaRadiativeTransfer(SuNeRFRendering):
         #       integrated_intensity.shape)
 
         return {'image': integrated_intensity, 'weights': weights, 'mean_absorption': mean_absorption,
-                'mean_T': mean_T, 'total_ne': total_density}
+                'mean_T': mean_log_T, 'total_ne': total_density}

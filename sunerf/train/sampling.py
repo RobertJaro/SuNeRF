@@ -53,6 +53,7 @@ class SphericalSampler(torch.nn.Module):
 
         return {'points': pts, 'z_vals': z_vals}
 
+
 class StratifiedSampler(torch.nn.Module):
 
     def __init__(self, Rs_per_ds, distance=1.3, n_samples=64, perturb=True):
@@ -100,6 +101,7 @@ class StratifiedSampler(torch.nn.Module):
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
 
         return {'points': pts, 'z_vals': z_vals}
+
 
 class HierarchicalSampler(torch.nn.Module):
 
