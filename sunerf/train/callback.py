@@ -155,13 +155,41 @@ class PlasmaImageCallback(BaseCallback):
 
         cmaps = self.cmaps
         cmaps = ['gray'] * fine_image.shape[0] if cmaps is None else cmaps
+
+        fig, axs = plt.subplots(3, len(cmaps), figsize=(3 * len(cmaps), 9))
+
         for i, cmap in enumerate(cmaps):
             cmap = plt.get_cmap(cmap)
-            self.plot_samples(fine_image[..., i], coarse_image[..., i],
-                              target_image[..., i], outputs['z_vals_stratified'], outputs['z_vals_hierarchical'],
-                              outputs['distance'].mean(), cmap, title=f'{cmap.name}')
+            col = axs[:, i]
+
+            v_max = np.nanmax(target_image[..., i])
+            im = col[0].imshow(target_image[..., i], cmap=cmap, vmin=0, vmax=v_max)
+            divider = make_axes_locatable(col[0])
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            plt.colorbar(im, cax=cax)
+            col[0].set_title(f'Target')
+
+            im = col[1].imshow(fine_image[..., i], cmap=cmap, vmin=0, vmax=v_max)
+            divider = make_axes_locatable(col[1])
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            plt.colorbar(im, cax=cax)
+            col[1].set_title(f'Fine')
+
+            im = col[2].imshow(coarse_image[..., i], cmap=cmap, vmin=0, vmax=v_max)
+            divider = make_axes_locatable(col[2])
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            plt.colorbar(im, cax=cax)
+            col[2].set_title(f'Coarse')
+
+        [ax.set_axis_off() for ax in axs.flatten()]
+
+        fig.tight_layout()
+        wandb.log({f'images.{self.name}': fig})
+        plt.close('all')
+
         self.plot_integrated_quantities(outputs['height_map'], outputs['mean_T'], outputs['total_ne'],
-                                        outputs['mean_absorption'], )
+                                        outputs['mean_absorption'],
+                                        outputs['z_vals_stratified'], outputs['z_vals_hierarchical'], outputs['distance'].mean())
 
         val_loss = ((fine_image - target_image) ** 2).mean()
         val_ssim = []
@@ -170,10 +198,13 @@ class PlasmaImageCallback(BaseCallback):
         val_ssim = np.mean(val_ssim)
         val_psnr = -10. * np.log10(val_loss)
 
-        wandb.log({'validation.loss': val_loss, 'validation.ssim': val_ssim, 'validation.psnr': val_psnr})
+        wandb.log({f'validation.loss.{self.name}': val_loss,
+                   f'validation.ssim.{self.name}': val_ssim,
+                   f'validation.psnr.{self.name}': val_psnr})
 
-    def plot_integrated_quantities(self, height_map, mean_T, total_ne, absorption):
-        fig, axs = plt.subplots(1, 4, figsize=(20, 4))
+    def plot_integrated_quantities(self, height_map, mean_T, total_ne, absorption, z_vals_stratified,
+                     z_vals_hierach, distance,):
+        fig, axs = plt.subplots(1, 5, figsize=(24, 4))
 
         ax = axs[0]
         im = ax.imshow(height_map, cmap='cividis', vmin=1, vmax=1.3)
@@ -203,46 +234,16 @@ class PlasmaImageCallback(BaseCallback):
         plt.colorbar(im, cax=cax)
         ax.set_title(f'Mean Absorption')
 
-        fig.tight_layout()
-        wandb.log({'integrated_quantities': fig})
-        plt.close('all')
-
-    def plot_samples(self, fine_image, coarse_image, target_image, z_vals_stratified,
-                     z_vals_hierach, distance, cmap, title='comparison'):
-        # Log example images on wandb
-        # # Plot example outputs
-
-        fig, ax = plt.subplots(1, 4, figsize=(20, 4))
-
-        v_max = np.nanmax(target_image)
-        im = ax[0].imshow(target_image, cmap=cmap, vmin=0, vmax=v_max)
-        divider = make_axes_locatable(ax[0])
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
-        ax[0].set_title(f'Target')
-
-        im = ax[1].imshow(fine_image, cmap=cmap, vmin=0, vmax=v_max)
-        divider = make_axes_locatable(ax[1])
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
-        ax[1].set_title(f'Fine')
-
-        im = ax[2].imshow(coarse_image, cmap=cmap, vmin=0, vmax=v_max)
-        divider = make_axes_locatable(ax[2])
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
-        ax[2].set_title(f'Coarse')
-
         # select index
         y, x = z_vals_stratified.shape[0] // 4, z_vals_stratified.shape[1] // 4  # select point in first quadrant
-        plot_ray_sampling(z_vals_stratified[y, x] - distance, z_vals_hierach[y, x] - distance, ax[-1])
+        plot_ray_sampling(z_vals_stratified[y, x] - distance, z_vals_hierach[y, x] - distance, axs[-1])
 
         fig.tight_layout()
-        wandb.log({f"{title}": fig})
+        wandb.log({f'integrated_quantities.{self.name}': fig})
         plt.close('all')
 
 
-def log_overview(images, poses, times, cmap, seconds_per_dt, ref_time):
+def log_overview(images, poses, times, cmap, seconds_per_dt, ref_time, ds_key=None):
     dirs = np.stack([np.sum([0, 0, -1] * pose[:3, :3], axis=-1) for pose in poses])
     origins = poses[:, :3, -1]
     colors = plt.get_cmap('viridis')(Normalize()(times))
@@ -267,7 +268,7 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, ref_time):
             dirs[..., 0].flatten(),
             dirs[..., 1].flatten(),
             dirs[..., 2].flatten(), color=cs, length=50, normalize=False, pivot='middle',
-            linewidth=2, arrow_length_ratio=0.1)
+            linewidth=2, arrow_length_ratio=0.1, alpha=0.8)
 
         # plot current viewpoint
         _ = ax.quiver(
@@ -294,7 +295,7 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, ref_time):
         ax.set_axis_off()
         ax.set_title('Time: %s' % unnormalize_datetime(times[i], seconds_per_dt, ref_time).isoformat(' '))
 
-        wandb.log({'Overview': fig})
+        wandb.log({f'Overview.{ds_key}': fig})
         plt.close(fig)
 
 

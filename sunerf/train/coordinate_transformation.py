@@ -54,7 +54,6 @@ def pose_spherical(theta, phi, radius, shift=None):
     return c2w
 
 
-def spherical_to_cartesian(r, lat, lon):
-    return np.array([r * np.cos(lat) * np.cos(lon),
-                     r * np.cos(lat) * np.sin(lon),
-                     r * np.sin(lat)])
+def spherical_to_cartesian(coords, f=np):
+    r, lat, lon = coords[..., 0], coords[..., 1], coords[..., 2]
+    return f.stack([r * f.cos(lat) * f.cos(lon), r * f.cos(lat) * f.sin(lon), r * f.sin(lat)], -1)

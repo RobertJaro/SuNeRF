@@ -2,6 +2,7 @@ import glob
 import multiprocessing
 import os
 import uuid
+import warnings
 from itertools import repeat
 
 import numpy as np
@@ -137,7 +138,6 @@ class TensorsDataset(BatchesDataset):
         if nan_mask.sum() > 0 and filter_nans:
             print(f'Filtering {nan_mask.sum()} nan entries')
             tensors = {k: v[~nan_mask] for k, v in tensors.items()}
-        print('Dataset size:', [v.shape[0] for v in tensors.values()])
 
         # shuffle data
         if shuffle:
@@ -150,5 +150,4 @@ class TensorsDataset(BatchesDataset):
             coords_npy_path = os.path.join(work_directory, f'{ds_name}_{k}.npy')
             np.save(coords_npy_path, v.astype(np.float32))
             batches_paths[k] = coords_npy_path
-
         super().__init__(batches_paths, **kwargs)

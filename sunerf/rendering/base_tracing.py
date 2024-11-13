@@ -81,11 +81,6 @@ class SuNeRFRendering(nn.Module):
                 'height_map': height_map,
                 'coarse_image': coarse_out['image'], 'fine_image': fine_out['image']}
 
-    def forward_points(self, query_points):
-        flat_points = query_points.view(-1, 4)
-        raw_out = self.fine_model(flat_points)
-        return raw_out
-
     def _render(self, model, query_points, rays_d, rays_o, z_vals, **kwargs):
         raw = model(query_points)
         # Perform differentiable volume rendering to re-synthesize the filtergrams.

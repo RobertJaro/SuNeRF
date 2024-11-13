@@ -56,9 +56,9 @@ if __name__ == '__main__':
     save_path = os.path.join(path_to_save, 'save_state.snf')
     save_callback = LambdaCallback(on_validation_end=lambda *args: save_state(sunerf, data_module, save_path))
 
-    test_image_callback = TestImageCallback(data_module.validation_dataset_mapping[0],
-                                            data_module.config['resolution'],
-                                            cmap=data_module.config['cmap'])
+    for k, v in data_module.validation_dataset_mapping.items():
+        test_image_callback = TestImageCallback(v, data_module.config[k]['resolution'],
+                                                cmap=data_module.config[k]['cmap'])
     callbacks = [checkpoint_callback, save_callback, test_image_callback]
 
     N_GPUS = torch.cuda.device_count()

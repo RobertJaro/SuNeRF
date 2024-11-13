@@ -1,0 +1,40 @@
+base_path: "/glade/work/rjarolim/sunerf/2023_03_calibration_v01"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/2023_03_calibration_v01"
+
+data:
+  data_config:
+    - type: 'AIA'
+      key: 'AIA_FD'
+      data_path: '/glade/work/rjarolim/data/sunerf/2023_03/prep/aia_fd/*.fits'
+      batch_size: 256
+    - type: 'EUI'
+      key: 'EUI_FD'
+      data_path: '/glade/work/rjarolim/data/sunerf/2023_03/prep/eui_fd/*.fits'
+      batch_size: 256
+  debug: False
+  batch_size: 512
+  validation_batch_size: 1024
+  num_workers: 16
+
+logging:
+  project: "sunerf"
+  name: "2023-03 calibration"
+
+training:
+  log_every_n_steps: 10000
+
+model:
+  model_config:
+    dim: 256
+  image_scaling_config:
+    AIA_FD: { vmax: 1.0 }
+    EUI_FD: { vmax: 1.0 }
+  temperature_response_config:
+    AIA_FD: { file: '/glade/work/rjarolim/sunerf/response/aia_interpolated.npz', scaling: 0.0, learnable: False }
+    EUI_FD: { file: '/glade/work/rjarolim/sunerf/response/eui_interpolated.npz', scaling: 0.0, learnable: True }
+  shuffle_config:
+    type: 'time'
+    probability: 0.0
+    instruments: ['AIA_FD', 'EUI_FD']
+  sampling_config: {type: 'spherical', distance: 2.5}
+

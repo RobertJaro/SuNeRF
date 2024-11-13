@@ -18,15 +18,12 @@ class SphericalSampler(torch.nn.Module):
         Sample from near to solar surface. If no points are on the solar surface this
         """
 
-        # convert near and far from center to actual distance
-        distance = rays_o.pow(2).sum(-1).pow(0.5)
-
         # solve quadratic equation --> find points at distance
         a = rays_d.pow(2).sum(-1)
         b = (2 * rays_o * rays_d).sum(-1)
         c = rays_o.pow(2).sum(-1) - self.distance ** 2
-        dist_near = (-b - torch.sqrt(b.pow(2) - 4 * a * c)) / (2 * a)
-        dist_far = (-b + torch.sqrt(b.pow(2) - 4 * a * c)) / (2 * a)
+        dist_near = (-b - torch.sqrt(b.pow(2) - 4 * a * c)) / (2 * a + 1e-8)
+        dist_far = (-b + torch.sqrt(b.pow(2) - 4 * a * c)) / (2 * a + 1e-8)
 
         # solve quadratic equation --> find points at 1 solar radii
         # stop sampling at solar surface

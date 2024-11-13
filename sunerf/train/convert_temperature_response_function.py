@@ -24,7 +24,7 @@ if __name__ == '__main__':
     response = np.stack([temperature_response_function[c] for c in channels], 0)
 
     # normalize data
-    normalization = 1e-24 #np.max(response)
+    normalization = 1e-21 #np.max(response)
     print(f'Normalization: {normalization:.2e}')
     response = response / normalization
 

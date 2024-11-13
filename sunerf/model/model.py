@@ -1,4 +1,5 @@
 import torch
+from numpy import dtype
 from torch import nn
 
 
@@ -49,9 +50,10 @@ class EmissionModel(GenericModel):
 
 class PlasmaModel(GenericModel):
 
-    def __init__(self, log_T, encoding='positional', **kwargs):
+    def __init__(self, log_T, decay_distance=2.0, encoding='positional', **kwargs):
         super().__init__(in_dim=4, out_dim=3, encoding=encoding, **kwargs)
         self.log_T = nn.Parameter(log_T, requires_grad=False)
+        # self.decay_distance = nn.Parameter(torch.tensor(decay_distance, dtype=torch.float32), requires_grad=False)
 
         self.T_range = nn.Parameter(torch.tensor([3.8, 8.0], dtype=torch.float32), requires_grad=False)
 
@@ -59,6 +61,7 @@ class PlasmaModel(GenericModel):
         raw = super().forward(x)
 
         mean_log_T, scaling, sigma = raw[..., 0:1], raw[..., 1:2], raw[..., 2:3]
+        # velocity = raw[..., 3:]
 
         # assure that mean_log_T is in the range of the temperature bins
         # TODO: should we use fixed temperature range? filaments can be very cold 5e3 - 10e3 K?
@@ -69,6 +72,10 @@ class PlasmaModel(GenericModel):
         log_T_range = self.log_T.reshape([1] * (len(mean_log_T.shape) - 1) + [-1])
         log_ne = scaling - 0.5 * ((log_T_range - mean_log_T) ** 2 / (sigma ** 2)) / 2.302585092994046  # log(10)
 
+        # TODO try this (with spherical sampling?)
+        distance = torch.norm(x[..., :3], dim=-1)
+        distance_threshold = torch.clip(distance - 2.0, min=0, max=1) * 5
+        log_ne = log_ne - distance_threshold[..., None]
         # ne = 10 ** log_ne
         # dem = ne ** 2
         # emission_measure = dem#torch.einsum('...i,i->...i', dem, self.dT)
@@ -84,13 +91,17 @@ class PlasmaModel(GenericModel):
         #         'T': mean_T[..., None],
         #         'log_ne': total_log_ne[..., None],
         #         'log_T': mean_log_T[..., None]}
-        total_ne = (10 ** log_ne).sum(-1)[..., None]
+        ne = 10 ** log_ne
+        total_ne = ne.sum(-1)[..., None]
         total_log_ne = torch.log10(total_ne)
 
         return {'log_ne': log_ne, 'log_T': self.log_T,
                 'mean_log_T': mean_log_T,
                 'total_ne': total_ne,
-                'total_log_ne': total_log_ne}
+                'total_log_ne': total_log_ne,
+                'ne': ne
+                # 'velocity': velocity
+                }
 
 
 class AbsorptionModel(GenericModel):
@@ -166,7 +177,7 @@ class GaussianPositionalEncoding(nn.Module):
         self.d_output = d_input * (1 + num_freqs * 2)
 
     def forward(self, x):
-        encoded = x[..., None, :] * self.frequencies.reshape([1] * (len(x.shape) - 1) + [*self.frequencies.shape])
+        encoded = torch.einsum('...i,j->...ij', x, self.frequencies)
         encoded = encoded.reshape(*x.shape[:-1], -1)
         encoded = torch.cat([torch.sin(encoded), torch.cos(encoded), x], -1)
         return encoded
