@@ -1,4 +1,5 @@
 import torch
+from numpy import dtype
 from torch import nn
 
 
@@ -46,18 +47,61 @@ class EmissionModel(GenericModel):
         alpha = nn.functional.relu(out[..., self.n_channels:])
         return {'emission': emission, 'alpha': alpha}
 
+
 class PlasmaModel(GenericModel):
 
-    def __init__(self, encoding='positional', **kwargs):
-        super().__init__(in_dim=4, out_dim=2, encoding=encoding, **kwargs)
+    def __init__(self, log_T, decay_distance=2.0, encoding='positional', **kwargs):
+        super().__init__(in_dim=4, out_dim=3, encoding=encoding, **kwargs)
+        self.log_T = nn.Parameter(log_T, requires_grad=False)
+        # self.decay_distance = nn.Parameter(torch.tensor(decay_distance, dtype=torch.float32), requires_grad=False)
 
-        self.T_range = nn.Parameter(torch.tensor([5.0, 8.0], dtype=torch.float32), requires_grad=False)
+        self.T_range = nn.Parameter(torch.tensor([3.8, 8.0], dtype=torch.float32), requires_grad=False)
 
     def forward(self, x):
-        out = super().forward(x)
-        log_T = out[..., 0:1] * (self.T_range[1] - self.T_range[0]) + self.T_range[0]
-        log_ne = out[..., 1:2]
-        return {'log_T': log_T, 'log_ne': log_ne, 'T': 10 ** log_T, 'ne': 10 ** log_ne}
+        raw = super().forward(x)
+
+        mean_log_T, scaling, sigma = raw[..., 0:1], raw[..., 1:2], raw[..., 2:3]
+        # velocity = raw[..., 3:]
+
+        # assure that mean_log_T is in the range of the temperature bins
+        # TODO: should we use fixed temperature range? filaments can be very cold 5e3 - 10e3 K?
+        # maybe allow for very dense plasma in the cold temperature regime?
+        mean_log_T = torch.sigmoid(mean_log_T) * (self.T_range[1] - self.T_range[0]) + self.T_range[0]
+        sigma = torch.sigmoid(sigma) + 0.01
+
+        log_T_range = self.log_T.reshape([1] * (len(mean_log_T.shape) - 1) + [-1])
+        log_ne = scaling - 0.5 * ((log_T_range - mean_log_T) ** 2 / (sigma ** 2)) / 2.302585092994046  # log(10)
+
+        # TODO try this (with spherical sampling?)
+        distance = torch.norm(x[..., :3], dim=-1)
+        distance_threshold = torch.clip(distance - 2.0, min=0, max=1) * 5
+        log_ne = log_ne - distance_threshold[..., None]
+        # ne = 10 ** log_ne
+        # dem = ne ** 2
+        # emission_measure = dem#torch.einsum('...i,i->...i', dem, self.dT)
+        #
+        # total_ne = ne.sum(-1)
+        # total_log_ne = torch.log10(total_ne)
+        #
+        # mean_T = torch.einsum('i,...i->...', self.temperature, ne) / total_ne
+        # mean_log_T = torch.log10(mean_T)
+
+        # return {'emission_measure': emission_measure,
+        #         'ne': total_ne[..., None],
+        #         'T': mean_T[..., None],
+        #         'log_ne': total_log_ne[..., None],
+        #         'log_T': mean_log_T[..., None]}
+        ne = 10 ** log_ne
+        total_ne = ne.sum(-1)[..., None]
+        total_log_ne = torch.log10(total_ne)
+
+        return {'log_ne': log_ne, 'log_T': self.log_T,
+                'mean_log_T': mean_log_T,
+                'total_ne': total_ne,
+                'total_log_ne': total_log_ne,
+                'ne': ne
+                # 'velocity': velocity
+                }
 
 
 class AbsorptionModel(GenericModel):
@@ -66,8 +110,8 @@ class AbsorptionModel(GenericModel):
         super().__init__(in_dim=2, out_dim=1, **kwargs)
 
     def forward(self, x):
-        out = super().forward(x)
-        return {'log_nu': out, 'nu': 10 ** out}
+        log_kappa = super().forward(x) - 2
+        return {'log_kappa': log_kappa, 'kappa': 10 ** log_kappa}
 
 
 class Sine(nn.Module):
@@ -115,7 +159,7 @@ class PositionalEncoding(nn.Module):
         self.d_output = in_features * (1 + num_freqs * 2)
 
     def forward(self, x):
-        encoded = x[..., None] * self.frequencies.reshape([1] * len(x.shape) + [-1])
+        encoded = torch.einsum('...i,j->...ij', x, self.frequencies)
         encoded = encoded.reshape(*x.shape[:-1], -1)
         encoded = torch.cat([torch.sin(encoded), torch.cos(encoded), x], -1)
         return encoded
@@ -133,7 +177,7 @@ class GaussianPositionalEncoding(nn.Module):
         self.d_output = d_input * (1 + num_freqs * 2)
 
     def forward(self, x):
-        encoded = x[..., None, :] * self.frequencies.reshape([1] * (len(x.shape) - 1) + [*self.frequencies.shape])
+        encoded = torch.einsum('...i,j->...ij', x, self.frequencies)
         encoded = encoded.reshape(*x.shape[:-1], -1)
         encoded = torch.cat([torch.sin(encoded), torch.cos(encoded), x], -1)
         return encoded

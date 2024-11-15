@@ -1,5 +1,6 @@
 import argparse
 import os
+import warnings
 
 import torch
 import yaml
@@ -10,14 +11,15 @@ from pytorch_lightning.loggers import WandbLogger
 from sunerf.data.loader.multi_instrument import MultiInstrumentDataModule
 from sunerf.model.sunerf import save_state, PlasmaSuNeRFModule
 from sunerf.train.callback import PlasmaImageCallback, AbsorptionCallback
+from sunerf.train.util import load_yaml_config
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str)
-    args = parser.parse_args()
+    args, overwrite_args = parser.parse_known_args()
 
-    with open(args.config, 'r') as stream:
-        config = yaml.load(stream, Loader=yaml.SafeLoader)
+    yaml_config_file = args.config
+    config = load_yaml_config(yaml_config_file, overwrite_args)
 
     # setup paths
     base_path = config['base_path']
@@ -32,7 +34,7 @@ if __name__ == '__main__':
     logging_config = config['logging'] if 'logging' in config else {'project': 'sunerf'}
 
     # setup training config
-    epochs = training_config['epochs'] if 'epochs' in training_config else 100
+    epochs = training_config['epochs'] if 'epochs' in training_config else 1000
     log_every_n_steps = training_config['log_every_n_steps'] if 'log_every_n_steps' in training_config else None
     ckpt_path = training_config['meta_path'] if 'meta_path' in training_config else 'last'
 
@@ -41,6 +43,7 @@ if __name__ == '__main__':
     logger.experiment.config.update(config, allow_val_change=True)
 
     # initialize data module and model
+    warnings.filterwarnings("ignore")  # ignore warnings from sunpy
     data_module = MultiInstrumentDataModule(**data_config, working_dir=work_directory)
 
     # initialize SuNeRF model
@@ -55,12 +58,15 @@ if __name__ == '__main__':
     save_path = os.path.join(base_path, 'save_state.snf')
     save_callback = LambdaCallback(on_validation_end=lambda *args: save_state(sunerf, data_module, save_path))
 
-    test_image_callback = PlasmaImageCallback(data_module.validation_dataset_mapping[0],
-                                              data_module.config['image_shape'],
-                                              cmaps=data_module.config['cmaps'])
-
     absorption_callback = AbsorptionCallback('absorption', data_module.validation_datasets['absorption'].image_shape)
-    callbacks = [checkpoint_callback, save_callback, test_image_callback, absorption_callback]
+    callbacks = [checkpoint_callback, save_callback, absorption_callback]
+
+    for k in data_module.validation_dataset_mapping.values():
+        if k == 'absorption':
+            continue
+        test_image_callback = PlasmaImageCallback(k, data_module.config[k]['image_shape'],
+                                                  cmaps=data_module.config[k]['cmaps'])
+        callbacks.append(test_image_callback)
 
     N_GPUS = torch.cuda.device_count()
     trainer = Trainer(max_epochs=epochs,

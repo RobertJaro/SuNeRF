@@ -22,15 +22,15 @@ def _rename_euvi(f, t):
     # print(f, 'to', new_filename)
 
 
-def _download_euvi(time_range, channels, cadence, source):
-    target_wl = Fido.search(time_range, a.Instrument.secchi, a.Detector.euvi,
-                            a.Source(source), a.Wavelength(284 * u.AA), a.Sample(cadence * u.h))
+def _download_suvi(time_range, channels):
+    target_wl = Fido.search(time_range, a.Instrument('suvi'),a.Level.two, a.goes.SatelliteNumber(16),
+                            a.Wavelength(304 * u.AA))
+    target_wl = target_wl[:, ::15]
     target_times = target_wl['vso']['Start Time']
 
     fetch_list = []
     for wl in channels:
-        result = Fido.search(time_range, a.Instrument.secchi, a.Detector.euvi,
-                             a.Source(source), a.Wavelength(wl * u.AA))
+        result = Fido.search(time_range, a.Instrument('suvi'),a.Level.two, a.goes.SatelliteNumber(16), a.Wavelength(wl * u.AA))
         start_times = np.array(result['vso']['Start Time'])
         indices = [np.argmin(np.abs(t - start_times)) for t in target_times]
         fetch_list.append(result['vso'][indices])
@@ -43,9 +43,7 @@ if __name__ == '__main__':
     parser.add_argument('--download_dir', type=str, required=True)
     parser.add_argument('--t_start', type=str, required=True)
     parser.add_argument('--t_end', type=str, required=False, default=None)
-    parser.add_argument('--cadence', type=float, required=False, default=1, help='Cadence in hours')
-    parser.add_argument('--channels', type=int, nargs='+', required=False, default=[171, 195, 284, 304])
-    parser.add_argument('--sources', type=str, nargs='+', required=False, default=['STEREO_A', 'STEREO_B'])
+    parser.add_argument('--channels', type=int, nargs='+', required=False, default=[94, 131, 171, 195, 284, 304])
     args = parser.parse_args()
 
     os.makedirs(args.download_dir, exist_ok=True)
@@ -56,5 +54,4 @@ if __name__ == '__main__':
 
     time_range = a.Time(start_time, end_time)
 
-    for source in args.sources:
-        _download_euvi(time_range, args.channels, cadence, source)
+    _download_suvi(time_range, args.channels)

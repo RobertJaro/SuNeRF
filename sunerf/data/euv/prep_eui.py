@@ -4,10 +4,7 @@ import multiprocessing
 import os
 from itertools import repeat
 
-import aiapy.calibrate
-import matplotlib.pyplot as plt
 import numpy as np
-from aiapy.calibrate import register
 from aiapy.calibrate.util import get_correction_table
 from astropy import units as u
 from astropy.coordinates import SkyCoord
@@ -51,14 +48,6 @@ if __name__ == '__main__':
             if s_map_date < date_range[0] or s_map_date > date_range[1]:
                 return
 
-        exposure_time = s_map.meta['EXPTIME']
-        if s_map.meta['QUALITY'] != 0 or exposure_time <= 0:
-            print(f'invalid image: {map_path}; quality={s_map.meta["QUALITY"]}, exposure_time={exposure_time}')
-            return
-
-        s_map = register(s_map)
-        # s_map = deconvolve(s_map)
-
         # extract subframe
         if subframe_config is not None:
             coord = SkyCoord(lon=subframe_config['lon'], lat=subframe_config['lat'],
@@ -78,8 +67,6 @@ if __name__ == '__main__':
         if resolution is not None:
             s_map = s_map.resample((resolution, resolution) * u.pixel)
 
-        s_map = aiapy.calibrate.correct_degradation(s_map, correction_table=correction_table)
-        s_map.data[:] /= exposure_time
         s_map.data[s_map.data <= 0] = 0
 
         if max_radius is not None:

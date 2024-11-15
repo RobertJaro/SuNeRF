@@ -4,6 +4,7 @@ from datetime import datetime
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
+from sunerf.rhoT_stash.volume_render import cumprod_exclusive
 from sunerf.train.model import PositionalEncoder
 from sunerf.utilities.data_loader import normalize_datetime
 from sunpy.map import Map
@@ -12,7 +13,6 @@ from tqdm import tqdm
 
 from sunerf.baseline.reprojection import create_heliographic_map
 from sunerf.data.utils import sdo_cmaps
-from sunerf.rhoT_stash.volume_render import cumprod_exclusive
 
 chk_path = '/mnt/nerf-data/sunerf_ensemble/ensemble_4/save_state.snf'
 result_path = '/mnt/results/topo_map'

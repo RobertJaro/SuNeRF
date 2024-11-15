@@ -1,0 +1,27 @@
+base_path: "/glade/work/rjarolim/sunerf/aia_v05"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/aia_v05"
+
+data:
+  data_config:
+    - type: 'AIA'
+      data_path: '/glade/work/rjarolim/data/sunerf/2012_08_prep/aia/*.fits'
+#      wavelengths: [94, 131, 171, 193, 211, 335]
+  debug: False
+  batch_size: 2048
+  num_workers: 16
+
+logging:
+  project: "sunerf"
+  name: "AIA absorption"
+
+training:
+  log_every_n_steps: null
+
+model:
+  model_config:
+    dim: 128
+  image_scaling_config:
+    AIA: { vmax: 1.0 }
+  temperature_response_config:
+    AIA: { file: '/glade/work/rjarolim/sunerf/response/aia_interpolated.npz', scaling: 0.0, n_channels: 7, learnable: False }
+  opacity_config: True

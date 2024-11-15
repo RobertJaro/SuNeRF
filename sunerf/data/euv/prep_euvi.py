@@ -4,7 +4,6 @@ import multiprocessing
 import os
 from itertools import repeat
 
-import aiapy.calibrate
 import numpy as np
 from astropy import units as u
 from sunpy.map import Map

@@ -5,6 +5,7 @@ import numpy as np
 from astropy import units as u
 from astropy.visualization import ImageNormalize, AsinhStretch
 from matplotlib import pyplot as plt
+from matplotlib.colors import LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from sunpy.visualization.colormaps import cm
 from tqdm import tqdm
@@ -28,7 +29,6 @@ os.makedirs(video_path, exist_ok=True)
 
 # init loader
 loader = SuNeRFLoader(chk_path)
-cmap = cm.sdoaia193  # sdo_cmaps[loader.wavelength.to_value(u.angstrom)]
 avg_time = loader.start_time + (loader.end_time - loader.start_time) / 2
 
 n_points = 20
@@ -43,62 +43,60 @@ points_2 = zip(np.linspace(0, 360, n_points),
                [avg_time] * n_points,
                np.ones(n_points))
 
-points_3 = zip(np.linspace(0, 180, n_points),
-               np.linspace(0, 360, n_points),
-               [avg_time] * n_points,
-               np.linspace(1, 1.5, n_points), )
-
-points_4 = zip(np.linspace(180, 270, n_points),
+points_3 = zip(np.linspace(0, 45, n_points),
                np.linspace(0, 90, n_points),
                [avg_time] * n_points,
-               np.linspace(1.5, 0.7, n_points), )
+               np.linspace(1, 0.7, n_points), )
+
+points_4 = zip(np.linspace(45, 45, n_points),
+               np.linspace(90, 360, n_points),
+               [avg_time] * n_points,
+               np.linspace(0.7, 1.0, n_points), )
 
 # combine coordinates
 points = list(points_1) + list(points_2) + list(points_3) + list(points_4)
 
+ne_norm = LogNorm(vmin=1)
+absorption_norm = LogNorm(vmin=1, vmax=100)
 img_norm = ImageNormalize(vmin=0, vmax=0.7, stretch=AsinhStretch(0.005))
 
+# cmaps = [cm.sdoaia171, cm.sdoaia193, cm.sdoaia211]
+cmaps = [cm.sdoaia94, cm.sdoaia131, cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia304, cm.sdoaia335]
+
 for i, (lat, lon, time, d) in tqdm(list(enumerate(points)), total=len(points)):
-    outputs = loader.load_observer_image(lat * u.deg, lon * u.deg, time, distance=d * u.AU, batch_size=batch_size,
-                                         resolution=resolution)
-    fig, axs = plt.subplots(2, 3, figsize=(10, 5))
+    outputs = loader.load_image(lat * u.deg, lon * u.deg, time, distance=d * u.AU, batch_size=batch_size,
+                                resolution=resolution)
+    fig, axs = plt.subplots(2, len(cmaps), figsize=(len(cmaps) * 3, 5))
 
-    im = axs[0, 0].imshow(outputs['image'][..., 0], cmap=cm.sdoaia171, norm=img_norm, origin='lower')
-    divider = make_axes_locatable(axs[0, 0])
-    cax = divider.append_axes("right", size="5%", pad=0.05)
-    fig.colorbar(im, cax=cax)
-
-    im = axs[0, 1].imshow(outputs['image'][..., 1], cmap=cm.sdoaia193, norm=img_norm, origin='lower')
-    divider = make_axes_locatable(axs[0, 1])
-    cax = divider.append_axes("right", size="5%", pad=0.05)
-    fig.colorbar(im, cax=cax)
-
-    im = axs[0, 2].imshow(outputs['image'][..., 2], cmap=cm.sdoaia211, norm=img_norm, origin='lower')
-    divider = make_axes_locatable(axs[0, 2])
-    cax = divider.append_axes("right", size="5%", pad=0.05)
-    fig.colorbar(im, cax=cax)
+    for j, cmap in enumerate(cmaps):
+        im = axs[0, j].imshow(outputs['image'][..., j], cmap=cmap, norm=img_norm, origin='lower')
+        divider = make_axes_locatable(axs[0, j])
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        fig.colorbar(im, cax=cax)
 
     im = axs[1, 0].imshow(outputs['mean_T'], cmap='plasma', origin='lower', vmin=5, vmax=7)
     divider = make_axes_locatable(axs[1, 0])
     cax = divider.append_axes("right", size="5%", pad=0.05)
     fig.colorbar(im, cax=cax)
 
-    im = axs[1, 1].imshow(outputs['total_ne'], cmap='viridis', origin='lower', norm='log', vmin=1, vmax=800)
+    im = axs[1, 1].imshow(outputs['total_ne'], cmap='viridis', origin='lower', norm=ne_norm)
     divider = make_axes_locatable(axs[1, 1])
     cax = divider.append_axes("right", size="5%", pad=0.05)
     fig.colorbar(im, cax=cax)
 
-    im = axs[1, 2].imshow(outputs['mean_absorption'], cmap='cool', origin='lower')
+    im = axs[1, 2].imshow(outputs['mean_absorption'], cmap='cool', origin='lower', norm=absorption_norm)
     divider = make_axes_locatable(axs[1, 2])
     cax = divider.append_axes("right", size="5%", pad=0.05)
     fig.colorbar(im, cax=cax)
+
+    [ax.axis('off') for ax in axs[1, 2:]]
 
     # axs[1].imshow(outputs['height_map'], cmap='plasma', vmin=1, vmax=1.2, origin='lower')
     # axs[2].imshow(outputs['absorption_map'], cmap='viridis', origin='lower')
 
     axs[1, 0].set_title('Mean T [log K]')
     axs[1, 1].set_title('Total N$_e$ [cm$^{-2}$]')
-    axs[1, 2].set_title('Mean Absorption')
+    axs[1, 2].set_title('Integrated Absorption')
 
     [ax.axis('off') for ax in axs.ravel()]
     plt.tight_layout()

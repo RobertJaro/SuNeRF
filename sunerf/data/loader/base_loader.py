@@ -2,6 +2,7 @@ import glob
 import multiprocessing
 import os
 import uuid
+import warnings
 from itertools import repeat
 
 import numpy as np
@@ -103,6 +104,7 @@ def _load_map_data(data):
 
     return {'image': image, 'pose': pose, 'rays': all_rays, 'time': time}
 
+
 class BatchesDataset(Dataset):
 
     def __init__(self, batches_file_paths, batch_size=2 ** 13, **kwargs):
@@ -127,6 +129,7 @@ class BatchesDataset(Dataset):
     def clear(self):
         [os.remove(f) for f in self.batches_file_paths.values()]
 
+
 class TensorsDataset(BatchesDataset):
 
     def __init__(self, tensors, work_directory, filter_nans=True, shuffle=True, ds_name=None, **kwargs):
@@ -135,7 +138,6 @@ class TensorsDataset(BatchesDataset):
         if nan_mask.sum() > 0 and filter_nans:
             print(f'Filtering {nan_mask.sum()} nan entries')
             tensors = {k: v[~nan_mask] for k, v in tensors.items()}
-        print('Dataset size:', [v.shape[0] for v in tensors.values()])
 
         # shuffle data
         if shuffle:
@@ -148,5 +150,4 @@ class TensorsDataset(BatchesDataset):
             coords_npy_path = os.path.join(work_directory, f'{ds_name}_{k}.npy')
             np.save(coords_npy_path, v.astype(np.float32))
             batches_paths[k] = coords_npy_path
-
         super().__init__(batches_paths, **kwargs)
