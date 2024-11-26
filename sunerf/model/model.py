@@ -51,6 +51,14 @@ class EmissionModel(GenericModel):
 class PlasmaModel(GenericModel):
 
     def __init__(self, log_T, decay_distance=2.0, encoding='positional', **kwargs):
+        """_summary_
+
+        Args:
+            log_T (_type_): Temperature bins of the temperature response function
+            decay_distance (float, optional): _description_. Defaults to 2.0.
+            encoding (str, optional): Positional econding for the NerF. Defaults to 'positional'.
+        """
+
         super().__init__(in_dim=4, out_dim=3, encoding=encoding, **kwargs)
         self.log_T = nn.Parameter(log_T, requires_grad=False)
         # self.decay_distance = nn.Parameter(torch.tensor(decay_distance, dtype=torch.float32), requires_grad=False)
