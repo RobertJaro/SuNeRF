@@ -13,16 +13,18 @@ import gc
 class MHDModel(nn.Module):
     r""" Interpolation of MHD model such that it behaves like a trained NeRF
     """
-    def __init__(self, log_T, data_path, device=None):
+    def __init__(self, log_T, data_path, log_T_sigma=1, device=None):
         """_summary_
 
         Parameters
         ----------
+        log_T (_type_): Temperature bins of the temperature response function
         data_path : str
         """            
         super().__init__()
 
         self.log_T = log_T
+        self.log_T_sigma = log_T_sigma
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if device is None else device
         self.device = device
 
@@ -141,13 +143,15 @@ class MHDModel(nn.Module):
         phi[phi < 0] += 2*np.pi
 
         # Initialize output tensors filled with zeros with shape x
+        # TODO create arrays with the right shapes (temperature bins)
+        ne = torch.zeros_like(x)
         log_ne = torch.zeros_like(x)
         mean_log_T = torch.zeros_like(x)
         # fill_value_density = 1.e-5
         # fill_value_temperature = 1.e-3
         interp_type = 'linear'
 
-        # loop over only unique times
+        # loop over only unique times, need load files only once
         for time in torch.unique(t):
 
             # Define logical mask to make interpolation
@@ -173,11 +177,25 @@ class MHDModel(nn.Module):
                                 method=interp_type, fill_value=None)).to(t.device)
 
             # Linear time interpolation of density and temperature
-            ne = 1e8*((1-frame_fraction)*f1_rho + frame_fraction*f2_rho) # cm^3
-            log_ne[mask] = torch.log10(ne)  
-            total_ne = ne.sum(-1)[..., None]
-            total_log_ne = torch.log10(total_ne)
-            mean_log_T[mask] = torch.log10(2.807066716734894e7*((1-frame_fraction)*f1_t + frame_fraction*f2_t))
+
+            # TODO do proper broadcasting
+            # TODO talk with Robert about distribution choices.
+            # TODO check that the log normal in natural units integrates to 1
+            log_T_range = self.log_T.reshape([1] * (len(mean_log_T.shape) - 1) + [-1])
+            mean_log_T_timestamp =  torch.log10(2.807066716734894e7*((1-frame_fraction)*f1_t + frame_fraction*f2_t))
+            log_ne_timestamp = - 0.5 * ((log_T_range - mean_log_T) ** 2 / (self.log_T_sigma ** 2)) / 2.302585092994046 - mean_log_T - self.log_T_sigma - torch.log10(torch.sqrt(2*torch.pi)) # Normalized gaussian in log(10)
+            
+            # TODO check that total ne matches the value provided by PSI with debugger
+            # TODO implement proper normalization using the temperature bins
+            # log_ne_timestamp = torch.log10(10 ** log_ne_timestamp/(10 ** log_ne_timestamp).sum())
+            # log_ne_timestamp = log_ne_timestamp - torch.log((10 ** log_ne_timestamp).sum())
+            log_ne_timestamp = log_ne_timestamp + torch.log10(1e8*((1-frame_fraction)*f1_rho + frame_fraction*f2_rho)) # log10(cm^3)
+
+
+            mean_log_T[mask] = mean_log_T_timestamp
+            log_ne[mask,:] = log_ne_timestamp
+            ne[mask,:] = 10 ** log_ne_timestamp
+ 
             f1_t = None
             f2_t = None
             f1_rho = None
@@ -186,6 +204,13 @@ class MHDModel(nn.Module):
             r_mask = None
             th_mask = None
             phi_mask = None
+
+
+        #TODO turn this into a proper integral and check that it matches the PSI value
+        # total_ne = ne.sum(-1)[..., None]
+        T = 10 ** self.log_T
+        total_ne = ((T[1:]-T[0:-1])*(ne[:,:,1:]+ne[:,:,0:-1])/2).sum(-1)
+        total_log_ne = torch.log10(total_ne)
 
         # Output density, temperature, absorption and volumetric constant
         return {'log_ne': log_ne, 'log_T': self.log_T,
