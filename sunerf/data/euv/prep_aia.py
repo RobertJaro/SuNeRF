@@ -27,6 +27,7 @@ if __name__ == '__main__':
     parser.add_argument('--hpc_height', type=float, default=None)
     parser.add_argument('--date_range', type=str, nargs=2, default=None)
     parser.add_argument('--max_radius', type=float, default=None)
+    parser.add_argument('--overwrite', action='store_true')
     args = parser.parse_args()
 
     os.makedirs(args.out_path, exist_ok=True)
@@ -43,7 +44,10 @@ if __name__ == '__main__':
 
 
     def _convert_map(d):
-        map_path, out_path, resolution, correction_table, date_range, max_radius = d
+        map_path, out_path, resolution, correction_table, date_range, max_radius, overwrite = d
+        if os.path.exists(out_path) and not overwrite:
+            print(f'{out_path} already exists. Set --overwrite to overwrite.')
+            return
 
         s_map = Map(map_path)
         if date_range is not None:
@@ -75,10 +79,15 @@ if __name__ == '__main__':
 
             s_map = s_map.submap(bottom_left=bottom_left, top_right=top_right)
 
+            if s_map.data.shape[0] != pixel_height or s_map.data.shape[1] != pixel_width:
+                print(f'invalid subframe: {map_path}; shape={s_map.data.shape}; expected=({pixel_height}, {pixel_width})')
+                return
+
         if resolution is not None:
             s_map = s_map.resample((resolution, resolution) * u.pixel)
 
         s_map = aiapy.calibrate.correct_degradation(s_map, correction_table=correction_table)
+        # normalize by exposure time
         s_map.data[:] /= exposure_time
         s_map.data[s_map.data <= 0] = 0
 
@@ -87,6 +96,7 @@ if __name__ == '__main__':
             map_radius = (coords.Tx ** 2 + coords.Ty ** 2) ** 0.5 / s_map.rsun_obs
             s_map.data[map_radius > max_radius] = np.nan
 
+        print(f'saving {out_path} with shape {s_map.data.shape}')
         s_map.save(out_path, overwrite=True)
 
 
@@ -97,5 +107,5 @@ if __name__ == '__main__':
 
     with multiprocessing.Pool(os.cpu_count()) as p:
         zip_in = zip(files, out_paths, repeat(args.resolution), repeat(correction_table), repeat(date_range),
-                     repeat(args.max_radius))
+                     repeat(args.max_radius), repeat(args.overwrite))
         [_ for _ in tqdm(p.imap_unordered(_convert_map, zip_in), total=len(files))]

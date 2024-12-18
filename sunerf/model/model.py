@@ -53,7 +53,7 @@ class PlasmaModel(GenericModel):
     def __init__(self, log_T, decay_distance=2.0, encoding='positional', **kwargs):
         super().__init__(in_dim=4, out_dim=3, encoding=encoding, **kwargs)
         self.log_T = nn.Parameter(log_T, requires_grad=False)
-        # self.decay_distance = nn.Parameter(torch.tensor(decay_distance, dtype=torch.float32), requires_grad=False)
+        self.decay_distance = decay_distance
 
         self.T_range = nn.Parameter(torch.tensor([3.8, 8.0], dtype=torch.float32), requires_grad=False)
 
@@ -72,25 +72,10 @@ class PlasmaModel(GenericModel):
         log_T_range = self.log_T.reshape([1] * (len(mean_log_T.shape) - 1) + [-1])
         log_ne = scaling - 0.5 * ((log_T_range - mean_log_T) ** 2 / (sigma ** 2)) / 2.302585092994046  # log(10)
 
-        # TODO try this (with spherical sampling?)
         distance = torch.norm(x[..., :3], dim=-1)
-        distance_threshold = torch.clip(distance - 2.0, min=0, max=1) * 5
+        distance_threshold = torch.clip(distance - self.decay_distance, min=0, max=1) * 2
         log_ne = log_ne - distance_threshold[..., None]
-        # ne = 10 ** log_ne
-        # dem = ne ** 2
-        # emission_measure = dem#torch.einsum('...i,i->...i', dem, self.dT)
-        #
-        # total_ne = ne.sum(-1)
-        # total_log_ne = torch.log10(total_ne)
-        #
-        # mean_T = torch.einsum('i,...i->...', self.temperature, ne) / total_ne
-        # mean_log_T = torch.log10(mean_T)
 
-        # return {'emission_measure': emission_measure,
-        #         'ne': total_ne[..., None],
-        #         'T': mean_T[..., None],
-        #         'log_ne': total_log_ne[..., None],
-        #         'log_T': mean_log_T[..., None]}
         ne = 10 ** log_ne
         total_ne = ne.sum(-1)[..., None]
         total_log_ne = torch.log10(total_ne)

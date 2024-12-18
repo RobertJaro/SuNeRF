@@ -47,6 +47,10 @@ class SuNeRFLoader:
         instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
         return np.max(self.config[instrument_key]['times'])
 
+    def times(self, instrument_key=None):
+        instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
+        return self.config[instrument_key]['times']
+
     def wcs(self, instrument_key=None):
         instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
         return self.config[instrument_key]['wcs']
@@ -78,7 +82,12 @@ class SuNeRFLoader:
 
         pose_out = self.load_pose(img_coords, target_pose, time, **kwargs)
         scale = [ref_map.scale[0].to_value(u.arcsec / u.pix), ref_map.scale[1].to_value(u.arcsec / u.pix)] * u.arcsec / u.pix
-        maps = self.get_maps(pose_out['image'], ref_map.reference_coordinate, scale, instrument_key)
+
+        reference_coord = ref_map.reference_coordinate
+        observer = SkyCoord(lat=lat, lon=lon, obstime=time, radius=distance, frame=frames.HeliographicCarrington, observer='earth')
+        reference_coord = SkyCoord(reference_coord.Tx, reference_coord.Ty, observer=observer,
+                                   frame=frames.Helioprojective)
+        maps = self.get_maps(pose_out['image'], reference_coord, scale, instrument_key)
         pose_out['maps'] = maps
         return pose_out
 

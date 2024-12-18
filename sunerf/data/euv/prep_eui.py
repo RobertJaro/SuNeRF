@@ -4,11 +4,13 @@ import multiprocessing
 import os
 from itertools import repeat
 
+import matplotlib.pyplot as plt
 import numpy as np
 from aiapy.calibrate.util import get_correction_table
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 from dateutil.parser import parse
+from matplotlib.colors import LogNorm
 from sunpy.coordinates import frames
 from sunpy.map import Map, all_coordinates_from_map
 from tqdm import tqdm
@@ -24,9 +26,11 @@ if __name__ == '__main__':
     parser.add_argument('--hpc_height', type=float, default=None)
     parser.add_argument('--date_range', type=str, nargs=2, default=None)
     parser.add_argument('--max_radius', type=float, default=None)
+    parser.add_argument('--overwrite', action='store_true')
     args = parser.parse_args()
 
     os.makedirs(args.out_path, exist_ok=True)
+    os.makedirs(os.path.join(args.out_path, 'img'), exist_ok=True)
 
     if args.lat is not None and args.lon is not None and args.hpc_width is not None and args.hpc_height is not None:
         subframe_config = {
@@ -40,9 +44,18 @@ if __name__ == '__main__':
 
 
     def _convert_map(d):
-        map_path, out_path, resolution, correction_table, date_range, max_radius = d
+        map_path, out_path, resolution, correction_table, date_range, max_radius, overwrite = d
+
+        if os.path.exists(out_path) and not overwrite:
+            return
 
         s_map = Map(map_path)
+
+        # skip SOOPs
+        if s_map.meta['SOOPTYPE'] != 'none':
+            print(f'Skipping SOOP: {s_map.meta["SOOPTYPE"]}')
+            return
+
         if date_range is not None:
             s_map_date = s_map.date
             if s_map_date < date_range[0] or s_map_date > date_range[1]:
@@ -75,7 +88,12 @@ if __name__ == '__main__':
             s_map.data[map_radius > max_radius] = np.nan
 
         s_map.save(out_path, overwrite=True)
-
+        # save image with north up
+        s_map = s_map.rotate()
+        fig, ax =  plt.subplots(figsize=(5, 5), dpi=100, subplot_kw={'projection': s_map})
+        s_map.plot(axes=ax, norm=LogNorm(vmin=1, vmax=1e3))
+        fig.savefig(os.path.join(os.path.dirname(out_path), 'img', os.path.basename(out_path) + '.png'))
+        plt.close(fig)
 
     files = sorted(glob.glob(args.data_path))
     out_paths = [os.path.join(args.out_path, os.path.basename(f)) for f in files]
@@ -84,5 +102,5 @@ if __name__ == '__main__':
 
     with multiprocessing.Pool(os.cpu_count()) as p:
         zip_in = zip(files, out_paths, repeat(args.resolution), repeat(correction_table), repeat(date_range),
-                     repeat(args.max_radius))
+                     repeat(args.max_radius), repeat(args.overwrite))
         [_ for _ in tqdm(p.imap_unordered(_convert_map, zip_in), total=len(files))]
