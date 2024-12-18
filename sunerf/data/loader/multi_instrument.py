@@ -25,8 +25,6 @@ class MultiInstrumentDataModule(BaseDataModule):
                  **kwargs):
         os.makedirs(working_dir, exist_ok=True)
 
-
-
         ref_time = parse(ref_time) if ref_time is not None else None  # parse ref time if specified
         base_config = {'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt, 'ref_time': ref_time,
                        'debug': debug, 'working_dir': working_dir, 'batch_size': batch_size}

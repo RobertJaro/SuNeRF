@@ -16,6 +16,10 @@ class PlasmaSuNeRFModuleMHD(PlasmaSuNeRFModule):
 
     def training_step(self, batch, batch_nb):
         query_points_time, density, temperature = batch['psi']
+        #Fold batch and grid dimensions
+        query_points_time = query_points_time.reshape((-1,4))
+        density = density.reshape(-1)
+        temperature = temperature.reshape(-1)
         query_points_time.requires_grad = True
 
         coarse_raw = self.rendering.coarse_model(query_points_time)
@@ -36,9 +40,4 @@ class PlasmaSuNeRFModuleMHD(PlasmaSuNeRFModule):
                   'coarse_temperature': coarse_loss_temperature, 'fine_temperature': fine_loss_temperature})
 
         return loss        
-    
-    def validation_step(self, batch, batch_nb, *args):
-        pass
 
-    def validation_epoch_end(self, *args, **kwargs):
-        pass

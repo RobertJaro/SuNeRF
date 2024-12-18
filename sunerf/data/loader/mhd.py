@@ -4,41 +4,50 @@ import glob
 import os
 import numpy as np
 
-from sunerf.data.loader.base_loader import BaseDataModule
+from sunerf.data.loader.multi_instrument import MultiInstrumentDataModule
 
-class PSIMHDDataModule(BaseDataModule):
+class PSIMHDDataModule(MultiInstrumentDataModule):
     def __init__(self, data_config, working_dir, Rs_per_ds=1, seconds_per_dt=86400,
-                 batch_size:int=32, debug=False,
+                 batch_size=int(2 ** 10), validation_batch_size=int(2 ** 11), debug=False,
                  **kwargs):
+        
+        # Intialize the multi-insturment data module to retain the validation part
+        super().__init__(data_config, working_dir,
+                         Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt,
+                         batch_size=batch_size, validation_batch_size=validation_batch_size,
+                         debug=True, **kwargs)
 
-        base_config = {'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt,
-                       'debug': debug, 'working_dir': working_dir, 'batch_size': batch_size,
-                       'psi_data_path': data_config['psi_data_path'],
-                       'percentage_of_points': data_config['percentage_of_points'],
-                       'r_max':data_config['r_max']}
+        
+        # Overwrite the training part for use in the direct training loop.
+        mhd_data_config = kwargs['mhd_data_config']
+        self.training_batch_size = batch_size
+
         train_dict = {}
         train_dict["psi"] = mhdDatasetFile(
-            data_config['psi_data_path'],
-            percentage_of_points = data_config['percentage_of_points'],
+            mhd_data_config['psi_data_path'],
+            percentage_of_points = mhd_data_config['percentage_of_points'],
             seconds_per_dt = seconds_per_dt,
-            r_max = data_config['r_max']
+            r_max = mhd_data_config['r_max']
         )
 
-        valid_dict = {}
-        valid_dict["psi"] = mhdDatasetFile(
-            data_config['psi_data_path'],
-            percentage_of_points = data_config['percentage_of_points'],
-            seconds_per_dt = seconds_per_dt,
-            r_max = data_config['r_max'],
-            two_files=True
-        )        
+        self.training_datasets = train_dict
+        self.datasets = {**self.training_datasets, **self.validation_datasets}
 
-        super().__init__(train_dict, valid_dict,
-                         Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt, ref_time=0,
-                         module_config=base_config, **kwargs)
+        self.config['psi_mhd'] = {'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt,
+                       'debug': debug, 'working_dir': working_dir, 'batch_size': batch_size,
+                       'psi_data_path': mhd_data_config['psi_data_path'],
+                       'percentage_of_points': mhd_data_config['percentage_of_points'],
+                       'r_max':mhd_data_config['r_max']}
 
-        def val_dataloader(self):
-            return None             
+
+        # valid_dict = {}
+        # valid_dict["psi"] = mhdDatasetFile(
+        #     data_config['psi_data_path'],
+        #     percentage_of_points = data_config['percentage_of_points'],
+        #     seconds_per_dt = seconds_per_dt,
+        #     r_max = data_config['r_max'],
+        #     two_files=True
+        # )        
 
 
 class mhdDatasetFile(Dataset):
