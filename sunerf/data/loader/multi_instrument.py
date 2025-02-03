@@ -96,6 +96,7 @@ class MultiInstrumentDataModule(BaseDataModule):
 class GenericEUVDataset(TensorsDataset):
     def __init__(self, file_dict, date_dict, working_dir, ds_key, Rs_per_ds=1, seconds_per_dt=86400, ref_time=None,
                  batch_size=int(2 ** 10), debug=False, test=False, cmaps=None, scaling=1, static=False, **kwargs):
+        self.scaling = scaling
         # choose channel with min number of dates
         min_wl = min(date_dict, key=lambda k: len(date_dict[k]))
         ref_dates = date_dict[min_wl]

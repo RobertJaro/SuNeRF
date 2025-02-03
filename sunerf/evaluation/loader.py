@@ -38,6 +38,7 @@ class SuNeRFLoader:
         self.ref_time = self.start_time()
 
         self.ref_maps = {k: Map(np.zeros(self.resolution(k)), self.wcs(k)) for k in self.instrument_keys}
+        self.ne_scaling = (1e-21 * 10000) ** 0.5  #TODO read from config
 
     def start_time(self, instrument_key=None):
         instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
@@ -174,6 +175,11 @@ class SuNeRFLoader:
 
         output = {k: torch.cat(v).reshape(*target_shape, *v[0].shape[1:]).numpy() for k, v in out_dict.items()}
         output['log_T'] = out['log_T'].detach().cpu()  # TODO move
+
+        # unnomalize rho
+        output['ne'] = output['ne'] * self.ne_scaling
+        output['total_ne'] = output['total_ne'] * self.ne_scaling
+        output['total_log_ne'] = output['total_log_ne'] + np.log10(self.ne_scaling)
 
         return output
 

@@ -92,7 +92,7 @@ def _load_map_data(data):
     s_map = Map(map_path)
     time = s_map.date.datetime
 
-    pose = pose_spherical(-s_map.carrington_longitude.to(u.rad).value,
+    pose = pose_spherical(s_map.carrington_longitude.to(u.rad).value,
                           s_map.carrington_latitude.to(u.rad).value,
                           s_map.dsun.to_value(u.solRad) / Rs_per_ds).float().numpy()
 
@@ -133,6 +133,7 @@ class BatchesDataset(Dataset):
 class TensorsDataset(BatchesDataset):
 
     def __init__(self, tensors, work_directory, filter_nans=True, shuffle=True, ds_name=None, **kwargs):
+        os.makedirs(work_directory, exist_ok=True)
         # filter nan entries
         nan_mask = np.any([np.any(np.isnan(t), axis=tuple(range(1, t.ndim))) for t in tensors.values()], axis=0)
         if nan_mask.sum() > 0 and filter_nans:

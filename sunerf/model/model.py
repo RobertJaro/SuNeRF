@@ -1,6 +1,6 @@
 import torch
-from numpy import dtype
 from torch import nn
+from torch.distributions import Normal
 
 
 class GenericModel(nn.Module):
@@ -14,7 +14,7 @@ class GenericModel(nn.Module):
             d_in = nn.Linear(posenc.d_output, dim)
             self.d_in = nn.Sequential(posenc, d_in)
         elif encoding == 'gaussian':
-            posenc = GaussianPositionalEncoding(20, in_dim)
+            posenc = GaussianPositionalEncoding(in_dim)
             d_in = nn.Linear(posenc.d_output, dim)
             self.d_in = nn.Sequential(posenc, d_in)
         else:
@@ -50,7 +50,7 @@ class EmissionModel(GenericModel):
 
 class PlasmaModel(GenericModel):
 
-    def __init__(self, log_T, decay_distance=2.0, encoding='positional', **kwargs):
+    def __init__(self, log_T, decay_distance=2.0, encoding='gaussian', **kwargs):
         super().__init__(in_dim=4, out_dim=3, encoding=encoding, **kwargs)
         self.log_T = nn.Parameter(log_T, requires_grad=False)
         self.decay_distance = decay_distance
@@ -70,7 +70,10 @@ class PlasmaModel(GenericModel):
         sigma = torch.sigmoid(sigma) + 0.01
 
         log_T_range = self.log_T.reshape([1] * (len(mean_log_T.shape) - 1) + [-1])
-        log_ne = scaling - 0.5 * ((log_T_range - mean_log_T) ** 2 / (sigma ** 2)) / 2.302585092994046  # log(10)
+        # log10 --> 10 ** (scaling) * exp(N) * (2 * pi * sigma ** 2) ** -0.5
+        log10_e = 0.4342944819032518  # log10(e)
+        log_ne = scaling - 0.5 * ((log_T_range - mean_log_T) ** 2 / (sigma ** 2)) * log10_e - torch.log10(
+            2 * torch.pi * (sigma ** 2))
 
         distance = torch.norm(x[..., :3], dim=-1)
         distance_threshold = torch.clip(distance - self.decay_distance, min=0, max=1) * 2
@@ -152,17 +155,15 @@ class PositionalEncoding(nn.Module):
 
 class GaussianPositionalEncoding(nn.Module):
 
-    def __init__(self, num_freqs, d_input, scale=1., log_scale=True):
+    def __init__(self, d_input, num_freqs=128, scale=64):
         super().__init__()
-        if log_scale:
-            frequencies = 2 ** (torch.randn(num_freqs, d_input, dtype=torch.float32) * scale) * torch.pi
-        else:
-            frequencies = torch.randn(num_freqs, d_input, dtype=torch.float32) * scale * torch.pi
-        self.frequencies = nn.Parameter(frequencies, requires_grad=False)
-        self.d_output = d_input * (1 + num_freqs * 2)
+        dist = Normal(loc=0, scale=scale)
+        frequencies = dist.sample([num_freqs, d_input])
+        self.frequencies = nn.Parameter(2 * torch.pi * frequencies, requires_grad=False)
+        self.d_output = d_input * (num_freqs * 2 + 1)
 
     def forward(self, x):
-        encoded = torch.einsum('...i,j->...ij', x, self.frequencies)
+        encoded = torch.einsum('...j,ij->...ij', x, self.frequencies)
         encoded = encoded.reshape(*x.shape[:-1], -1)
-        encoded = torch.cat([torch.sin(encoded), torch.cos(encoded), x], -1)
+        encoded = torch.cat([x, torch.sin(encoded), torch.cos(encoded)], -1)
         return encoded
