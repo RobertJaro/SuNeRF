@@ -18,6 +18,7 @@ training:
   log_every_n_steps: 10000
 
 model:
+  absorption: True
   image_scaling_config:
     AIA: { vmax: 1.0 }
   temperature_response_config:
