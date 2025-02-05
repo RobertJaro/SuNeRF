@@ -51,10 +51,18 @@ python -m sunerf.data.download.download_suvi --download_dir '/glade/work/rjaroli
 
 
 #################### 2023-04-01 ####################
+# AIA
 python -m sunerf.data.download.download_aia --download_dir '/glade/work/rjarolim/data/sunerf/2023_04/aia' --email 'robert.jarolim@uni-graz.at' --t_start '2023-04-01T00:00:00' --t_end '2023-04-05T00:00:00'
 python -m sunerf.data.download.download_aia --download_dir '/glade/work/rjarolim/data/sunerf/2023_04/aia' --email 'robert.jarolim@uni-graz.at' --t_start '2023-04-05T00:00:00' --t_end '2023-04-10T00:00:00'
 python -m sunerf.data.download.download_aia --download_dir '/glade/work/rjarolim/data/sunerf/2023_04/aia' --email 'robert.jarolim@uni-graz.at' --t_start '2023-04-10T00:00:00' --t_end '2023-04-15T00:00:00'
 python -m sunerf.data.download.download_aia --download_dir '/glade/work/rjarolim/data/sunerf/2023_04/aia' --email 'robert.jarolim@uni-graz.at' --t_start '2023-04-15T00:00:00' --t_end '2023-04-20T00:00:00'
 python -m sunerf.data.download.download_aia --download_dir '/glade/work/rjarolim/data/sunerf/2023_04/aia' --email 'robert.jarolim@uni-graz.at' --t_start '2023-04-20T00:00:00' --t_end '2023-04-25T00:00:00'
+python -m sunerf.data.download.download_aia --download_dir '/glade/work/rjarolim/data/sunerf/2023_04/aia' --email 'robert.jarolim@uni-graz.at' --t_start '2023-04-25T00:00:00' --t_end '2023-04-30T00:00:00'
+# EUI
+python -m sunerf.data.download.download_eui --download_dir '/glade/work/rjarolim/data/sunerf/2023_04/eui' --t_start '2023-04-01T00:00:00' --t_end '2023-04-05T00:00:00'
+python -m sunerf.data.download.download_eui --download_dir '/glade/work/rjarolim/data/sunerf/2023_04/eui' --t_start '2023-04-05T00:00:00' --t_end '2023-04-10T00:00:00'
+python -m sunerf.data.download.download_eui --download_dir '/glade/work/rjarolim/data/sunerf/2023_04/eui' --t_start '2023-04-10T00:00:00' --t_end '2023-04-15T00:00:00'
+python -m sunerf.data.download.download_eui --download_dir '/glade/work/rjarolim/data/sunerf/2023_04/eui' --t_start '2023-04-15T00:00:00' --t_end '2023-04-20T00:00:00'
+python -m sunerf.data.download.download_eui --download_dir '/glade/work/rjarolim/data/sunerf/2023_04/eui' --t_start '2023-04-20T00:00:00' --t_end '2023-04-25T00:00:00'
+python -m sunerf.data.download.download_eui --download_dir '/glade/work/rjarolim/data/sunerf/2023_04/eui' --t_start '2023-04-25T00:00:00' --t_end '2023-04-30T00:00:00'
 
-python -m sunerf.data.download.download_eui --download_dir '/glade/work/rjarolim/data/sunerf/2023_04/eui' --t_start '2023-04-01T00:00:00' --t_end '2023-04-02T00:00:00'

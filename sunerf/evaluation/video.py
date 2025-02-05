@@ -29,7 +29,7 @@ os.makedirs(video_path, exist_ok=True)
 
 # init loader
 loader = SuNeRFLoader(chk_path)
-avg_time = loader.start_time + (loader.end_time - loader.start_time) / 2
+avg_time = loader.start_time() + (loader.end_time() - loader.start_time()) / 2
 
 n_points = 20
 
@@ -58,7 +58,7 @@ points = list(points_1) + list(points_2) + list(points_3) + list(points_4)
 
 ne_norm = LogNorm(vmin=1)
 absorption_norm = LogNorm(vmin=1, vmax=100)
-img_norm = ImageNormalize(vmin=0, vmax=0.7, stretch=AsinhStretch(0.005))
+img_norm = 'log' #ImageNormalize(stretch=AsinhStretch(0.005))#ImageNormalize(vmin=0, vmax=0.7, stretch=AsinhStretch(0.005))
 
 # cmaps = [cm.sdoaia171, cm.sdoaia193, cm.sdoaia211]
 cmaps = [cm.sdoaia94, cm.sdoaia131, cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia304, cm.sdoaia335]
@@ -74,7 +74,7 @@ for i, (lat, lon, time, d) in tqdm(list(enumerate(points)), total=len(points)):
         cax = divider.append_axes("right", size="5%", pad=0.05)
         fig.colorbar(im, cax=cax)
 
-    im = axs[1, 0].imshow(outputs['mean_T'], cmap='plasma', origin='lower', vmin=5, vmax=7)
+    im = axs[1, 0].imshow(outputs['mean_T'], cmap='plasma', origin='lower', vmin=4, vmax=7)
     divider = make_axes_locatable(axs[1, 0])
     cax = divider.append_axes("right", size="5%", pad=0.05)
     fig.colorbar(im, cax=cax)

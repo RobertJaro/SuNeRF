@@ -1,8 +1,11 @@
 import copy
+import datetime
 import glob
 import multiprocessing
 import os
+from datetime import timedelta
 from itertools import repeat
+from time import strptime
 
 import numpy as np
 import torch
@@ -90,8 +93,33 @@ class MultiInstrumentDataModule(BaseDataModule):
 
 
 class GenericEUVDataset(TensorsDataset):
-    def __init__(self, file_dict, working_dir, ds_key, Rs_per_ds=1, seconds_per_dt=86400, ref_time=None,
+    def __init__(self, file_dict, date_dict, working_dir, ds_key, Rs_per_ds=1, seconds_per_dt=86400, ref_time=None,
                  batch_size=int(2 ** 10), debug=False, test=False, cmaps=None, scaling=1, static=False, **kwargs):
+        self.scaling = scaling
+        # choose channel with min number of dates
+        min_wl = min(date_dict, key=lambda k: len(date_dict[k]))
+        ref_dates = date_dict[min_wl]
+        # select files with min diff in dates
+        for wl, f, dates in zip(file_dict.keys(), file_dict.values(), date_dict.values()):
+            dates = np.array(dates)
+            f = np.array(f)
+            #
+            closest_dates = [np.argmin(np.abs(dates - t)) for t in ref_dates]
+            file_dict[wl] = f[closest_dates]
+            date_dict[wl] = dates[closest_dates]
+
+        min_diff_cond = np.ones_like(ref_dates, dtype=bool)
+        for wl in file_dict.keys():
+            cond = [np.abs(t1 - t2) < timedelta(minutes=2) for t1, t2 in zip(ref_dates, date_dict[wl])]
+            min_diff_cond = min_diff_cond & cond
+
+        print(f'Using {len(min_diff_cond)} out of {len(ref_dates)} observations')
+
+        # select files with min diff in dates
+        for wl in file_dict.keys():
+            file_dict[wl] = file_dict[wl][min_diff_cond]
+            date_dict[wl] = date_dict[wl][min_diff_cond]
+
         data_config = {}
         wavelengths = sorted(list(file_dict.keys()))
         # load reference info
@@ -184,15 +212,7 @@ class AIADataset(GenericEUVDataset):
             file_dict[wl].append(f)
             date_dict[wl].append(date)
 
-        # choose channel with smalest number of dates
-        min_wl = min(date_dict, key=lambda k: len(date_dict[k]))
-        ref_dates = date_dict[min_wl]
-        # select files with min diff in dates
-        for wl, f, dates in zip(file_dict.keys(), file_dict.values(), date_dict.values()):
-            dates = np.array(dates)
-            file_dict[wl] = [f[np.argmin(np.abs(dates - t), axis=0)] for t in ref_dates]
-
-        super().__init__(file_dict, cmaps=cmaps, scaling=scaling, **kwargs)
+        super().__init__(file_dict, date_dict, cmaps=cmaps, scaling=scaling, **kwargs)
 
 
 class EUIDataset(GenericEUVDataset):
@@ -201,6 +221,7 @@ class EUIDataset(GenericEUVDataset):
         wavelengths = [174, 304] if wavelengths is None else wavelengths
         cmaps_dict = {174: 'sdoaia171', 304: 'sdoaia304'}
         cmaps = [cmaps_dict[wl] for wl in wavelengths]
+        wl_mapping = {'eui-fsi174-image': 174, 'eui-fsi304-image': 304}
 
         files = sorted(glob.glob(data_path, recursive=True))
         assert len(files) > 0, f'No files found in {data_path}'
@@ -209,23 +230,16 @@ class EUIDataset(GenericEUVDataset):
         file_dict = {wl: [] for wl in wavelengths}
         date_dict = {wl: [] for wl in wavelengths}
         for f in files:
-            f_ids = os.path.basename(f).split('.')
-            wl = int(f_ids[1])
+            f_ids = os.path.basename(f).split('_')
+            wl_key = f_ids[2]
+            wl = wl_mapping[wl_key]
             if wl not in wavelengths:
                 continue
-            date = parse(f_ids[2])
+            date = parse(f_ids[3][:-3]) # ignore milliseconds
             file_dict[wl].append(f)
             date_dict[wl].append(date)
 
-        # choose channel with smalest number of dates
-        min_wl = min(date_dict, key=lambda k: len(date_dict[k]))
-        ref_dates = date_dict[min_wl]
-        # select files with min diff in dates
-        for wl, f, dates in zip(file_dict.keys(), file_dict.values(), date_dict.values()):
-            dates = np.array(dates)
-            file_dict[wl] = [f[np.argmin(np.abs(dates - t), axis=0)] for t in ref_dates]
-
-        super().__init__(file_dict, cmaps=cmaps, scaling=scaling, **kwargs)
+        super().__init__(file_dict, date_dict, cmaps=cmaps, scaling=scaling, **kwargs)
 
 class EUVIDataset(GenericEUVDataset):
 

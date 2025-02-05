@@ -232,13 +232,15 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
 
             fine_out = self.rendering.fine_model(query_points)
             total_ne = fine_out['total_ne']
+            mean_log_T = fine_out['mean_log_T']
             # velocity = fine_out['velocity']
-            fine_regularization = self.compute_static_regularization(total_ne, query_points)
+            fine_regularization = self.compute_static_regularization(total_ne, mean_log_T, query_points)
 
             coarse_out = self.rendering.coarse_model(query_points)
             total_ne = coarse_out['total_ne']
+            mean_log_T = coarse_out['mean_log_T']
             # velocity = coarse_out['velocity']
-            coarse_regularization = self.compute_static_regularization(total_ne, query_points)
+            coarse_regularization = self.compute_static_regularization(total_ne, mean_log_T, query_points)
 
             regularization = fine_regularization + coarse_regularization
         else:
@@ -279,8 +281,8 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
         regularization = continuity_eq.pow(2).mean()
         return regularization
 
-    def compute_static_regularization(self, total_ne, query_points):
-        in_tensor = total_ne
+    def compute_static_regularization(self, total_ne, mean_log_T, query_points):
+        in_tensor = torch.cat([total_ne, mean_log_T], dim=-1)
 
         jac_matrix = jacobian(in_tensor, query_points)
 
@@ -288,9 +290,14 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
         dRho_dy = jac_matrix[:, 0, 1]
         dRho_dz = jac_matrix[:, 0, 2]
         dRho_dt = jac_matrix[:, 0, 3]
+        dlogT_dx = jac_matrix[:, 1, 0]
+        dlogT_dy = jac_matrix[:, 1, 1]
+        dlogT_dz = jac_matrix[:, 1, 2]
+        dlogT_dt = jac_matrix[:, 1, 3]
 
         radius = torch.norm(query_points[..., :3], dim=-1)
-        regularization = dRho_dt * torch.clip(radius - 1.1, min=0) ** 2
+        radius_weight = torch.clip(radius - 1.1, min=0) ** 2
+        regularization = (dRho_dt * radius_weight + dlogT_dt * radius_weight)
         regularization = regularization.pow(2).mean()
         return regularization
 

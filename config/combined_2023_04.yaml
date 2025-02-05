@@ -1,24 +1,24 @@
-base_path: "/glade/work/rjarolim/sunerf/2023_03_combined_v03"
-work_directory: "/glade/derecho/scratch/rjarolim/sunerf/2023_03_combined_v03"
+base_path: "/glade/work/rjarolim/sunerf/2023_04_combined_v05"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/2023_04_combined_v05"
 
 data:
   data_config:
     - type: 'AIA'
       key: 'AIA_FD'
-      data_path: '/glade/work/rjarolim/data/sunerf/2023_03/prep/aia_fd/*.fits'
+      data_path: '/glade/work/rjarolim/data/sunerf/2023_04/prep/aia_fd/*.fits'
       batch_size: 256
-    - type: 'AIA'
-      key: 'AIA_SUB'
-      data_path: '/glade/work/rjarolim/data/sunerf/2023_03/prep/aia_sub/*.fits'
-      batch_size: 128
+#    - type: 'AIA'
+#      key: 'AIA_SUB'
+#      data_path: '/glade/work/rjarolim/data/sunerf/2023_04/prep/aia_sub/*.fits'
+#      batch_size: 128
     - type: 'EUI'
       key: 'EUI_FD'
-      data_path: '/glade/work/rjarolim/data/sunerf/2023_03/prep/eui_fd/*.fits'
+      data_path: '/glade/work/rjarolim/data/sunerf/2023_04/prep/eui_fd/*.fits'
       batch_size: 256
-    - type: 'EUI'
-      key: 'EUI_SUB'
-      data_path: '/glade/work/rjarolim/data/sunerf/2023_03/prep/eui_sub/*.fits'
-      batch_size: 128
+#    - type: 'EUI'
+#      key: 'EUI_SUB'
+#      data_path: '/glade/work/rjarolim/data/sunerf/2023_04/prep/eui_sub/*.fits'
+#      batch_size: 128
   random_config:
     radius_range: [1.0, 2.5]
     batch_size: 512
@@ -29,14 +29,14 @@ data:
 
 logging:
   project: "sunerf"
-  name: "2023-03 combined"
+  name: "2023-04 combined"
 
 training:
   log_every_n_steps: 10000
 
 model:
   model_config:
-    dim: 256
+    dim: 512
   image_scaling_config:
     AIA_FD: { vmax: 1.0 }
     AIA_SUB: { vmax: 1.0 }
@@ -54,6 +54,6 @@ model:
   shuffle_config:
     type: 'time'
     probability: 0.5
-    instruments: ['AIA_FD', 'EUI_FD', 'AIA_SUB', 'EUI_SUB']
+    instruments: ['AIA_FD', 'EUI_FD']
   sampling_config: {type: 'spherical', distance: 2.5}
 
