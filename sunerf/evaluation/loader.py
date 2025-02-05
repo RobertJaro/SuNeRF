@@ -219,3 +219,23 @@ class SuNeRFLoader:
             header = make_fitswcs_header(img, reference_coord, scale=scale)
             maps[channel] = Map(img, header)
         return maps
+
+class ModelLoader(SuNeRFLoader):    
+    def __init__(self, serial=False, device=None):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if device is None else device
+        self.device = device
+
+
+
+        self.ref_map = ref_map
+        if serial:
+            self.rendering = rendering.to(device)
+            self.model = model.to(device) 
+        else:
+            self.rendering = nn.DataParallel(rendering).to(device)
+            self.model = nn.DataParallel(model).to(device)
+        self.seconds_per_dt = 1
+        self.serial = serial
+        self.ref_time = datetime.strptime(ref_map.meta['t_obs'][:-1] 
+                                          if ('t_obs' in ref_map.meta) else ref_map.meta['date-obs'][:-1], 
+                                          '%Y-%m-%dT%H:%M:%S.%f')

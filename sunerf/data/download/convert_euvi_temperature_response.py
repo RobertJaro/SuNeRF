@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.io import readsav
 
-save_file = '/Users/rjarolim/PycharmProjects/SuNeRF/data/response_functions/stereo_behind_resonses.npz'
+save_file = '/Users/rjarolim/PycharmProjects/SuNeRF/data/response_functions/stereo_behind_responses.npz'
 geny_file = '/Users/rjarolim/PycharmProjects/SuNeRF/data/response_functions/behind_sre_chianti2_fludra_mazzotta_002.geny'
 
 sra_file = '/Users/rjarolim/PycharmProjects/SuNeRF/data/response_functions/ahead_sra_001.geny'

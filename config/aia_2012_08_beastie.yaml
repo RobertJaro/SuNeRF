@@ -1,0 +1,36 @@
+base_path: "/d0/amunozj/sunerf/work"
+work_directory: "/d0/amunozj/sunerf/scratch"
+
+data:
+  data_config:
+    - type: 'AIA'
+      key: 'AIA_FD'
+      data_path: '/d0/amunozj/sunerf/sdo_2012_08/**/*.fits'
+      wavelengths: [171, 193, 211]
+  debug: True
+  batch_size: 128
+  validation_batch_size: 512
+  num_workers: 16
+
+logging:
+  project: "sunerf"
+  name: "AIA absorption"
+
+training:
+  log_every_n_steps: null
+
+model:
+  model_config:
+    dim: 128
+  image_scaling_config:
+    AIA_FD: { vmax: 1.0 }
+  temperature_response_config:
+    - file: '/d0/amunozj/git_repos/2024-HL-SPI3S-SuNeRF/data/response_functions/aia_interpolated_171_193_211.npz'
+      scaling: 0.0
+      learnable: False
+      instruments: ['AIA_FD']
+  shuffle_config:
+    type: 'time'
+    probability: 0.0
+    instruments: ['AIA_FD']
+  sampling_config: {type: 'spherical', distance: 2.5}
