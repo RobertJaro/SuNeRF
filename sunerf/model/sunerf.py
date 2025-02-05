@@ -156,13 +156,13 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
                  image_scaling_config, temperature_response_config,
                  lambda_image=1.0, lambda_regularization=1.0e-4, lambda_absorption=1.0e-4,
                  sampling_config=None, hierarchical_sampling_config=None,
-                 model_config=None, shuffle_config=None, **kwargs):
+                 model_config=None, shuffle_config=None, absorption=True, **kwargs):
         # setup rendering
         rendering = PlasmaRadiativeTransfer(
             temperature_response_config=temperature_response_config, Rs_per_ds=Rs_per_ds,
             sampling_config=sampling_config,
             hierarchical_sampling_config=hierarchical_sampling_config,
-            model_config=model_config, shuffle_config=shuffle_config)
+            model_config=model_config, shuffle_config=shuffle_config, absorption=absorption)
         super().__init__(Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt,
                          rendering=rendering, **kwargs)
         self.lambda_image = lambda_image

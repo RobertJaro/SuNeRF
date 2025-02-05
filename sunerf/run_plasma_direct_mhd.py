@@ -47,7 +47,10 @@ if __name__ == '__main__':
 
     # initialize data module and model
     warnings.filterwarnings("ignore")  # ignore warnings from sunpy
-    data_module = PSIMHDDataModule(**data_config, working_dir=work_directory) 
+    absorption = False
+    if 'absorption' in model_config:
+        absorption = model_config['absorption']
+    data_module = PSIMHDDataModule(**data_config, working_dir=work_directory, absorption=absorption) 
 
     # initialize SuNeRF model
     sunerf = PlasmaSuNeRFModuleMHD(Rs_per_ds=data_module.Rs_per_ds, seconds_per_dt=data_module.seconds_per_dt,
@@ -60,9 +63,11 @@ if __name__ == '__main__':
                                           every_n_train_steps=log_every_n_steps)
     save_path = os.path.join(base_path, 'save_state.snf')
     save_callback = LambdaCallback(on_validation_end=lambda *args: save_state(sunerf, data_module, save_path))
-
-    absorption_callback = AbsorptionCallback('absorption', data_module.validation_datasets['absorption'].image_shape)
-    callbacks = [checkpoint_callback, save_callback, absorption_callback]
+    callbacks = [checkpoint_callback, save_callback]
+    
+    if absorption:
+        absorption_callback = AbsorptionCallback('absorption', data_module.validation_datasets['absorption'].image_shape)
+        callbacks.append(absorption_callback)
 
     for k in data_module.validation_dataset_mapping.values():
         if k == 'absorption':

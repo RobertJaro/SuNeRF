@@ -8,14 +8,14 @@ from sunerf.data.loader.multi_instrument import MultiInstrumentDataModule
 
 class PSIMHDDataModule(MultiInstrumentDataModule):
     def __init__(self, data_config, working_dir, Rs_per_ds=1, seconds_per_dt=86400,
-                 batch_size=int(2 ** 10), validation_batch_size=int(2 ** 11), debug=False,
+                 batch_size=int(2 ** 10), validation_batch_size=int(2 ** 11), debug=False, absorption=False,
                  **kwargs):
         
         # Intialize the multi-insturment data module to retain the validation part
         super().__init__(data_config, working_dir,
                          Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt,
                          batch_size=batch_size, validation_batch_size=validation_batch_size,
-                         debug=True, **kwargs)
+                         debug=True, absorption=absorption, **kwargs)
 
         
         # Overwrite the training part for use in the direct training loop.
@@ -52,7 +52,7 @@ class PSIMHDDataModule(MultiInstrumentDataModule):
 
 class mhdDatasetFile(Dataset):
 
-    def __init__(self, psi_data_path:str, percentage_of_points:float=0.3, seconds_per_dt:int=86400, r_max=5, static:bool=False, two_files=False):       
+    def __init__(self, psi_data_path:str, percentage_of_points:float=0.3, seconds_per_dt:int=86400, r_max=2.5, static:bool=False, two_files=False):       
         """
         Dataset to iterate over all PSI gridpoints
 
