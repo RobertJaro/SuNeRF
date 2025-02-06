@@ -39,7 +39,7 @@ class MultiInstrumentDataModule(BaseDataModule):
             module_config[k] = {'type': 'plasma', 'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt,
                                 'ref_time': ref_time,
                                 'wcs': dc['wcs'], 'image_shape': dc['image_shape'], 'times': ref_ds.times,
-                                'cmaps': dc['cmaps']}
+                                'cmaps': dc['cmaps'], 'wavelengths':ref_ds.data_config['wavelengths']}
 
         # include random sampling if specified
         if random_config is not None:
@@ -127,6 +127,7 @@ class GenericEUVDataset(TensorsDataset):
         data_config['image_shape'] = ref_map.data.shape
         data_config['wcs'] = ref_map.wcs
         data_config['wavelength'] = ref_map.wavelength
+        data_config['wavelengths'] = wavelengths
         data_config['cmaps'] = ['gray'] * len(wavelengths) if cmaps is None else cmaps
         self.data_config = data_config
 

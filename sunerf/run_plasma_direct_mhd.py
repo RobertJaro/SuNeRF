@@ -73,7 +73,9 @@ if __name__ == '__main__':
         if k == 'absorption':
             continue
         test_image_callback = PlasmaImageCallback(k, data_module.config[k]['image_shape'],
-                                                  cmaps=data_module.config[k]['cmaps'])
+                                                  cmaps=data_module.config[k]['cmaps'],
+                                                  target_normalization=False,
+                                                  total_ne_vmax=1e12)
         callbacks.append(test_image_callback)
 
     N_GPUS = torch.cuda.device_count()

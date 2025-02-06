@@ -33,11 +33,14 @@ class PSIMHDDataModule(MultiInstrumentDataModule):
         self.training_datasets = train_dict
         self.datasets = {**self.training_datasets, **self.validation_datasets}
 
-        self.config['psi_mhd'] = {'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt,
+        reference = list(self.config.keys())[0]
+        self.config['psi_mhd'] = {'type': 'plasma', 'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt,
                        'debug': debug, 'working_dir': working_dir, 'batch_size': batch_size,
                        'psi_data_path': mhd_data_config['psi_data_path'],
                        'percentage_of_points': mhd_data_config['percentage_of_points'],
-                       'r_max':mhd_data_config['r_max']}
+                       'r_max':mhd_data_config['r_max'],
+                       'wcs':self.config[reference]['wcs'], 'image_shape':self.config[reference]['image_shape'],
+                       'wavelengths':self.config[reference]['wavelengths']}
 
 
         # valid_dict = {}

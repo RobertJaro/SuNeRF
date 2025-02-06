@@ -17,6 +17,7 @@ parser.add_argument('--chk_path', type=str)
 parser.add_argument('--video_path', type=str)
 parser.add_argument('--resolution', type=int, default=256)
 parser.add_argument('--batch_size', type=int, default=4096)
+parser.add_argument('--ne_vmax', type=float)
 args = parser.parse_args()
 
 chk_path = args.chk_path
@@ -24,6 +25,7 @@ video_path = args.video_path
 resolution = args.resolution
 resolution = (resolution, resolution) * u.pix
 batch_size = args.batch_size
+ne_vmax = args.ne_vmax
 
 os.makedirs(video_path, exist_ok=True)
 
@@ -56,12 +58,18 @@ points_4 = zip(np.linspace(45, 45, n_points),
 # combine coordinates
 points = list(points_1) + list(points_2) + list(points_3) + list(points_4)
 
-ne_norm = LogNorm(vmin=1)
+ne_norm = LogNorm(vmin=1, vmax=ne_vmax)
+
 absorption_norm = LogNorm(vmin=1, vmax=100)
 img_norm = 'log' #ImageNormalize(stretch=AsinhStretch(0.005))#ImageNormalize(vmin=0, vmax=0.7, stretch=AsinhStretch(0.005))
 
 # cmaps = [cm.sdoaia171, cm.sdoaia193, cm.sdoaia211]
-cmaps = [cm.sdoaia94, cm.sdoaia131, cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia304, cm.sdoaia335]
+cmaps_list = [cm.sdoaia94, cm.sdoaia131, cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia304, cm.sdoaia335]
+cmaps = []
+instrument_key = loader.instrument_keys[0]
+for i, channel in enumerate([94, 131, 171, 193, 211, 304, 335]):
+    if channel in loader.config[instrument_key]['wavelengths']:
+        cmaps.append(cmaps_list[i])
 
 for i, (lat, lon, time, d) in tqdm(list(enumerate(points)), total=len(points)):
     outputs = loader.load_image(lat * u.deg, lon * u.deg, time, distance=d * u.AU, batch_size=batch_size,

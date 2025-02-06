@@ -204,14 +204,16 @@ class SuNeRFLoader:
 
     def get_maps(self, channel_images, reference_coord, scale, instrument_key=None):
         instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
-        if 'AIA' in instrument_key:
-            channels = [94, 131, 171, 193, 211, 304, 335]
-        elif 'EUVI' in instrument_key:
-            channels = [171, 195, 284, 304]
-        elif 'EUI' in instrument_key:
-            channels = [174, 304]
-        else:
-            channels = list(range(channel_images.shape[-1]))
+        channels = self.config[instrument_key]['wavelengths'] if instrument_key is not None else list(range(channel_images.shape[-1]))
+        
+        # if 'AIA' in instrument_key:
+        #     channels = [94, 131, 171, 193, 211, 304, 335]
+        # elif 'EUVI' in instrument_key:
+        #     channels = [171, 195, 284, 304]
+        # elif 'EUI' in instrument_key:
+        #     channels = [174, 304]
+        # else:
+        #     channels = list(range(channel_images.shape[-1]))
 
         maps = {}
         for i, channel in enumerate(channels):
@@ -219,23 +221,3 @@ class SuNeRFLoader:
             header = make_fitswcs_header(img, reference_coord, scale=scale)
             maps[channel] = Map(img, header)
         return maps
-
-class ModelLoader(SuNeRFLoader):    
-    def __init__(self, serial=False, device=None):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if device is None else device
-        self.device = device
-
-
-
-        self.ref_map = ref_map
-        if serial:
-            self.rendering = rendering.to(device)
-            self.model = model.to(device) 
-        else:
-            self.rendering = nn.DataParallel(rendering).to(device)
-            self.model = nn.DataParallel(model).to(device)
-        self.seconds_per_dt = 1
-        self.serial = serial
-        self.ref_time = datetime.strptime(ref_map.meta['t_obs'][:-1] 
-                                          if ('t_obs' in ref_map.meta) else ref_map.meta['date-obs'][:-1], 
-                                          '%Y-%m-%dT%H:%M:%S.%f')
