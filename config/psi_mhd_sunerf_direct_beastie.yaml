@@ -1,0 +1,43 @@
+base_path: "/d0/amunozj/sunerf/work2"
+work_directory: "/d0/amunozj/sunerf/scratch2"
+
+data:
+  data_config:
+    - type: 'AIA'
+      key: 'AIA_FD'
+      data_path: '/d0/amunozj/sunerf/sdo_2012_08/**/*.fits'
+      batch_size: 1024
+      wavelengths: [171, 193, 211]
+  mhd_data_config:
+    psi_data_path: '/d0/amunozj/sunerf/mhd'
+    percentage_of_points: 0.005
+    r_max: 2.5
+  batch_size: 8
+  validation_batch_size: 1024
+  debug: True
+  # num_workers: 16
+
+logging:
+  project: "sunerf-direct"
+  # name: "PSI direct"
+
+training:
+  epochs: 500
+  check_val_every_n_epoch: 25
+
+model:
+  absorption: False
+  model_config:
+    dim: 128
+  image_scaling_config:
+    AIA_FD: { vmax: 1.0 }
+  temperature_response_config:
+    - file: '/d0/amunozj/git_repos/2024-HL-SPI3S-SuNeRF/data/response_functions/aia_interpolated_171_193_211.npz'
+      scaling: 0.0
+      learnable: False
+      instruments: ['AIA_FD']
+  shuffle_config:
+    type: 'time'
+    probability: 0.0
+    instruments: ['AIA_FD']
+  sampling_config: {type: 'spherical', distance: 2.5}
