@@ -204,16 +204,18 @@ class SuNeRFLoader:
 
     def get_maps(self, channel_images, reference_coord, scale, instrument_key=None):
         instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
-        channels = self.config[instrument_key]['wavelengths'] if instrument_key is not None else list(range(channel_images.shape[-1]))
-        
-        # if 'AIA' in instrument_key:
-        #     channels = [94, 131, 171, 193, 211, 304, 335]
-        # elif 'EUVI' in instrument_key:
-        #     channels = [171, 195, 284, 304]
-        # elif 'EUI' in instrument_key:
-        #     channels = [174, 304]
-        # else:
-        #     channels = list(range(channel_images.shape[-1]))
+
+        if 'wavelengths' in self.config[instrument_key]:
+            channels = self.config[instrument_key]['wavelengths']             
+        else:
+            if 'AIA' in instrument_key:
+                channels = [94, 131, 171, 193, 211, 304, 335]
+            elif 'EUVI' in instrument_key:
+                channels = [171, 195, 284, 304]
+            elif 'EUI' in instrument_key:
+                channels = [174, 304]
+            else:
+                channels = list(range(channel_images.shape[-1]))
 
         maps = {}
         for i, channel in enumerate(channels):
