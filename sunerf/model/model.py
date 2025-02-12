@@ -72,8 +72,9 @@ class PlasmaModel(GenericModel):
         log_T_range = self.log_T.reshape([1] * (len(mean_log_T.shape) - 1) + [-1])
         # log10 --> 10 ** (scaling) * exp(N) * (2 * pi * sigma ** 2) ** -0.5
         log10_e = 0.4342944819032518  # log10(e)
-        log_ne = scaling - 0.5 * ((log_T_range - mean_log_T) ** 2 / (sigma ** 2)) * log10_e - torch.log10(
-            2 * torch.pi * (sigma ** 2))
+        log_ne = (scaling -
+                  ((log_T_range - mean_log_T) ** 2 / (2 * sigma ** 2)) * log10_e -
+                  0.5 * torch.log10(2 * torch.pi * sigma ** 2))
 
         distance = torch.norm(x[..., :3], dim=-1)
         distance_threshold = torch.clip(distance - self.decay_distance, min=0, max=1) * 2
@@ -101,6 +102,19 @@ class AbsorptionModel(GenericModel):
         log_kappa = super().forward(x) - 2
         return {'log_kappa': log_kappa, 'kappa': 10 ** log_kappa}
 
+
+class ConstantAbsorptionModel(nn.Module):
+
+        def __init__(self, coefficient=-5, **kwargs):
+            super().__init__()
+            self.coefficient = coefficient
+
+        def forward(self, x):
+            total_log_ne = x[..., 0:1]
+            mean_log_T = x[..., 1:2]
+            # log_kappa = total_log_ne - mean_log_T + self.offset
+            log_kappa = self.coefficient
+            return {'log_kappa': log_kappa, 'kappa': 10 ** log_kappa}
 
 class Sine(nn.Module):
     def __init__(self, w0: float = 1.):
