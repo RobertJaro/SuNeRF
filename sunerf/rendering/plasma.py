@@ -1,15 +1,17 @@
+import copy
+
 import numpy as np
 import torch
 from torch import nn
 
-from sunerf.model.model import PlasmaModel, AbsorptionModel
+from sunerf.model.model import PlasmaModel, AbsorptionModel, ConstantAbsorptionModel
 from sunerf.rendering.base_tracing import SuNeRFRendering, cumprod_exclusive
 from sunerf.train.util import TimeShuffler
 
 
 class PlasmaRadiativeTransfer(SuNeRFRendering):
 
-    def __init__(self, temperature_response_config, model_config=None, absorption=True, shuffle_config=None, **kwargs):
+    def __init__(self, temperature_response_config, model_config=None, absorption_config=None, shuffle_config=None, **kwargs):
 
         temperature = np.load(temperature_response_config[0]['file'])['temperature']
         self.log_T = torch.from_numpy(temperature).float()
@@ -18,8 +20,8 @@ class PlasmaRadiativeTransfer(SuNeRFRendering):
         coarse_model = PlasmaModel(log_T=self.log_T, **model_config)
         fine_model = PlasmaModel(log_T=self.log_T, **model_config)
         super().__init__(coarse_model=coarse_model, fine_model=fine_model, **kwargs)
-        self.absorption = absorption
-        print('Using absorption:', absorption)
+        self.absorption = absorption_config is not None and absorption_config['type'] is not None
+        print('Using absorption:', self.absorption)
 
         temperature_response = [np.load(c['file'])['response'] for c in temperature_response_config]
         temperature_response = [nn.Parameter(torch.tensor(v.T, dtype=torch.float32), requires_grad=False)
@@ -37,7 +39,16 @@ class PlasmaRadiativeTransfer(SuNeRFRendering):
         self.instrument_scaling = nn.ParameterList(instrument_scaling)
         self.temperature_response_mapping = temperature_response_mapping
 
-        self.absorption_model = AbsorptionModel(dim=16, n_layers=2) if absorption else None
+        absorption_config = copy.deepcopy(absorption_config) if self.absorption else {'type': None}
+        absorption_type = absorption_config.pop('type', None)
+        if absorption_type == 'constant':
+            self.absorption_model = ConstantAbsorptionModel(**absorption_config)
+        elif absorption_type == 'learned':
+            self.absorption_model = AbsorptionModel(dim=16, n_layers=2)
+        elif absorption_type is None:
+            self.absorption_model = None
+        else:
+            raise NotImplementedError(f"Absorption type {absorption_type} not implemented.")
         if shuffle_config:
             shuffle_type = shuffle_config.pop('type')
             if shuffle_type == 'time':

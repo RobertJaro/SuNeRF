@@ -109,7 +109,7 @@ sampling_config = {'type': 'spherical', 'distance': 2.5}
 # dummy module for rendering
 rendering = PlasmaRadiativeTransfer(temperature_response_config=temperature_response_config,
                                     Rs_per_ds=args.Rs_per_ds,
-                                    sampling_config=sampling_config, absorption=False)
+                                    sampling_config=sampling_config, absorption_config={'type': 'constant'})
 # create mock WCS
 obs = SkyCoord(0 * u.deg, 0 * u.deg, 1 * u.AU, frame=frames.HeliographicStonyhurst, obstime=dataset.ref_time)
 reference_coord = SkyCoord(0 * u.deg, 0 * u.deg, obstime=dataset.ref_time, observer=obs,
