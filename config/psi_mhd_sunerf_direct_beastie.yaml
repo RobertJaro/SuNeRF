@@ -1,5 +1,5 @@
-base_path: "/d0/amunozj/sunerf/work2"
-work_directory: "/d0/amunozj/sunerf/scratch2"
+base_path: "/d0/amunozj/sunerf/work3"
+work_directory: "/d0/amunozj/sunerf/scratch3"
 
 data:
   data_config:
@@ -8,10 +8,13 @@ data:
       data_path: '/d0/amunozj/sunerf/sdo_2012_08/**/*.fits'
       batch_size: 1024
       wavelengths: [171, 193, 211]
+      static: True
   mhd_data_config:
     psi_data_path: '/d0/amunozj/sunerf/mhd'
     percentage_of_points: 0.005
     r_max: 2.5
+    single_file: True
+    
   batch_size: 8
   validation_batch_size: 1024
   debug: True

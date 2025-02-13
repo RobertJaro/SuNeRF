@@ -27,7 +27,8 @@ class PSIMHDDataModule(MultiInstrumentDataModule):
             mhd_data_config['psi_data_path'],
             percentage_of_points = mhd_data_config['percentage_of_points'],
             seconds_per_dt = seconds_per_dt,
-            r_max = mhd_data_config['r_max']
+            r_max = mhd_data_config['r_max'],
+            single_file=mhd_data_config['single_file']
         )
 
         self.training_datasets = train_dict
@@ -55,7 +56,7 @@ class PSIMHDDataModule(MultiInstrumentDataModule):
 
 class mhdDatasetFile(Dataset):
 
-    def __init__(self, psi_data_path:str, percentage_of_points:float=0.3, seconds_per_dt:int=86400, r_max=2.5, static:bool=False, two_files=False):       
+    def __init__(self, psi_data_path:str, percentage_of_points:float=0.3, seconds_per_dt:int=86400, r_max=2.5, static:bool=False, single_file=False):       
         """
         Dataset to iterate over all PSI gridpoints
 
@@ -76,9 +77,9 @@ class mhdDatasetFile(Dataset):
 
         self.density_files = sorted(glob.glob(os.path.join(psi_data_path, 'rho', '*.h5')))
         self.temperature_files = sorted(glob.glob(os.path.join(psi_data_path, 't', '*.h5')))
-        if two_files:
-            self.density_files = self.density_files[0:2]
-            self.temperature_files = self.temperature_files[0:2]
+        if single_file:
+            self.density_files = self.density_files[0:1]
+            self.temperature_files = self.temperature_files[0:1]
 
         self.ffirst = int(self.density_files[0].split('00')[1].split('.h5')[0])  # rho002531.h5
         self.flast = int(self.density_files[-1].split('00')[1].split('.h5')[0])
@@ -90,12 +91,12 @@ class mhdDatasetFile(Dataset):
 
     def __getitem__(self, idx):
         r, th, phi, density = rdhdf_3d(self.density_files[idx])
-        density = density[:, :, r<self.r_max]
+        density = density[:, :, r<self.r_max]*1e8
         fill_value = np.median(density[np.where(density > 0)])
         density[np.where(density < 0)] = fill_value
 
         _, _, _, temperature = rdhdf_3d(self.temperature_files[idx])
-        temperature = temperature[:,:, r<self.r_max]
+        temperature = temperature[:,:, r<self.r_max]*2.807066716734894e7
         fill_value = np.median(temperature[np.where(temperature > 0)])
         temperature[np.where(temperature < 0)] = fill_value
 
@@ -105,21 +106,19 @@ class mhdDatasetFile(Dataset):
         x = r[None, None, :]*np.sin(th[None, :, None])*np.cos(phi[:, None, None])
         y = r[None, None, :]*np.sin(th[None, :, None])*np.sin(phi[:, None, None])
         z = r[None, None, :]*np.cos(th[None, :, None])*(phi[:, None, None]*0+1)
-
-        # Pick the queried points
-        gridpoint_idxs = np.random.randint(low=0, high=n_gridpoints_in_cube-1, size=(int(n_gridpoints_in_cube*self.percentage_of_points)))
-        x = x.reshape(-1)[gridpoint_idxs]
-        y = y.reshape(-1)[gridpoint_idxs]
-        z = z.reshape(-1)[gridpoint_idxs]
-
-        # TODO Verify that we return the right time given the file index
         t = idx*60*60 / self.seconds_per_dt * (x*0+1)
         if self.static:
             t = t*0
-        density = density.reshape(-1)[gridpoint_idxs]*1e8
-        temperature = temperature.reshape(-1)[gridpoint_idxs]*2.807066716734894e7
 
-        return np.stack([x, y, z, t],axis=-1), density, temperature
+        # Stack all points
+        full_stack = np.stack((x,y,z,t,density, temperature),axis=-1)
+        
+        # Pick the queried points
+        full_stack = full_stack.reshape((-1,6))
+        gridpoint_idxs = np.random.randint(low=0, high=n_gridpoints_in_cube-1, size=(int(n_gridpoints_in_cube*self.percentage_of_points)))
+        full_stack = full_stack[gridpoint_idxs,:]
+
+        return full_stack[:,0:4], full_stack[:,4:5], full_stack[:,5:6]
 
 
 class mhdDatasetSinglePoints(Dataset):
