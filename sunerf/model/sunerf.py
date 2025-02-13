@@ -162,7 +162,7 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
             temperature_response_config=temperature_response_config, Rs_per_ds=Rs_per_ds,
             sampling_config=sampling_config,
             hierarchical_sampling_config=hierarchical_sampling_config,
-            model_config=model_config, shuffle_config=shuffle_config)
+            model_config=model_config, shuffle_config=shuffle_config, **kwargs)
         super().__init__(Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt,
                          rendering=rendering, **kwargs)
         self.lambda_image = lambda_image
