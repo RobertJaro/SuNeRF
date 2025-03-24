@@ -10,7 +10,7 @@ class GenericModel(nn.Module):
         if encoding is None or encoding == 'none':
             self.d_in = nn.Linear(in_dim, dim)
         elif encoding == 'positional':
-            posenc = PositionalEncoding(10, in_dim)
+            posenc = PositionalEncoding(in_dim)
             d_in = nn.Linear(posenc.d_output, dim)
             self.d_in = nn.Sequential(posenc, d_in)
         elif encoding == 'gaussian':
@@ -93,6 +93,22 @@ class PlasmaModel(GenericModel):
                 }
 
 
+class ThomsonModel(nn.Module):
+
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.rho_model = GenericModel(in_dim=4, out_dim=1, **kwargs)
+        self.v_model = GenericModel(in_dim=4, out_dim=3, **kwargs)
+
+    def forward(self, x):
+        log_rho = self.rho_model(x)
+        v = self.v_model(x)
+
+        rho = 10 ** log_rho
+
+        return {'log_rho': log_rho, 'rho': rho, 'v': v}
+
+
 class AbsorptionModel(GenericModel):
 
     def __init__(self, **kwargs):
@@ -105,16 +121,17 @@ class AbsorptionModel(GenericModel):
 
 class ConstantAbsorptionModel(nn.Module):
 
-        def __init__(self, coefficient=-5, **kwargs):
-            super().__init__()
-            self.coefficient = coefficient
+    def __init__(self, coefficient=-5, **kwargs):
+        super().__init__()
+        self.coefficient = coefficient
 
-        def forward(self, x):
-            total_log_ne = x[..., 0:1]
-            mean_log_T = x[..., 1:2]
-            # log_kappa = total_log_ne - mean_log_T + self.offset
-            log_kappa = self.coefficient
-            return {'log_kappa': log_kappa, 'kappa': 10 ** log_kappa}
+    def forward(self, x):
+        total_log_ne = x[..., 0:1]
+        mean_log_T = x[..., 1:2]
+        # log_kappa = total_log_ne - mean_log_T + self.offset
+        log_kappa = self.coefficient
+        return {'log_kappa': log_kappa, 'kappa': 10 ** log_kappa}
+
 
 class Sine(nn.Module):
     def __init__(self, w0: float = 1.):
@@ -154,22 +171,24 @@ class TrainablePositionalEncoding(nn.Module):
 
 class PositionalEncoding(nn.Module):
 
-    def __init__(self, num_freqs, in_features, max_freq=10):
+    def __init__(self, in_features, num_freqs=10, max_freq=9):
         super().__init__()
-        frequencies = 2 ** torch.linspace(-1, max_freq - 2, num_freqs)
+        frequencies = 2 ** torch.linspace(-max_freq, max_freq, num_freqs)
         self.frequencies = nn.Parameter(frequencies, requires_grad=False)
         self.d_output = in_features * (1 + num_freqs * 2)
 
     def forward(self, x):
         encoded = torch.einsum('...i,j->...ij', x, self.frequencies)
-        encoded = encoded.reshape(*x.shape[:-1], -1)
-        encoded = torch.cat([torch.sin(encoded), torch.cos(encoded), x], -1)
+        encoded = torch.cat([
+            torch.einsum('...j,j->...j', torch.sin(encoded), self.frequencies.pow(-1)).reshape(*x.shape[:-1], -1),
+            torch.einsum('...j,j->...j', torch.cos(encoded), self.frequencies.pow(-1)).reshape(*x.shape[:-1], -1),
+            x], -1)
         return encoded
 
 
 class GaussianPositionalEncoding(nn.Module):
 
-    def __init__(self, d_input, num_freqs=128, scale=64):
+    def __init__(self, d_input, num_freqs=128, scale=512):
         super().__init__()
         dist = Normal(loc=0, scale=scale)
         frequencies = dist.sample([num_freqs, d_input])

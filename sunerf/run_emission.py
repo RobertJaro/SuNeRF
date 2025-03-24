@@ -8,7 +8,8 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LambdaCallback
 from pytorch_lightning.loggers import WandbLogger
 
 from sunerf.data.loader.single_channel import SingleChannelDataModule
-from sunerf.model.sunerf import save_state, EmissionSuNeRFModule
+from sunerf.model.sunerf import save_state
+from sunerf.model.emission import EmissionSuNeRFModule
 from sunerf.train.callback import TestImageCallback
 
 if __name__ == '__main__':
@@ -22,8 +23,8 @@ if __name__ == '__main__':
     # setup paths
     path_to_save = config['path_to_save']
     os.makedirs(path_to_save, exist_ok=True)
-    working_dir = config['working_directory'] if 'working_directory' in config else path_to_save
-    os.makedirs(working_dir, exist_ok=True)
+    work_directory = config['work_directory'] if 'work_directory' in config else path_to_save
+    os.makedirs(work_directory, exist_ok=True)
 
     # setup default configs
     data_config = config['data']
@@ -38,10 +39,10 @@ if __name__ == '__main__':
     ckpt_path = training_config['meta_path'] if 'meta_path' in training_config else 'last'
 
     # initialize logger
-    logger = WandbLogger(**logging_config, save_dir=working_dir)
+    logger = WandbLogger(**logging_config, save_dir=work_directory)
 
     # initialize data module and model
-    data_module = SingleChannelDataModule(**data_config, working_dir=working_dir)
+    data_module = SingleChannelDataModule(**data_config, work_directory=work_directory)
 
     # initialize SuNeRF model
     sunerf = EmissionSuNeRFModule(Rs_per_ds=data_module.Rs_per_ds, seconds_per_dt=data_module.seconds_per_dt,

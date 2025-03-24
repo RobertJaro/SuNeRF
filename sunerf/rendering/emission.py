@@ -1,10 +1,10 @@
 import torch
 
 from sunerf.model.model import EmissionModel
-from sunerf.rendering.base_tracing import SuNeRFRendering, cumprod_exclusive
+from sunerf.rendering.base_tracing import MultiResolutionRenderingModule, cumprod_exclusive
 
 
-class EmissionRadiativeTransfer(SuNeRFRendering):
+class EmissionRadiativeTransfer(MultiResolutionRenderingModule):
 
     def __init__(self, model_config=None, **kwargs):
         model_config = {} if model_config is None else model_config

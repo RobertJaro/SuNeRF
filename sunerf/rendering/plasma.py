@@ -5,13 +5,12 @@ import torch
 from torch import nn
 
 from sunerf.model.model import PlasmaModel, AbsorptionModel, ConstantAbsorptionModel
-from sunerf.rendering.base_tracing import SuNeRFRendering, cumprod_exclusive
-from sunerf.train.util import TimeShuffler
+from sunerf.rendering.base_tracing import MultiResolutionRenderingModule, cumprod_exclusive
 
 
-class PlasmaRadiativeTransfer(SuNeRFRendering):
+class PlasmaRadiativeTransfer(MultiResolutionRenderingModule):
 
-    def __init__(self, temperature_response_config, model_config=None, absorption_config=None, shuffle_config=None, **kwargs):
+    def __init__(self, temperature_response_config, model_config=None, absorption_config=None, **kwargs):
 
         temperature = np.load(temperature_response_config[0]['file'])['temperature']
         self.log_T = torch.from_numpy(temperature).float()
@@ -26,8 +25,9 @@ class PlasmaRadiativeTransfer(SuNeRFRendering):
         temperature_response = [np.load(c['file'])['response'] for c in temperature_response_config]
         temperature_response = [nn.Parameter(torch.tensor(v.T, dtype=torch.float32), requires_grad=False)
                                 for v in temperature_response]
-        instrument_scaling = [nn.Parameter(torch.tensor(c['scaling'], dtype=torch.float32), requires_grad=c['learnable'])
-                              for c in temperature_response_config]
+        instrument_scaling = [
+            nn.Parameter(torch.tensor(c['scaling'], dtype=torch.float32), requires_grad=c['learnable'])
+            for c in temperature_response_config]
         temperature_response_mapping = {inst_key: i for i, c in enumerate(temperature_response_config)
                                         for inst_key in c['instruments']}
 
@@ -49,74 +49,12 @@ class PlasmaRadiativeTransfer(SuNeRFRendering):
             self.absorption_model = None
         else:
             raise NotImplementedError(f"Absorption type {absorption_type} not implemented.")
-        if shuffle_config:
-            shuffle_type = shuffle_config.pop('type')
-            if shuffle_type == 'time':
-                self.shuffler = TimeShuffler(**shuffle_config)
-            else:
-                raise NotImplementedError(f"Shuffle type {shuffle_type} not implemented.")
-        else:
-            self.shuffler = None
 
-    def forward(self, batch, **kwargs):
-        r"""_summary_
-        		Compute forward pass through model.
-
-        		Args:
-        			rays_o (tensor): Origin of rays
-        			rays_d (tensor): Direction of rays
-        			times (tensor): Times of maps
-        		Returns:
-        			outputs: Synthesized filtergrams/images.
-        		"""
-
-        batch = self.shuffler(batch) if self.shuffler else batch
-        instruments = batch.keys()
-        n_rays = {k: batch[k]['rays'].shape[0] for k in instruments}
-
-        # merge rays from all instruments
-        rays = torch.cat([batch[k]['rays'] for k in instruments], dim=0)
-        rays_o, rays_d = rays[:, 0], rays[:, 1]
-        times = torch.cat([batch[k]['time'] for k in instruments], dim=0)
-
-        # Sample query points along each ray.
-        sampling_out = self.sampler(rays_o, rays_d)
-        query_points, z_vals = sampling_out['points'], sampling_out['z_vals']
-
-        # add time to query points
-        exp_times = times[:, None].repeat(1, query_points.shape[1], 1)
-        query_points_time = torch.cat([query_points, exp_times], -1)  # --> (x, y, z, t)
-        query_points_time.requires_grad = True
-
-        # Coarse model pass.
-        coarse_raw = self.coarse_model(query_points_time)
-        state = {**coarse_raw, 'z_vals': z_vals, 'rays_d': rays_d, 'query_points': query_points_time}
-        coarse_out = self.render_instruments(n_rays, state)
-
-        # Fine model pass.
-        # Apply hierarchical sampling for fine query points.
-        weights = torch.cat([coarse_out[k]['weights'] for k in instruments], dim=0)
-        hierarchical_out = self.sampler_hierarchical(rays_o, rays_d, z_vals, weights)
-        query_points, z_vals_combined, z_hierarch = (hierarchical_out['points'],
-                                                     hierarchical_out['z_vals'],
-                                                     hierarchical_out['new_z_samples'])
-
-        # add time to query points = expand to dimensions of query points and slice one dimension
-        exp_times = times[:, None].repeat(1, query_points.shape[1], 1)
-        query_points_time = torch.cat([query_points, exp_times], -1)
-        query_points_time.requires_grad = True
-
-        fine_raw = self.fine_model(query_points_time)
-        state = {**fine_raw, 'z_vals': z_vals_combined, 'rays_d': rays_d, 'query_points': query_points_time}
-        fine_out = self.render_instruments(n_rays, state)
-
-        return fine_out, coarse_out
-
-    def render_instruments(self, n_rays, state):
+    def render_instruments(self, instrument_n_rays, state):
         ray_idx = 0
         render_out = {}
-        for k in n_rays.keys():
-            n = n_rays[k]  # number of rays for instrument k
+        for k in instrument_n_rays.keys():
+            n = instrument_n_rays[k]  # number of rays for instrument k
             # split state for each instrument
             instrument_state = {k: v[ray_idx:ray_idx + n] for k, v in state.items()}
             # get temperature response and instrument scaling for each instrument

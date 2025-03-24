@@ -2,21 +2,24 @@ import torch
 from torch import nn
 
 from sunerf.train.sampling import SphericalSampler, HierarchicalSampler, StratifiedSampler
+from sunerf.train.util import TimeShuffler
 
 
-class SuNeRFRendering(nn.Module):
+class MultiResolutionRenderingModule(nn.Module):
 
-    def __init__(self, coarse_model, fine_model, Rs_per_ds, sampling_config=None, hierarchical_sampling_config=None):
+    def __init__(self, coarse_model, fine_model, rendering_modules, Rs_per_ds,
+                 sampling_config=None, hierarchical_sampling_config=None, shuffle_config=None):
         super().__init__()
         self.Rs_per_ds = Rs_per_ds
 
+        self.rendering_modules = nn.ModuleDict(rendering_modules)
+
         # set default configurations
-        hierarchical_sampling_config = {'type': 'hierarchical'} \
-            if hierarchical_sampling_config is None else hierarchical_sampling_config
-        sampling_config = {'type': 'stratified'} if sampling_config is None else sampling_config
+        hierarchical_sampling_config = {} if hierarchical_sampling_config is None else hierarchical_sampling_config
+        sampling_config = {} if sampling_config is None else sampling_config
 
         # setup sampling strategy
-        sampling_type = sampling_config.pop('type')
+        sampling_type = sampling_config.pop('type', 'stratified')
         if sampling_type == 'spherical':
             self.sampler = SphericalSampler(Rs_per_ds=Rs_per_ds, **sampling_config)
         elif sampling_type == 'stratified':
@@ -25,16 +28,25 @@ class SuNeRFRendering(nn.Module):
             raise ValueError(f'Unknown sampling type {sampling_type}')
 
         # setup hierarchical sampling
-        hierarchical_sampling_type = hierarchical_sampling_config.pop('type')
+        hierarchical_sampling_type = hierarchical_sampling_config.pop('type', 'hierarchical')
         if hierarchical_sampling_type == 'hierarchical':
             self.sampler_hierarchical = HierarchicalSampler(**hierarchical_sampling_config)
         else:
             raise ValueError(f'Unknown sampling type {hierarchical_sampling_type}')
 
+        if shuffle_config:
+            shuffle_type = shuffle_config.pop('type')
+            if shuffle_type == 'time':
+                self.shuffler = TimeShuffler(**shuffle_config)
+            else:
+                raise NotImplementedError(f"Shuffle type {shuffle_type} not implemented.")
+        else:
+            self.shuffler = None
+
         self.coarse_model = coarse_model
         self.fine_model = fine_model
 
-    def forward(self, rays_o, rays_d, times, **kwargs):
+    def forward(self, batch, **kwargs):
         r"""_summary_
         		Compute forward pass through model.
 
@@ -45,6 +57,19 @@ class SuNeRFRendering(nn.Module):
         		Returns:
         			outputs: Synthesized filtergrams/images.
         		"""
+        batch = self.shuffler(batch) if self.shuffler else batch
+
+
+        dataset_keys = batch.keys()
+        instrument_keys = self.rendering_modules.keys()
+
+        dataset_n_rays = {k: batch[k]['rays'].shape[0] for k in dataset_keys}
+        dataset_instrument = {k: batch[k]['instrument'] for k in dataset_keys}
+
+        # merge rays from all instruments
+        rays = torch.cat([batch[k]['rays'] for k in dataset_keys], dim=0)
+        rays_o, rays_d = rays[:, 0], rays[:, 1]
+        times = torch.cat([batch[k]['time'] for k in dataset_keys], dim=0)
 
         # Sample query points along each ray.
         sampling_out = self.sampler(rays_o, rays_d)
@@ -55,11 +80,16 @@ class SuNeRFRendering(nn.Module):
         query_points_time = torch.cat([query_points, exp_times], -1)  # --> (x, y, z, t)
 
         # Coarse model pass.
-        coarse_out = self._render(self.coarse_model, query_points_time, rays_d, rays_o, z_vals, **kwargs)
+        coarse_raw = self.coarse_model(query_points_time)
+        state = {**coarse_raw, 'z_vals': z_vals,
+                 'rays_d': rays_d, 'rays_o': rays_o,
+                 'query_points': query_points_time}
+        coarse_out = self.render_instruments(dataset_n_rays, dataset_instrument, state)
 
         # Fine model pass.
         # Apply hierarchical sampling for fine query points.
-        hierarchical_out = self.sampler_hierarchical(rays_o, rays_d, z_vals, coarse_out['weights'])
+        weights = torch.cat([coarse_out[k]['weights'] for k in dataset_keys], dim=0)
+        hierarchical_out = self.sampler_hierarchical(rays_o, rays_d, z_vals, weights)
         query_points, z_vals_combined, z_hierarch = (hierarchical_out['points'],
                                                      hierarchical_out['z_vals'],
                                                      hierarchical_out['new_z_samples'])
@@ -68,28 +98,27 @@ class SuNeRFRendering(nn.Module):
         exp_times = times[:, None].repeat(1, query_points.shape[1], 1)
         query_points_time = torch.cat([query_points, exp_times], -1)
 
-        fine_out = self._render(self.fine_model, query_points_time, rays_d, rays_o, z_vals_combined, **kwargs)
+        fine_raw = self.fine_model(query_points_time)
+        state = {**fine_raw, 'z_vals': z_vals_combined,
+                 'rays_d': rays_d, 'rays_o': rays_o,
+                 'query_points': query_points_time}
+        fine_out = self.render_instruments(dataset_n_rays, dataset_instrument, state)
 
-        # compute regularization of absorption
-        distance = query_points.pow(2).sum(-1).pow(0.5)
-        height_map = (fine_out['weights'] * distance).sum(-1)
-        # penalize absorption past 1.2 solar radii
-        # regularization = torch.relu(distance - 1.2 / self.Rs_per_ds) * (1 - absorption)
+        return {'fine_out': fine_out, 'coarse_out': coarse_out,
+                'z_vals_stratified': z_vals, 'z_vals_hierarchical': z_hierarch}
 
-        return {**fine_out,
-                'z_vals_stratified': z_vals, 'z_vals_hierarchical': z_hierarch,
-                'height_map': height_map,
-                'coarse_image': coarse_out['image'], 'fine_image': fine_out['image']}
-
-    def _render(self, model, query_points, rays_d, rays_o, z_vals, **kwargs):
-        raw = model(query_points)
-        # Perform differentiable volume rendering to re-synthesize the filtergrams.
-        state = {'raw': raw, 'z_vals': z_vals, 'rays_d': rays_d, 'rays_o': rays_o, 'query_points': query_points}
-        out = self.raw2outputs(**state, **kwargs)
-        return out
-
-    def raw2outputs(self, **kwargs):
-        raise NotImplementedError("This method should be implemented in a subclass")
+    def render_instruments(self, dataset_n_rays, dataset_instrument, state):
+        ray_idx = 0
+        render_out = {}
+        # number of rays for instrument k
+        for k, n_rays in dataset_n_rays.items():
+            # split state for each instrument
+            instrument_state = {k: v[ray_idx:ray_idx + n_rays] for k, v in state.items()}
+            # render instrument output
+            instrument_key = dataset_instrument[k]
+            render_out[k] = self.rendering_modules[instrument_key](**instrument_state)
+            ray_idx += n_rays
+        return render_out
 
 
 def cumprod_exclusive(tensor: torch.Tensor, dim=1) -> torch.Tensor:

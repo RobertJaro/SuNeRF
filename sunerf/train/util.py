@@ -36,3 +36,27 @@ def load_yaml_config(yaml_config_file, overwrite_args=None):
         config_str = config_str.replace('{%s}' % overwrite_key, overwrite_value)
     config = yaml.safe_load(config_str)
     return config
+
+
+def atan2_safe(numerator, denominator):
+    epsilon = 1e-7
+    nudge = (denominator == 0) * epsilon
+    denominator = denominator + nudge
+    out = torch.atan2(numerator, denominator)
+    return out
+
+def acos_safe(x):
+    epsilon = 1e-7
+    nudge_pos = (x == 1) * epsilon
+    nudge_neg = (x == -1) * epsilon
+    x = x - nudge_pos + nudge_neg
+    out = torch.acos(x)
+    return out
+
+def asin_safe(x):
+    epsilon = 1e-7
+    nudge_pos = (x == 1) * epsilon
+    nudge_neg = (x == -1) * epsilon
+    x = x - nudge_pos + nudge_neg
+    out = torch.asin(x)
+    return out

@@ -9,7 +9,8 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LambdaCallback
 from pytorch_lightning.loggers import WandbLogger
 
 from sunerf.data.loader.multi_instrument import MultiInstrumentDataModule
-from sunerf.model.sunerf import save_state, PlasmaSuNeRFModule
+from sunerf.model.sunerf import save_state
+from sunerf.model.plasma import PlasmaSuNeRFModule
 from sunerf.train.callback import PlasmaImageCallback, AbsorptionCallback
 from sunerf.train.util import load_yaml_config
 
@@ -44,7 +45,7 @@ if __name__ == '__main__':
 
     # initialize data module and model
     warnings.filterwarnings("ignore")  # ignore warnings from sunpy
-    data_module = MultiInstrumentDataModule(**data_config, working_dir=work_directory)
+    data_module = MultiInstrumentDataModule(**data_config, work_directory=work_directory)
 
     # initialize SuNeRF model
     sunerf = PlasmaSuNeRFModule(Rs_per_ds=data_module.Rs_per_ds, seconds_per_dt=data_module.seconds_per_dt,

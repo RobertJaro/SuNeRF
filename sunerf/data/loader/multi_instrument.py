@@ -23,23 +23,21 @@ from sunerf.train.callback import log_overview
 
 class MultiInstrumentDataModule(BaseDataModule):
 
-    def __init__(self, data_config, working_dir, Rs_per_ds=1, seconds_per_dt=86400, ref_time=None,
+    def __init__(self, datasets, work_directory, Rs_per_ds=1, seconds_per_dt=86400, ref_date=None,
                  batch_size=int(2 ** 10), validation_batch_size=int(2 ** 11), debug=False, random_config=None,
                  **kwargs):
-        os.makedirs(working_dir, exist_ok=True)
+        os.makedirs(work_directory, exist_ok=True)
 
+        ref_date = parse(ref_date) if ref_date is not None else None  # parse ref time if specified
+        base_config = {'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt, 'ref_date': ref_date,
+                       'debug': debug, 'work_directory': work_directory, 'batch_size': batch_size}
 
-
-        ref_time = parse(ref_time) if ref_time is not None else None  # parse ref time if specified
-        base_config = {'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt, 'ref_time': ref_time,
-                       'debug': debug, 'working_dir': working_dir, 'batch_size': batch_size}
-
-        train_dict = self._load_dataset(data_config, base_config)
+        train_dict = self._load_dataset(datasets, base_config)
         module_config = {}
         for k, ref_ds in train_dict.items():
             dc = ref_ds.data_config
             module_config[k] = {'type': 'plasma', 'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt,
-                                'ref_time': ref_time,
+                                'ref_date': ref_date,
                                 'wcs': dc['wcs'], 'image_shape': dc['image_shape'], 'times': ref_ds.times,
                                 'cmaps': dc['cmaps']}
 
@@ -52,17 +50,17 @@ class MultiInstrumentDataModule(BaseDataModule):
 
 
         base_config['validation_batch_size'] = validation_batch_size
-        valid_dict = self._load_dataset(data_config, base_config, test_ds=True)
+        valid_dict = self._load_dataset(datasets, base_config, test_ds=True)
 
         valid_dict['absorption'] = AbsorptionTestDataset(batch_size=validation_batch_size)
 
         super().__init__(train_dict, valid_dict,
-                         Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt, ref_time=ref_time,
+                         Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt, ref_date=ref_date,
                          module_config=module_config, **kwargs)
 
     def _load_dataset(self, data_config, base_config, test_ds=False):
         N_GPUS = torch.cuda.device_count()
-        ref_time = None if 'ref_time' not in base_config else base_config['ref_time']
+        ref_date = None if 'ref_date' not in base_config else base_config['ref_date']
         data_config = copy.deepcopy(data_config)
 
         train_dict = {}
@@ -85,16 +83,16 @@ class MultiInstrumentDataModule(BaseDataModule):
             else:
                 raise ValueError(f'Unknown dataset type {ds_type}')
             # update ref time
-            if ref_time is None:
-                ref_time = dataset.ref_time
-                base_config['ref_time'] = ref_time
+            if ref_date is None:
+                ref_date = dataset.ref_date
+                base_config['ref_date'] = ref_date
             assert ds_key not in train_dict, f'Duplicate dataset key {ds_key}'
             train_dict[ds_key] = dataset
         return train_dict
 
 
 class GenericEUVDataset(TensorsDataset):
-    def __init__(self, file_dict, date_dict, working_dir, ds_key, Rs_per_ds=1, seconds_per_dt=86400, ref_time=None,
+    def __init__(self, file_dict, date_dict, work_directory, ds_key, Rs_per_ds=1, seconds_per_dt=86400, ref_date=None,
                  batch_size=int(2 ** 10), debug=False, test=False, cmaps=None, scaling=1, static=False, **kwargs):
         self.scaling = scaling
         # choose channel with min number of dates
@@ -168,25 +166,25 @@ class GenericEUVDataset(TensorsDataset):
         # set to same time if static
         if static:
             times = data_dict['time']
-            ref_time = min(times) if ref_time is None else ref_time
-            data_dict['time'] = [ref_time] * len(times)
+            ref_date = min(times) if ref_date is None else ref_date
+            data_dict['time'] = [ref_date] * len(times)
 
         # expand and normalize times
         times = data_dict['time']
-        ref_time = min(times) if ref_time is None else ref_time
-        self.ref_time = ref_time
+        ref_date = min(times) if ref_date is None else ref_date
+        self.ref_date = ref_date
         self.times = times
-        times = np.array([normalize_datetime(t, seconds_per_dt, ref_time) for t in times])
+        times = np.array([normalize_datetime(t, seconds_per_dt, ref_date) for t in times])
         self.normalized_times = times
         times_arr = np.ones((*data_dict['image'].shape[:-1], 1), dtype=np.float32) * times[:, None, None, None]
         data_dict['time'] = times_arr
 
         if not test:
-            log_overview(data_dict["image"], data_dict['pose'], times, 'gray', seconds_per_dt, ref_time, ds_key=ds_key)
+            log_overview(data_dict["image"], data_dict['pose'], times, 'gray', seconds_per_dt, ref_date, ds_key=ds_key)
 
         tensors = {k: v.reshape((-1, *v.shape[3:])) for k, v in data_dict.items() if k in ['image', 'rays', 'time']}
 
-        super().__init__(tensors=tensors, work_directory=working_dir, batch_size=batch_size,
+        super().__init__(tensors=tensors, work_directory=work_directory, batch_size=batch_size,
                          shuffle=not test, filter_nans=not test)
 
 

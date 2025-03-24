@@ -111,8 +111,8 @@ rendering = PlasmaRadiativeTransfer(temperature_response_config=temperature_resp
                                     Rs_per_ds=args.Rs_per_ds,
                                     sampling_config=sampling_config, absorption_config={'type': 'constant'})
 # create mock WCS
-obs = SkyCoord(0 * u.deg, 0 * u.deg, 1 * u.AU, frame=frames.HeliographicStonyhurst, obstime=dataset.ref_time)
-reference_coord = SkyCoord(0 * u.deg, 0 * u.deg, obstime=dataset.ref_time, observer=obs,
+obs = SkyCoord(0 * u.deg, 0 * u.deg, 1 * u.AU, frame=frames.HeliographicStonyhurst, obstime=dataset.ref_date)
+reference_coord = SkyCoord(0 * u.deg, 0 * u.deg, obstime=dataset.ref_date, observer=obs,
                            frame=frames.Helioprojective)
 mock_data = np.zeros((512, 512))
 scale = [2400 / 256, 2400 / 256] * u.arcsec / u.pix
@@ -133,7 +133,7 @@ def save_model():
         # data scaling
         'Rs_per_ds': args.Rs_per_ds,
         'seconds_per_dt': args.seconds_per_dt,
-        'ref_time': dataset.ref_time,
+        'ref_date': dataset.ref_date,
     }
     torch.save(state, model_path)
 

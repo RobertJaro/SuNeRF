@@ -21,7 +21,7 @@ from sunerf.train.coordinate_transformation import pose_spherical
 class BaseDataModule(LightningDataModule):
 
     def __init__(self, training_datasets, validation_datasets,
-                 Rs_per_ds, seconds_per_dt, ref_time,
+                 Rs_per_ds, seconds_per_dt, ref_date,
                  module_config,
                  num_workers=None, **kwargs):
         super().__init__()
@@ -31,7 +31,7 @@ class BaseDataModule(LightningDataModule):
 
         self.Rs_per_ds = Rs_per_ds
         self.seconds_per_dt = seconds_per_dt
-        self.ref_time = ref_time
+        self.ref_date = ref_date
 
         self.config = module_config
         self.validation_dataset_mapping = {i: name for i, name in enumerate(self.validation_datasets.keys())}
@@ -87,20 +87,25 @@ def get_data(data_path, Rs_per_ds, debug=False):
 
 
 def _load_map_data(data):
-    map_path, Rs_per_ds = data
+    map_path, Rs_per_ds, reference_frame = data
 
     s_map = Map(map_path)
     time = s_map.date.datetime
 
-    pose = pose_spherical(s_map.carrington_longitude.to(u.rad).value,
-                          s_map.carrington_latitude.to(u.rad).value,
-                          s_map.dsun.to_value(u.solRad) / Rs_per_ds).float().numpy()
+    if reference_frame == 'carrington':
+        pose = pose_spherical(s_map.carrington_longitude.to(u.rad).value,
+                              s_map.carrington_latitude.to(u.rad).value,
+                              s_map.dsun.to_value(u.solRad) / Rs_per_ds).float().numpy()
+    elif reference_frame == 'heliographic':
+        pose = pose_spherical(s_map.heliographic_longitude.to(u.rad).value,
+                              s_map.heliographic_latitude.to(u.rad).value,
+                              s_map.dsun.to_value(u.solRad) / Rs_per_ds).float().numpy()
+    else:
+        raise ValueError('reference_frame must be "heliographic" or "carrington"')
 
     image = s_map.data.astype(np.float32)
     img_coords = all_coordinates_from_map(s_map).transform_to(frames.Helioprojective)
     all_rays = np.stack(get_rays(img_coords, pose), -2)
-
-    # all_rays = all_rays.reshape((-1, 2, 3))
 
     return {'image': image, 'pose': pose, 'rays': all_rays, 'time': time}
 
@@ -114,6 +119,7 @@ class BatchesDataset(Dataset):
         """
         self.batches_file_paths = batches_file_paths
         self.batch_size = int(batch_size)
+        self.addition_kwargs = kwargs
 
     def __len__(self):
         ref_file = list(self.batches_file_paths.values())[0]
@@ -124,6 +130,7 @@ class BatchesDataset(Dataset):
         # lazy load data
         data = {k: np.copy(np.load(bf, mmap_mode='r')[idx * self.batch_size: (idx + 1) * self.batch_size])
                 for k, bf in self.batches_file_paths.items()}
+        data.update(self.addition_kwargs)
         return data
 
     def clear(self):

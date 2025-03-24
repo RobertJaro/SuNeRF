@@ -13,23 +13,23 @@ from sunerf.train.callback import log_overview
 
 class SingleChannelDataModule(BaseDataModule):
 
-    def __init__(self, data_path, working_dir, Rs_per_ds=1, seconds_per_dt=86400, ref_time=None,
+    def __init__(self, data_path, work_directory, Rs_per_ds=1, seconds_per_dt=86400, ref_date=None,
                  batch_size=int(2 ** 10), debug=False, cmap='gray', **kwargs):
-        os.makedirs(working_dir, exist_ok=True)
+        os.makedirs(work_directory, exist_ok=True)
 
         data_dict = get_data(data_path=data_path, Rs_per_ds=Rs_per_ds, debug=debug)
 
         o_times = data_dict['time']
 
         # normalize datetime
-        ref_time = parse(ref_time) if ref_time is not None else min(o_times)
-        times = np.array([normalize_datetime(t, seconds_per_dt, ref_time) for t in o_times], dtype=np.float32)
+        ref_date = parse(ref_date) if ref_date is not None else min(o_times)
+        times = np.array([normalize_datetime(t, seconds_per_dt, ref_date) for t in o_times], dtype=np.float32)
 
         # unpack data
         images = data_dict['image']
         rays = data_dict['rays']
 
-        log_overview(images[..., None], data_dict['pose'], times, cmap, seconds_per_dt, ref_time)
+        log_overview(images[..., None], data_dict['pose'], times, cmap, seconds_per_dt, ref_date)
 
         # select test image
         test_idx = len(images) // 6
@@ -54,9 +54,9 @@ class SingleChannelDataModule(BaseDataModule):
         # save npy files
         # create file names
         logging.info('Save batches to disk')
-        npy_rays = os.path.join(working_dir, 'rays_batches.npy')
-        npy_times = os.path.join(working_dir, 'times_batches.npy')
-        npy_images = os.path.join(working_dir, 'images_batches.npy')
+        npy_rays = os.path.join(work_directory, 'rays_batches.npy')
+        npy_times = os.path.join(work_directory, 'times_batches.npy')
+        npy_images = os.path.join(work_directory, 'images_batches.npy')
 
         # save to disk
         np.save(npy_rays, rays)
@@ -79,10 +79,10 @@ class SingleChannelDataModule(BaseDataModule):
         valid_dataset = ArrayDataset({'image': valid_images, 'rays': valid_rays, 'time': valid_times},
                                      batch_size=batch_size)
 
-        config = {'type': 'emission', 'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt, 'ref_time': ref_time,
+        config = {'type': 'emission', 'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt, 'ref_date': ref_date,
                   'wcs': data_dict['wcs'], 'resolution': data_dict['resolution'], 'wavelength': data_dict['wavelength'],
                   'times': o_times, 'cmap': cmap}
         super().__init__({'tracing': train_dataset}, {'test_image': valid_dataset},
                          start_time=o_times.min(), end_time=o_times.max(),
-                         Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt, ref_time=ref_time,
+                         Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt, ref_date=ref_date,
                          module_config=config, **kwargs)

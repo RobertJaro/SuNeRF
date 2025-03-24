@@ -50,5 +50,5 @@ class PSICubeDataset(TensorsDataset):
         tensors = {'log_rho': log_rho, 'log_T': log_T, 'coords': coords}
         super().__init__(tensors, **kwargs)
 
-        self.ref_time = datetime(2025, 1, 1)
-        self.times = [self.ref_time + timedelta(seconds=float(t)) for t in times]
+        self.ref_date = datetime(2025, 1, 1)
+        self.times = [self.ref_date + timedelta(seconds=float(t)) for t in times]

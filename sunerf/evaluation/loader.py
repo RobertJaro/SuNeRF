@@ -34,8 +34,7 @@ class SuNeRFLoader:
         self.seconds_per_dt = state['seconds_per_dt']
         self.Rs_per_ds = state['Rs_per_ds']
         self.Mm_per_ds = self.Rs_per_ds * (1 * u.R_sun).to_value(u.Mm)
-        # self.ref_time = state['ref_time']
-        self.ref_time = self.start_time()
+        self.ref_date = state['ref_date']
 
         self.ref_maps = {k: Map(np.zeros(self.resolution(k)), self.wcs(k)) for k in self.instrument_keys}
         self.ne_scaling = (1e-21 * 10000) ** 0.5  #TODO read from config
@@ -126,7 +125,7 @@ class SuNeRFLoader:
 
         flat_rays_o = rays_o.reshape([-1, 3]).to(self.device)
         flat_rays_d = rays_d.reshape([-1, 3]).to(self.device)
-        time = normalize_datetime(time, self.seconds_per_dt, self.ref_time)
+        time = normalize_datetime(time, self.seconds_per_dt, self.ref_date)
         flat_time = torch.ones_like(flat_rays_o[:, 0:1]) * time
 
         # make batches
@@ -149,10 +148,10 @@ class SuNeRFLoader:
         return results
 
     def normalize_datetime(self, time):
-        return normalize_datetime(time, self.seconds_per_dt, self.ref_time)
+        return normalize_datetime(time, self.seconds_per_dt, self.ref_date)
 
     def unnormalize_datetime(self, time):
-        return unnormalize_datetime(time, self.seconds_per_dt, self.ref_time)
+        return unnormalize_datetime(time, self.seconds_per_dt, self.ref_date)
 
     @torch.no_grad()
     def load_coords(self, query_points_npy, batch_size=2048, progress=True):
@@ -191,7 +190,7 @@ class SuNeRFLoader:
         longitude_range = np.arange(0, 360, 1) * u.deg if longitude_range is None else longitude_range
         radius_range = np.linspace(1, 2, 10) * u.solRad if radius_range is None else radius_range
 
-        time = self.ref_time if time is None else time
+        time = self.ref_date if time is None else time
         time = [time] if not isinstance(time, Iterable) else time
         time = [self.normalize_datetime(t) for t in time]
 

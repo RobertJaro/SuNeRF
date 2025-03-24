@@ -19,21 +19,22 @@ from sunerf.data.utils import sdo_img_norm
 
 class BaseCallback(Callback):
 
-    def __init__(self, name):
+    def __init__(self, ds_key, name=None):
         super().__init__()
-        self.name = name
+        self.ds_key = ds_key
+        self.name = name if name is not None else ds_key
 
     def get_validation_outputs(self, pl_module):
-        if self.name not in pl_module.validation_outputs:
+        if self.ds_key not in pl_module.validation_outputs:
             return None
-        outputs = pl_module.validation_outputs[self.name]
+        outputs = pl_module.validation_outputs[self.ds_key]
         return outputs
 
 
 class AbsorptionCallback(BaseCallback):
 
-    def __init__(self, name, image_shape):
-        super().__init__(name)
+    def __init__(self, ds_key, image_shape):
+        super().__init__(ds_key)
         self.image_shape = image_shape
 
     def on_validation_epoch_end(self, trainer, pl_module):
@@ -79,8 +80,8 @@ class AbsorptionCallback(BaseCallback):
 
 class TestImageCallback(BaseCallback):
 
-    def __init__(self, name, image_shape, cmap='gray'):
-        super().__init__(name)
+    def __init__(self, ds_key, image_shape, cmap='gray'):
+        super().__init__(ds_key)
         self.image_shape = image_shape
         self.cmap = plt.get_cmap(cmap)
         self.normalize = ImageNormalize(vmin=0, vmax=1, stretch=AsinhStretch(0.005), clip=True)
@@ -135,8 +136,8 @@ class TestImageCallback(BaseCallback):
 
 class PlasmaImageCallback(BaseCallback):
 
-    def __init__(self, name, image_shape, cmaps=None):
-        super().__init__(name)
+    def __init__(self, ds_key, image_shape, cmaps=None):
+        super().__init__(ds_key)
         self.image_shape = image_shape
         self.cmaps = cmaps
         self.normalize = ImageNormalize(vmin=0, vmax=1, clip=True)
@@ -184,12 +185,13 @@ class PlasmaImageCallback(BaseCallback):
         [ax.set_axis_off() for ax in axs.flatten()]
 
         fig.tight_layout()
-        wandb.log({f'images.{self.name}': fig})
+        wandb.log({f'images.{self.ds_key}': fig})
         plt.close('all')
 
         self.plot_integrated_quantities(outputs['height_map'], outputs['mean_T'], outputs['total_ne'],
                                         outputs['mean_absorption'],
-                                        outputs['z_vals_stratified'], outputs['z_vals_hierarchical'], outputs['distance'].mean())
+                                        outputs['z_vals_stratified'], outputs['z_vals_hierarchical'],
+                                        outputs['distance'].mean())
 
         val_loss = ((fine_image - target_image) ** 2).mean()
         val_ssim = []
@@ -198,12 +200,12 @@ class PlasmaImageCallback(BaseCallback):
         val_ssim = np.mean(val_ssim)
         val_psnr = -10. * np.log10(val_loss)
 
-        wandb.log({f'validation.loss.{self.name}': val_loss,
-                   f'validation.ssim.{self.name}': val_ssim,
-                   f'validation.psnr.{self.name}': val_psnr})
+        wandb.log({f'validation.loss.{self.ds_key}': val_loss,
+                   f'validation.ssim.{self.ds_key}': val_ssim,
+                   f'validation.psnr.{self.ds_key}': val_psnr})
 
     def plot_integrated_quantities(self, height_map, mean_T, total_ne, absorption, z_vals_stratified,
-                     z_vals_hierach, distance,):
+                                   z_vals_hierach, distance, ):
         fig, axs = plt.subplots(1, 5, figsize=(24, 4))
 
         ax = axs[0]
@@ -239,11 +241,151 @@ class PlasmaImageCallback(BaseCallback):
         plot_ray_sampling(z_vals_stratified[y, x] - distance, z_vals_hierach[y, x] - distance, axs[-1])
 
         fig.tight_layout()
-        wandb.log({f'integrated_quantities.{self.name}': fig})
+        wandb.log({f'integrated_quantities.{self.ds_key}': fig})
         plt.close('all')
 
 
-def log_overview(images, poses, times, cmap, seconds_per_dt, ref_time, ds_key=None):
+class ThomsonImageCallback(BaseCallback):
+
+    def __init__(self, ds_key, image_shape):
+        super().__init__(ds_key)
+        self.image_shape = image_shape
+        self.normalize = ImageNormalize(vmin=0, vmax=1, clip=True)
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        outputs = self.get_validation_outputs(pl_module)
+        if outputs is None:
+            return
+
+        # reshape
+        outputs = {k: v.view(*self.image_shape, *v.shape[1:]).cpu().numpy() for k, v in outputs.items()}
+
+        fine_image = outputs['fine_image']
+        target_image = outputs['target_image']
+        coarse_image = outputs['coarse_image']
+
+        ratio_target_image = outputs['ratio_target_image']
+        ratio_fine_image = outputs['ratio_fine_image']
+        ratio_coarse_image = outputs['ratio_coarse_image']
+
+        fine_image[np.isnan(target_image)] = np.nan
+        coarse_image[np.isnan(target_image)] = np.nan
+        ratio_coarse_image[np.isnan(target_image).any(-1)] = np.nan
+        ratio_fine_image[np.isnan(target_image).any(-1)] = np.nan
+
+        fig, axs = plt.subplots(3, 3, figsize=(9, 9))
+
+        # pB and tB images
+        for i in range(2):
+            ax = axs[i, 0]
+            v_max = np.nanmax(target_image[..., i])
+            v_min = np.nanmin(target_image[..., i])
+            im = ax.imshow(target_image[..., i], cmap='plasma', vmin=v_min, vmax=v_max)
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            plt.colorbar(im, cax=cax)
+            ax.set_title(f'Target')
+
+            ax = axs[i, 1]
+            im = ax.imshow(fine_image[..., i], cmap='plasma', vmin=v_min, vmax=v_max)
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            plt.colorbar(im, cax=cax)
+            ax.set_title(f'Fine')
+
+            ax = axs[i, 2]
+            im = ax.imshow(coarse_image[..., i], cmap='plasma', vmin=v_min, vmax=v_max)
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            plt.colorbar(im, cax=cax)
+            ax.set_title(f'Coarse')
+
+        # ratio images
+        ax = axs[2, 0]
+        v_max = np.nanmax(ratio_target_image[..., 0])
+        im = ax.imshow(ratio_target_image[..., 0], cmap='plasma', vmin=0, vmax=v_max)
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+        ax.set_title(f'Target')
+
+        ax = axs[2, 1]
+        im = ax.imshow(ratio_fine_image[..., 0], cmap='plasma', vmin=0, vmax=v_max)
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+        ax.set_title(f'Fine')
+
+        ax = axs[2, 2]
+        im = ax.imshow(ratio_coarse_image[..., 0], cmap='plasma', vmin=0, vmax=v_max)
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+        ax.set_title(f'Coarse')
+
+        [ax.set_xticks([]) for ax in axs.flatten()]
+        [ax.set_yticks([]) for ax in axs.flatten()]
+
+        axs[0, 0].set_ylabel('tB')
+        axs[1, 0].set_ylabel('pB')
+        axs[2, 0].set_ylabel('Ratio')
+
+        fig.tight_layout()
+        wandb.log({f'images.{self.ds_key}': fig})
+        plt.close('all')
+
+        # self.plot_integrated_quantities(outputs['density'], outputs['distance'],
+        #                                 outputs['z_vals_stratified'], outputs['z_vals_hierarchical'], outputs['distance_from_sun'],
+        #                                 outputs['distance_from_obs'])
+
+        val_loss = np.nanmean((fine_image - target_image) ** 2)
+        val_ssim = []
+        for i in range(target_image.shape[-1]):
+            val_ssim += [structural_similarity(np.nan_to_num(target_image[..., i], nan=0),
+                                               np.nan_to_num(fine_image[..., i], nan=0),
+                                               data_range=1)]
+        val_ssim = np.mean(val_ssim)
+        val_psnr = -10. * np.log10(val_loss)
+
+        wandb.log({f'validation.loss.{self.ds_key}': val_loss,
+                   f'validation.ssim.{self.ds_key}': val_ssim,
+                   f'validation.psnr.{self.ds_key}': val_psnr})
+
+    def plot_integrated_quantities(self, density, distance, z_vals_stratified,
+                                   z_vals_hierach, distance_from_sun, distance_from_obs):
+        fig, axs = plt.subplots(1, 5, figsize=(24, 4))
+
+        ax = axs[0]
+        im = ax.imshow(density, cmap='inferno', norm='log')
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+        ax.set_title(f'mean log(T)')
+
+        ax = axs[1]
+        im = ax.imshow(distance_from_sun, cmap='viridis')
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+        ax.set_title(f'Total $n_e$')
+
+        ax = axs[2]
+        im = ax.imshow(distance_from_obs, cmap='viridis')
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+        ax.set_title(f'Mean Absorption')
+
+        # select index
+        y, x = z_vals_stratified.shape[0] // 4, z_vals_stratified.shape[1] // 4  # select point in first quadrant
+        plot_ray_sampling(z_vals_stratified[y, x] - distance, z_vals_hierach[y, x] - distance, axs[-1])
+
+        fig.tight_layout()
+        wandb.log({f'integrated_quantities.{self.ds_key}': fig})
+        plt.close('all')
+
+
+def log_overview(images, poses, times, cmap, seconds_per_dt, ref_date, ds_key=None):
     dirs = np.stack([np.sum([0, 0, -1] * pose[:3, :3], axis=-1) for pose in poses])
     origins = poses[:, :3, -1]
     colors = plt.get_cmap('viridis')(Normalize()(times))
@@ -293,7 +435,7 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, ref_time, ds_key=No
         masked_img = np.ma.array(img[..., 0], mask=np.isnan(img[..., 0]))
         ax.imshow(masked_img, norm=norm, cmap=cmap, origin='lower')
         ax.set_axis_off()
-        ax.set_title('Time: %s' % unnormalize_datetime(times[i], seconds_per_dt, ref_time).isoformat(' '))
+        ax.set_title('Time: %s' % unnormalize_datetime(times[i], seconds_per_dt, ref_date).isoformat(' '))
 
         wandb.log({f'Overview.{ds_key}': fig})
         plt.close(fig)
@@ -319,3 +461,89 @@ def plot_ray_sampling(
     ax.set_title('Stratified  Samples (blue) and Hierarchical Samples (red)')
     ax.axes.yaxis.set_visible(False)
     ax.grid(True)
+
+
+class LatitudeSliceCallback(BaseCallback):
+
+    def __init__(self, cube_shape, latitude, rho_normalization, Rs_per_ds, seconds_per_dt, **kwargs):
+        super().__init__(**kwargs)
+        self.latitude = np.deg2rad(latitude)
+        self.cube_shape = cube_shape
+        self.rho_normalization = 1.12e6 #TODO: rho_normalization
+        self.velocity_normalization = (Rs_per_ds / seconds_per_dt) * (1 * u.solRad / u.s).to_value(u.km / u.s)
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        outputs = self.get_validation_outputs(pl_module)
+        if outputs is None:
+            return
+
+        spherical_coords = outputs['spherical_coords'].reshape(self.cube_shape + (3,)).cpu().numpy()
+        rho_true = outputs['rho_true'].reshape(self.cube_shape).cpu().numpy()
+        rho_pred = outputs['rho_pred'].reshape(self.cube_shape).cpu().numpy() * self.rho_normalization
+        velocity = outputs['v_pred'].reshape(self.cube_shape + (3,)).cpu().numpy() * self.velocity_normalization
+
+        lat_idx = np.argmin(np.abs(spherical_coords[0, :, 0, 1] - self.latitude))
+
+        r = spherical_coords[:, lat_idx, :, 0]
+        ph = spherical_coords[:, lat_idx, :, 2]
+
+        fig, axs = plt.subplots(1, 2, subplot_kw={'projection': 'polar'}, figsize=(10, 5))
+
+        ax = axs[0]
+        z = rho_true[:, lat_idx, :]
+        pc = ax.pcolormesh(ph, r, z, edgecolors='face', norm='log', cmap='inferno', vmin=1e1, vmax=1e3)
+        fig.colorbar(pc, ax=ax, label='Density [N$_e$ cm$^{-3}$]')
+        ax.set_title("Ground-truth", va='bottom')
+
+        ax = axs[1]
+        z = rho_pred[:, lat_idx, :]
+        pc = ax.pcolormesh(ph, r, z, edgecolors='face', norm='log', cmap='inferno', vmin=1e1, vmax=1e3)
+        fig.colorbar(pc, ax=ax, label='Density [N$_e$ cm$^{-3}$]')
+        ax.set_title("SuNeRF", va='bottom')
+
+        fig.tight_layout()
+        wandb.log({f"Latitude={np.rad2deg(self.latitude).astype(int):03d} deg - Slice": wandb.Image(fig)})
+        plt.close('all')
+
+
+class LongitudeSliceCallback(BaseCallback):
+
+    def __init__(self, cube_shape, longitude, rho_normalization, Rs_per_ds, seconds_per_dt, **kwargs):
+        super().__init__(**kwargs)
+        self.longitude = np.deg2rad(longitude)
+        self.cube_shape = cube_shape
+        self.rho_normalization = 1.12e6 #TODO: rho_normalization
+        self.velocity_normalization = (Rs_per_ds / seconds_per_dt) * (1 * u.solRad / u.s).to_value(u.km / u.s)
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        outputs = self.get_validation_outputs(pl_module)
+        if outputs is None:
+            return
+
+        spherical_coords = outputs['spherical_coords'].reshape(self.cube_shape + (3,)).cpu().numpy()
+        rho_true = outputs['rho_true'].reshape(self.cube_shape).cpu().numpy()
+        rho_pred = outputs['rho_pred'].reshape(self.cube_shape).cpu().numpy() * self.rho_normalization
+        velocity = outputs['v_pred'].reshape(self.cube_shape + (3,)).cpu().numpy() * self.velocity_normalization
+
+        lon_idx = np.argmin(np.abs(spherical_coords[0, 0, :, 2] - self.longitude))
+
+        r = spherical_coords[:, :, lon_idx, 0]
+        th = spherical_coords[:, :, lon_idx, 1]
+
+        fig, axs = plt.subplots(1, 2, subplot_kw={'projection': 'polar'}, figsize=(10, 5))
+
+        ax = axs[0]
+        z = rho_true[:, :, lon_idx]
+        pc = ax.pcolormesh(th, r, z, edgecolors='face', norm='log', cmap='inferno', vmin=1e1, vmax=1e3)
+        fig.colorbar(pc, ax=ax, label='Density [N$_e$ cm$^{-3}$]')
+        ax.set_title("Ground-truth", va='bottom')
+
+        ax = axs[1]
+        z = rho_pred[:, :, lon_idx]
+        pc = ax.pcolormesh(th, r, z, edgecolors='face', norm='log', cmap='inferno', vmin=1e1, vmax=1e3)
+        fig.colorbar(pc, ax=ax, label='Density [N$_e$ cm$^{-3}$]')
+        ax.set_title("SuNeRF", va='bottom')
+
+        fig.tight_layout()
+        wandb.log({f"{self.name} - Longitude={np.rad2deg(self.longitude).astype(int):03d} deg - Slice": wandb.Image(fig)})
+        plt.close('all')

@@ -12,16 +12,18 @@ def get_rays(img_coords, c2w: np.array) -> Tuple[np.array, np.array]:
     Ty = img_coords.Ty.to_value(u.rad)
     # get direction vector --> 0,0 is the down the z axis
     # central pixel (Tx=Ty=0) = (0, 0, -1)
-    x = np.sin(Tx)
-    y = -np.sin(Ty) * np.cos(Tx)
-    z = -np.cos(Tx) * np.cos(Ty)
+
+    # original version
+    # x = np.sin(Tx)
+    # y = np.cos(Tx) * np.sin(Ty)
+    # z = - np.cos(Tx) * np.cos(Ty)
 
     # alternative rotation (might need verification)
-    # alpha = np.arctan2(Tx, Ty)
-    # rho = np.sqrt(Tx ** 2 + Ty ** 2)
-    # x = np.sin(alpha) * np.sin(rho)
-    # y = - np.cos(alpha) * np.sin(rho)
-    # z = - np.cos(rho)
+    alpha = np.arctan2(Tx, Ty)
+    rho = np.sqrt(Tx ** 2 + Ty ** 2)
+    x = np.sin(alpha) * np.sin(rho)
+    y = - np.cos(alpha) * np.sin(rho)
+    z = - np.cos(rho)
 
     directions = np.stack([x, y, z], axis=-1, dtype=np.float32)
 

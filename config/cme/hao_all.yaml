@@ -1,0 +1,77 @@
+base_path: "/glade/work/rjarolim/sunerf-cme/all_v02"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme/all_v02'
+
+instruments:
+  - type: 'default'
+    key: 'HAO'
+    scaling: {type: 'log', vmin: -8.0, vmax: -4.0}
+
+model:
+  encoding: 'positional'
+  dim: 256
+
+data:
+  train_datasets:
+    - type: 'HAO'
+      key: 'HAO'
+      instrument_key: 'HAO'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_all/*pB*.fits"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_all/*tB*.fits"
+#    - type: 'random'
+#      name: 'continuity'
+#      radius_range: [21.5, 130]
+#      unit: 'solRad'
+  valid_datasets:
+    - type: 'HAO'
+      key: 'HAO_sample'
+      instrument_key: 'HAO'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_6/dcmer_040W_bang_0000_pB_stepnum_030.fits"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_6/dcmer_040W_bang_0000_tB_stepnum_030.fits"
+    - type: 'reference_cube'
+      key: 'cube'
+      data_path: "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/dens_stepnum_030.sav"
+      batch_size: 16384
+    - type: 'reference_cube'
+      key: 'cube_45'
+      data_path: "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/dens_stepnum_045.sav"
+      batch_size: 16384
+  ref_date: "2023-01-01"
+  debug: False
+  Rs_per_ds: 1
+  seconds_per_dt: 86400
+  batch_size: 2048
+  validation_batch_size: 4096
+  num_workers: 16
+
+callbacks:
+  - type: 'thomson_image'
+    ds_key: 'HAO_sample'
+  - type: 'latitude_slice'
+    ds_key: 'cube'
+    latitude: 0
+  - type: 'longitude_slice'
+    ds_key: 'cube'
+    longitude: 135
+  - type: 'longitude_slice'
+    name: 'cube_45'
+    ds_key: 'cube_45'
+    longitude: 135
+
+logging:
+  project: "sunerf-cme"
+  name: "All Viewpoints v01"
+
+sampling:
+  type: "spherical"
+  n_samples: 64
+  max_distance: 130
+
+lambda:
+  lambda_image: 1.0
+  lambda_ratio: 0.0
+  lambda_radial: 0.0
+  lambda_continuity: 0.0
+  lambda_velocity: 0.0
+
+training:
+  log_every_n_steps: 2000
