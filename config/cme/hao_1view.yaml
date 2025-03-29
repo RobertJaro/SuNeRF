@@ -1,0 +1,91 @@
+base_path: "/glade/work/rjarolim/sunerf-cme/1view_v01"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme/1view_v01'
+
+instruments:
+  - type: 'default'
+    key: 'HAO'
+    scaling: { type: 'log', vmin: -3.0, vmax: 1.0 }
+
+model:
+  encoding: 'gaussian'
+  dim: 256
+
+data:
+  train_datasets:
+    - type: 'HAO'
+      key: 'HAO'
+      instrument_key: 'HAO'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_1/*pB*.fits"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_1/*tB*.fits"
+      batch_size: 1024
+    - type: 'HAO'
+      key: 'background'
+      instrument_key: 'HAO'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_background/*pB*.fits"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_background/*tB*.fits"
+      batch_size: 1024
+    - type: 'random'
+      name: 'continuity'
+      radius_range: [20, 140] #[ 21.5, 130 ]
+      unit: 'solRad'
+      batch_size: 2048
+  valid_datasets:
+    - type: 'HAO'
+      key: 'HAO_sample'
+      instrument_key: 'HAO'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_1/dcmer_060W_bang_0000_pB_stepnum_030.fits"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_1/dcmer_060W_bang_0000_tB_stepnum_030.fits"
+    - type: 'reference_cube'
+      key: 'cube'
+      data_path: "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/dens_stepnum_030.sav"
+      batch_size: 16384
+    - type: 'series'
+      name: 'series'
+      batch_size: 16384
+  ref_date: "2010-04-03T09:04:00.000"
+  debug: False
+  Rs_per_ds: 100
+  seconds_per_dt: 100000
+  batch_size: 2048
+  validation_batch_size: 4096
+  num_workers: 16
+
+callbacks:
+  - type: 'thomson_image'
+    ds_key: 'HAO_sample'
+  - type: 'latitude_slice'
+    name: 'latitude_slice'
+    ds_key: 'cube'
+    latitude: 0
+  - type: 'longitude_slice'
+    name: 'longitude_slice'
+    ds_key: 'cube'
+    longitude: 135
+  - type: 'velocity_slice'
+    name: 'velocity_slice'
+    ds_key: 'series'
+    latitude: 0
+  - type: 'cube'
+    ds_key: 'cube'
+
+logging:
+  project: "sunerf-cme"
+  name: "1 Viewpoint v01"
+
+sampling:
+  type: "spherical"
+  n_samples: 64
+  max_distance: 130
+
+lambda:
+  lambda_image: 1.0
+  lambda_ratio: 0.1
+  lambda_radial: 1.0e-1
+  lambda_continuity: 1.0e-2
+  lambda_velocity: 1.0e-1
+
+training:
+  log_every_n_steps: 5000
+
+module:
+  lr_config: {start: 1.0e-3, end: 1.0e-4, iterations: 1.0e+6}

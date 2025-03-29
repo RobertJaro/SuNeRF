@@ -10,7 +10,7 @@ class GenericModel(nn.Module):
         if encoding is None or encoding == 'none':
             self.d_in = nn.Linear(in_dim, dim)
         elif encoding == 'positional':
-            posenc = PositionalEncoding(in_dim)
+            posenc = PositionalEncoding(in_dim, 10)
             d_in = nn.Linear(posenc.d_output, dim)
             self.d_in = nn.Sequential(posenc, d_in)
         elif encoding == 'gaussian':
@@ -93,20 +93,28 @@ class PlasmaModel(GenericModel):
                 }
 
 
-class ThomsonModel(nn.Module):
+class RhoModel(GenericModel):
 
     def __init__(self, **kwargs):
-        super().__init__()
-        self.rho_model = GenericModel(in_dim=4, out_dim=1, **kwargs)
-        self.v_model = GenericModel(in_dim=4, out_dim=3, **kwargs)
+        super().__init__(in_dim=4, out_dim=4, **kwargs)
 
     def forward(self, x):
-        log_rho = self.rho_model(x)
-        v = self.v_model(x)
-
+        x = super().forward(x)
+        log_rho = x[..., 0:1]
+        v = x[..., 1:]
         rho = 10 ** log_rho
+        result = {'log_rho': log_rho, 'rho': rho, 'v': v}
+        return result
 
-        return {'log_rho': log_rho, 'rho': rho, 'v': v}
+
+class VelocityModel(GenericModel):
+
+    def __init__(self, **kwargs):
+        super().__init__(in_dim=4, out_dim=3, **kwargs)
+
+    def forward(self, x):
+        v = super().forward(x)
+        return {'v': v}
 
 
 class AbsorptionModel(GenericModel):

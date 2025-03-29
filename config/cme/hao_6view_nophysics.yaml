@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf-cme/all_v09"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme/all_v09'
+base_path: "/glade/work/rjarolim/sunerf-cme/6view_nophysics_v01"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme/6view_nophysics_v01'
 
 instruments:
   - type: 'default'
@@ -15,8 +15,8 @@ data:
     - type: 'HAO'
       key: 'HAO'
       instrument_key: 'HAO'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_all/*pB*.fits"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_all/*tB*.fits"
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_6/*pB*.fits"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_6/*tB*.fits"
   valid_datasets:
     - type: 'HAO'
       key: 'HAO_sample'
@@ -26,6 +26,9 @@ data:
     - type: 'reference_cube'
       key: 'cube'
       data_path: "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/dens_stepnum_030.sav"
+      batch_size: 16384
+    - type: 'series'
+      name: 'series'
       batch_size: 16384
   ref_date: "2010-04-03T09:04:00.000"
   debug: False
@@ -39,15 +42,23 @@ callbacks:
   - type: 'thomson_image'
     ds_key: 'HAO_sample'
   - type: 'latitude_slice'
+    name: 'latitude_slice'
     ds_key: 'cube'
     latitude: 0
   - type: 'longitude_slice'
+    name: 'longitude_slice'
     ds_key: 'cube'
     longitude: 135
+  - type: 'velocity_slice'
+    name: 'velocity_slice'
+    ds_key: 'series'
+    plot_velocities: false
+  - type: 'cube'
+    ds_key: 'cube'
 
 logging:
   project: "sunerf-cme"
-  name: "All Viewpoints v01"
+  name: "6 Viewpoints no physics"
 
 sampling:
   type: "spherical"
@@ -62,4 +73,4 @@ lambda:
   lambda_velocity: 0.0
 
 training:
-  log_every_n_steps: 5000
+  log_every_n_steps: 2000

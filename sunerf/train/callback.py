@@ -8,7 +8,7 @@ from astropy import units as u
 from astropy.visualization import ImageNormalize, AsinhStretch
 from matplotlib import pyplot as plt
 from matplotlib.cm import get_cmap
-from matplotlib.colors import Normalize
+from matplotlib.colors import Normalize, LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from pytorch_lightning import Callback
 from skimage.metrics import structural_similarity
@@ -260,20 +260,16 @@ class ThomsonImageCallback(BaseCallback):
         # reshape
         outputs = {k: v.view(*self.image_shape, *v.shape[1:]).cpu().numpy() for k, v in outputs.items()}
 
-        fine_image = outputs['fine_image']
+        model_image = outputs['model_image']
         target_image = outputs['target_image']
-        coarse_image = outputs['coarse_image']
 
-        ratio_target_image = outputs['ratio_target_image']
-        ratio_fine_image = outputs['ratio_fine_image']
-        ratio_coarse_image = outputs['ratio_coarse_image']
+        target_ratio = outputs['target_ratio']
+        model_ratio = outputs['model_ratio']
 
-        fine_image[np.isnan(target_image)] = np.nan
-        coarse_image[np.isnan(target_image)] = np.nan
-        ratio_coarse_image[np.isnan(target_image).any(-1)] = np.nan
-        ratio_fine_image[np.isnan(target_image).any(-1)] = np.nan
+        model_image[np.isnan(target_image)] = np.nan
+        model_ratio[np.isnan(target_image).any(-1)] = np.nan
 
-        fig, axs = plt.subplots(3, 3, figsize=(9, 9))
+        fig, axs = plt.subplots(3, 2, figsize=(7, 9))
 
         # pB and tB images
         for i in range(2):
@@ -287,41 +283,27 @@ class ThomsonImageCallback(BaseCallback):
             ax.set_title(f'Target')
 
             ax = axs[i, 1]
-            im = ax.imshow(fine_image[..., i], cmap='plasma', vmin=v_min, vmax=v_max)
+            im = ax.imshow(model_image[..., i], cmap='plasma', vmin=v_min, vmax=v_max)
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("right", size="5%", pad=0.05)
             plt.colorbar(im, cax=cax)
             ax.set_title(f'Fine')
 
-            ax = axs[i, 2]
-            im = ax.imshow(coarse_image[..., i], cmap='plasma', vmin=v_min, vmax=v_max)
-            divider = make_axes_locatable(ax)
-            cax = divider.append_axes("right", size="5%", pad=0.05)
-            plt.colorbar(im, cax=cax)
-            ax.set_title(f'Coarse')
-
         # ratio images
         ax = axs[2, 0]
-        v_max = np.nanmax(ratio_target_image[..., 0])
-        im = ax.imshow(ratio_target_image[..., 0], cmap='plasma', vmin=0, vmax=v_max)
+        v_max = np.nanmax(target_ratio[..., 0])
+        im = ax.imshow(target_ratio[..., 0], cmap='plasma', vmin=0, vmax=v_max)
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
         plt.colorbar(im, cax=cax)
         ax.set_title(f'Target')
 
         ax = axs[2, 1]
-        im = ax.imshow(ratio_fine_image[..., 0], cmap='plasma', vmin=0, vmax=v_max)
+        im = ax.imshow(model_ratio[..., 0], cmap='plasma', vmin=0, vmax=v_max)
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
         plt.colorbar(im, cax=cax)
-        ax.set_title(f'Fine')
-
-        ax = axs[2, 2]
-        im = ax.imshow(ratio_coarse_image[..., 0], cmap='plasma', vmin=0, vmax=v_max)
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
-        ax.set_title(f'Coarse')
+        ax.set_title(f'Model')
 
         [ax.set_xticks([]) for ax in axs.flatten()]
         [ax.set_yticks([]) for ax in axs.flatten()]
@@ -338,11 +320,11 @@ class ThomsonImageCallback(BaseCallback):
         #                                 outputs['z_vals_stratified'], outputs['z_vals_hierarchical'], outputs['distance_from_sun'],
         #                                 outputs['distance_from_obs'])
 
-        val_loss = np.nanmean((fine_image - target_image) ** 2)
+        val_loss = np.nanmean((model_image - target_image) ** 2)
         val_ssim = []
         for i in range(target_image.shape[-1]):
             val_ssim += [structural_similarity(np.nan_to_num(target_image[..., i], nan=0),
-                                               np.nan_to_num(fine_image[..., i], nan=0),
+                                               np.nan_to_num(model_image[..., i], nan=0),
                                                data_range=1)]
         val_ssim = np.mean(val_ssim)
         val_psnr = -10. * np.log10(val_loss)
@@ -385,9 +367,9 @@ class ThomsonImageCallback(BaseCallback):
         plt.close('all')
 
 
-def log_overview(images, poses, times, cmap, seconds_per_dt, ref_date, ds_key=None):
+def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date, ds_key=None):
     dirs = np.stack([np.sum([0, 0, -1] * pose[:3, :3], axis=-1) for pose in poses])
-    origins = poses[:, :3, -1]
+    origins = poses[:, :3, -1] * Rs_per_ds
     colors = plt.get_cmap('viridis')(Normalize()(times))
     # fix arrow heads (2) + shaft color (2) --> 3 color elements
     cs = colors.tolist()
@@ -463,13 +445,44 @@ def plot_ray_sampling(
     ax.grid(True)
 
 
+class CubeCallback(BaseCallback):
+
+    def __init__(self, cube_shape, Rs_per_ds, seconds_per_dt, **kwargs):
+        super().__init__(**kwargs)
+        self.cube_shape = cube_shape
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        outputs = self.get_validation_outputs(pl_module)
+        if outputs is None:
+            return
+
+        rho_true = outputs['rho_true'].reshape(self.cube_shape).cpu().numpy()
+        rho_pred = outputs['rho_pred'].reshape(self.cube_shape).cpu().numpy()
+
+        # 2D Histogram of the true and predicted densities
+
+        fig, ax = plt.subplots(1, 1, figsize=(5, 5))
+
+        ax.hist2d(np.log10(rho_true).flatten(), np.log10(rho_pred).flatten(), bins=100, cmap='viridis', norm=LogNorm())
+        ax.set_xlabel('True Density [N$_e$ cm$^{-3}$]')
+        ax.set_ylabel('Predicted Density [N$_e$ cm$^{-3}$]')
+        ax.set_title('2D Histogram of True and Predicted Densities')
+        min_true, min_pred = np.min(np.log10(rho_true)), np.min(np.log10(rho_pred))
+        max_true, max_pred = np.max(np.log10(rho_true)), np.max(np.log10(rho_pred))
+        # plot 1:1 line
+        ax.plot([min_true, max_true], [min_true, max_true], 'r--')
+
+        fig.tight_layout()
+        wandb.log({f'2D Histogram - {self.name}': wandb.Image(fig)})
+
+
 class LatitudeSliceCallback(BaseCallback):
 
     def __init__(self, cube_shape, latitude, rho_normalization, Rs_per_ds, seconds_per_dt, **kwargs):
         super().__init__(**kwargs)
         self.latitude = np.deg2rad(latitude)
         self.cube_shape = cube_shape
-        self.rho_normalization = 1.12e6 #TODO: rho_normalization
+        self.rho_normalization = 1.12e6  # TODO: rho_normalization
         self.velocity_normalization = (Rs_per_ds / seconds_per_dt) * (1 * u.solRad / u.s).to_value(u.km / u.s)
 
     def on_validation_epoch_end(self, trainer, pl_module):
@@ -491,18 +504,82 @@ class LatitudeSliceCallback(BaseCallback):
 
         ax = axs[0]
         z = rho_true[:, lat_idx, :]
-        pc = ax.pcolormesh(ph, r, z, edgecolors='face', norm='log', cmap='inferno', vmin=1e1, vmax=1e3)
+        pc = ax.pcolormesh(ph, r, z, edgecolors='face', norm='log', cmap='inferno')  # , vmin=1e1, vmax=1e3)
         fig.colorbar(pc, ax=ax, label='Density [N$_e$ cm$^{-3}$]')
         ax.set_title("Ground-truth", va='bottom')
 
         ax = axs[1]
         z = rho_pred[:, lat_idx, :]
-        pc = ax.pcolormesh(ph, r, z, edgecolors='face', norm='log', cmap='inferno', vmin=1e1, vmax=1e3)
+        pc = ax.pcolormesh(ph, r, z, edgecolors='face', norm='log', cmap='inferno')  # , vmin=1e1, vmax=1e3)
         fig.colorbar(pc, ax=ax, label='Density [N$_e$ cm$^{-3}$]')
         ax.set_title("SuNeRF", va='bottom')
 
         fig.tight_layout()
         wandb.log({f"Latitude={np.rad2deg(self.latitude).astype(int):03d} deg - Slice": wandb.Image(fig)})
+        plt.close('all')
+
+
+class VelocitySliceCallback(BaseCallback):
+
+    def __init__(self, cube_shape, latitude, rho_normalization, Rs_per_ds, seconds_per_dt, plot_velocities=True,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.latitude = np.deg2rad(latitude)
+        self.cube_shape = cube_shape
+        self.rho_normalization = 1.12e6  # TODO: rho_normalization
+        self.velocity_normalization = (Rs_per_ds / seconds_per_dt) * (1 * u.solRad / u.s).to_value(u.km / u.s)
+        self.Rs_per_ds = Rs_per_ds
+        self.plot_velocities = plot_velocities
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        outputs = self.get_validation_outputs(pl_module)
+        if outputs is None:
+            return
+
+        query_points = outputs['query_points'].reshape(self.cube_shape + (4,)).cpu().numpy()
+        query_points[..., :3] = query_points[..., :3] * self.Rs_per_ds
+        rho_pred = outputs['rho_pred'].reshape(self.cube_shape).cpu().numpy() * self.rho_normalization
+        velocity = outputs['v_pred'].reshape(self.cube_shape + (3,)).cpu().numpy() * self.velocity_normalization
+
+        n_times = query_points.shape[3]
+        max_radius = np.nanmax(query_points[..., :3])
+
+        v_norm = np.linalg.norm(velocity, axis=-1)
+        v_min, v_max = np.nanmin(v_norm), np.nanmax(v_norm)
+
+        fig, axs = plt.subplots(2, n_times, figsize=(3 * n_times, 5), dpi=300)
+
+        for i in range(n_times):
+            ax = axs[0, i]
+            im_rho = ax.imshow(rho_pred[:, :, 0, i], norm='log',
+                               extent=[-max_radius, max_radius, -max_radius, max_radius], cmap='inferno',
+                               origin='lower')
+
+            if self.plot_velocities:
+                # overlay velocity vectors
+                quiver_pos = query_points[::8, ::8, 0, i,
+                             :2]  # block_reduce(query_points_npy, (8, 8, 1, 1, 1), np.mean)
+                quiver_vel = velocity[::8, ::8, 0, i]  # block_reduce(velocity, (8, 8, 1), np.mean)
+                ax.quiver(quiver_pos[:, :, 0], quiver_pos[:, :, 1],
+                          quiver_vel[:, :, 0], quiver_vel[:, :, 1],
+                          scale=10000,
+                          color='white')
+
+            ax = axs[1, i]
+            im_v = ax.imshow(np.linalg.norm(velocity[:, :, 0, i], axis=-1), cmap='cividis',
+                             extent=[-max_radius, max_radius, -max_radius, max_radius], origin='lower',
+                             vmin=v_min, vmax=v_max)
+
+        divider = make_axes_locatable(axs[0, -1])
+        cax = divider.append_axes('right', size='5%', pad=0.05)
+        plt.colorbar(im_rho, cax=cax, label='N$_e$ / cm$^3$')
+
+        divider = make_axes_locatable(axs[1, -1])
+        cax = divider.append_axes('right', size='5%', pad=0.05)
+        plt.colorbar(im_v, cax=cax, label='km/s')
+
+        fig.tight_layout()
+        wandb.log({f"Velocity Slice - {self.name}": fig})
         plt.close('all')
 
 
@@ -512,7 +589,7 @@ class LongitudeSliceCallback(BaseCallback):
         super().__init__(**kwargs)
         self.longitude = np.deg2rad(longitude)
         self.cube_shape = cube_shape
-        self.rho_normalization = 1.12e6 #TODO: rho_normalization
+        self.rho_normalization = 1.12e6  # TODO: rho_normalization
         self.velocity_normalization = (Rs_per_ds / seconds_per_dt) * (1 * u.solRad / u.s).to_value(u.km / u.s)
 
     def on_validation_epoch_end(self, trainer, pl_module):
@@ -534,16 +611,17 @@ class LongitudeSliceCallback(BaseCallback):
 
         ax = axs[0]
         z = rho_true[:, :, lon_idx]
-        pc = ax.pcolormesh(th, r, z, edgecolors='face', norm='log', cmap='inferno', vmin=1e1, vmax=1e3)
+        pc = ax.pcolormesh(th, r, z, edgecolors='face', norm='log', cmap='inferno')  # , vmin=1e1, vmax=1e3)
         fig.colorbar(pc, ax=ax, label='Density [N$_e$ cm$^{-3}$]')
         ax.set_title("Ground-truth", va='bottom')
 
         ax = axs[1]
         z = rho_pred[:, :, lon_idx]
-        pc = ax.pcolormesh(th, r, z, edgecolors='face', norm='log', cmap='inferno', vmin=1e1, vmax=1e3)
+        pc = ax.pcolormesh(th, r, z, edgecolors='face', norm='log', cmap='inferno')  # , vmin=1e1, vmax=1e3)
         fig.colorbar(pc, ax=ax, label='Density [N$_e$ cm$^{-3}$]')
         ax.set_title("SuNeRF", va='bottom')
 
         fig.tight_layout()
-        wandb.log({f"{self.name} - Longitude={np.rad2deg(self.longitude).astype(int):03d} deg - Slice": wandb.Image(fig)})
+        wandb.log(
+            {f"{self.name} - Longitude={np.rad2deg(self.longitude).astype(int):03d} deg - Slice": wandb.Image(fig)})
         plt.close('all')

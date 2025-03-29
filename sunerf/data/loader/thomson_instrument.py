@@ -45,7 +45,9 @@ class ThomsonDataModule(BaseDataModule):
                                 'wcs': dc['wcs'], 'image_shape': dc['image_shape'], 'times': ref_ds.times}
 
         base_config['batch_size'] = validation_batch_size
-        valid_dict = self._load_valid_dataset(valid_datasets, base_config)
+        times = np.concatenate([dataset.normalized_times for dataset in train_dict.values() if isinstance(dataset, GenericThomsonDataset)])
+        time_range = [np.min(times), np.max(times)]
+        valid_dict = self._load_valid_dataset(valid_datasets, base_config, time_range=time_range)
 
         super().__init__(train_dict, valid_dict,
                          Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt, ref_date=ref_date,
@@ -67,7 +69,7 @@ class ThomsonDataModule(BaseDataModule):
                 dataset = HAOThomsonDataset(**ds_config, ds_key=ds_key)
             elif ds_type.lower() == 'random':
                 assert len(train_dict) > 0, 'Specify at least one dataset for reference times. The random dataset configuration needs to be last in config file.'
-                times = np.concatenate([dataset.normalized_times for dataset in train_dict.values()])
+                times = np.concatenate([dataset.normalized_times for dataset in train_dict.values() if isinstance(dataset, GenericThomsonDataset)])
                 time_range = [np.min(times), np.max(times)]
                 radius_range = u.Quantity(ds_config.pop('radius_range'), unit=ds_config.pop('unit', 'AU'))
                 dataset = RandomSphericalCoordinateDataset(time_range=time_range, radius_range=radius_range, **ds_config)
@@ -81,7 +83,7 @@ class ThomsonDataModule(BaseDataModule):
             train_dict[ds_key] = dataset
         return train_dict
 
-    def _load_valid_dataset(self, data_config, base_config):
+    def _load_valid_dataset(self, data_config, base_config, time_range):
         data_config = copy.deepcopy(data_config)
 
         valid_dict = {}
@@ -95,6 +97,8 @@ class ThomsonDataModule(BaseDataModule):
                 dataset = HAOThomsonDataset(**ds_config, ds_key=ds_key, test=True)
             elif ds_type.lower() == 'reference_cube':
                 dataset = ReferenceCubeDataset(**ds_config, ds_key=ds_key, shuffle=False, filter_nans=False)
+            elif ds_type.lower() == 'series':
+                dataset = SeriesCubeDataset(**ds_config, time_range=time_range)
             else:
                 raise ValueError(f'Unknown dataset type {ds_type}')
             assert ds_key not in valid_dict, f'Duplicate dataset key {ds_key}'
@@ -161,7 +165,7 @@ class GenericThomsonDataset(TensorsDataset):
         if not test:
             cmap = cm.soholasco2.copy()
             cmap.set_bad(color='green')
-            log_overview(data_dict["image"], data_dict['pose'], times, cmap, seconds_per_dt, ref_date, ds_key=ds_key)
+            log_overview(data_dict["image"], data_dict['pose'], times, cmap, seconds_per_dt, Rs_per_ds, ref_date, ds_key=ds_key)
             print('----- Data Overview -----')
             print(
                 f'Image shape: {data_dict["image"].shape}; MIN: {np.nanmin(data_dict["image"])}; MAX: {np.nanmax(data_dict["image"])}')
@@ -178,16 +182,15 @@ class GenericThomsonDataset(TensorsDataset):
 class HAOThomsonDataset(GenericThomsonDataset):
 
     def __init__(self, **kwargs):
-        # super().__init__(scaling=5e-5, **kwargs)
-        super().__init__(scaling=1.0, **kwargs)
+        super().__init__(scaling=1, **kwargs)
 
 
 class ReferenceCubeDataset(TensorsDataset):
 
-    def __init__(self, data_path, ref_date, seconds_per_dt, Rs_per_ds, max_radius=130, **kwargs):
+    def __init__(self, data_path, ref_date, seconds_per_dt, Rs_per_ds, max_radius=100, **kwargs):
 
         o = scipy.io.readsav(data_path)
-        date0 = parse("2010-04-03T09:04:00.000") # TODO check if times actually match
+        date0 = parse("2010-04-03T09:04:00.000")
         time = date0 + timedelta(hours=float(o['this_time']))
         time = normalize_datetime(time, seconds_per_dt, ref_date)
 
@@ -223,3 +226,34 @@ class ReferenceCubeDataset(TensorsDataset):
                    'spherical_coords': spherical_coords,
                    'rho': density}
         super().__init__(tensors, **kwargs)
+
+
+
+class SeriesCubeDataset(TensorsDataset):
+
+    def __init__(self, time_range, Rs_per_ds, radius_range=[ 21.5, 130 ],
+                 filter_nans=False, shuffle=False, **kwargs):
+
+        times = np.linspace(time_range[0], time_range[1], 6, dtype=np.float32)
+        max_radius = radius_range[1]
+        x_range = np.linspace(-max_radius, max_radius, 256, dtype=np.float32)
+        y_range = np.linspace(-max_radius, max_radius, 256, dtype=np.float32)
+
+        query_points = np.stack(np.meshgrid(x_range, y_range, [0], times), axis=-1)
+
+        r = np.linalg.norm(query_points[..., :3], axis=-1)
+        # clip radius to 100 Rsun
+        mask = (r > radius_range[0]) & (r < radius_range[1])
+        query_points[~mask] = np.nan
+
+        query_points[..., :3] = query_points[..., :3] / Rs_per_ds
+
+        self.cube_shape = query_points.shape[:-1]
+
+        query_points = query_points.reshape(-1, 4)
+
+        print('Series dataset-----------------')
+        print('Query points range: ', np.nanmin(query_points.reshape(-1, 4), 0), np.nanmax(query_points.reshape(-1, 4), 0))
+
+        tensors = {'query_points': query_points}
+        super().__init__(tensors, filter_nans=filter_nans, shuffle=shuffle, **kwargs)

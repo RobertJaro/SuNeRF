@@ -24,7 +24,7 @@ class BaseSuNeRFModule(LightningModule):
         self.lr_config = {'start': 1e-4, 'end': 1e-5, 'iterations': 1e6} if lr_config is None else lr_config
 
     def configure_optimizers(self):
-        self.optimizer = torch.optim.Adam(self.rendering.parameters(), lr=self.lr_config['start'])
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr_config['start'])
         self.scheduler = ExponentialLR(self.optimizer, gamma=(self.lr_config['end'] / self.lr_config['start']) ** (
                 1 / self.lr_config['iterations']))
         return [self.optimizer], [self.scheduler]

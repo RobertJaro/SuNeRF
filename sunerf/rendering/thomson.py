@@ -1,5 +1,4 @@
 import torch
-from astropy import units as u
 from torch import nn
 
 from sunerf.train.util import asin_safe
@@ -9,11 +8,11 @@ class ThomsonScattering(nn.Module):
 
     def __init__(self, Rs_per_ds, scaling_config=None, **kwargs):
         super().__init__(**kwargs)
-        C_0 = 1  # (8.69e-7 * u.cm ** 2).to_value(u.R_sun ** 2) / (Rs_per_ds ** 2)
+        c_0 = 1.0  # (8.69e-7 * u.cm ** 2).to_value(u.R_sun ** 2) / (Rs_per_ds ** 2)
         solar_radius = 1 / Rs_per_ds
         #
         self.limb_darkening_coeff = nn.Parameter(torch.tensor(0.63, dtype=torch.float32), requires_grad=False)
-        self.C_0 = nn.Parameter(torch.tensor(C_0, dtype=torch.float32), requires_grad=False)
+        self.C_0 = nn.Parameter(torch.tensor(c_0, dtype=torch.float32), requires_grad=False)
         self.solar_radius = nn.Parameter(torch.tensor(solar_radius, dtype=torch.float32), requires_grad=False)
         scaling_config = {'type': 'constant', 'value': 1.0} if scaling_config is None else scaling_config
         if scaling_config['type'] == 'constant':
@@ -49,7 +48,7 @@ class ThomsonScattering(nn.Module):
         # HOWARD AND TAPPIN 2009 FIG 3
         # working with units of solar radii
         # half angular width of Sun (angle between SQ and ST)
-        r = query_points[..., :3] # position of scattering electron
+        r = query_points[..., :3]  # position of scattering electron
         s_q = torch.norm(r, dim=-1)
         s_t = self.solar_radius  # 1 in units of solar radii
         omega = asin_safe(s_t / s_q)
@@ -58,9 +57,11 @@ class ThomsonScattering(nn.Module):
         z = z_vals * torch.norm(rays_d[..., None, :], dim=-1)  # distance between observer and scattering point Q
 
         # chi = scattering angle between line of sight (OS) and QS (dot product)
-        # chi = torch.acos((rays_d[:, None] * query_points).sum(-1) / (
-        #         rays_d.pow(2).sum(-1).pow(0.5)[:, None] * query_points.pow(2).sum(-1).pow(0.5) + 1e-6))
-        sin_chi2 = torch.cross(r, rays_d[:, None, :], dim=-1).pow(2).sum(-1) / r.pow(2).sum(-1)
+        # norm = r.pow(2).sum(-1) * rays_d[..., None, :].pow(2).sum(-1)
+        # sin_chi2 = torch.cross(r, rays_d[..., None, :], dim=-1).pow(2).sum(dim=-1) / norm
+
+        sin_chi2 = torch.cross(rays_o, rays_d).pow(2).sum(-1)[:, None] / r.pow(2).sum(-1)
+
         u_const = self.limb_darkening_coeff
 
         # I0 = intensity of the source (Sun) as a power per unit area (of the photosphere) per unit solid angle
@@ -93,10 +94,10 @@ class ThomsonScattering(nn.Module):
 
         # intensity (total and polarised) from all electrons
         # for one electron * electron density * weighted by line element ds- separation between sampling points
-        rho = rho[..., 0] # squeeze last dimension
+        rho = rho[..., 0]  # squeeze last dimension
         # TODO clarify z ** -2
         point_tB = self.C_0 * rho * intensity_tB  #* (z ** -2)
-        point_pB = self.C_0 * rho * intensity_pB #* (z ** -2)
+        point_pB = self.C_0 * rho * intensity_pB  #* (z ** -2)
 
         # integrate all intensity contributions along LOS
         image_tB = (point_tB * dists).sum(-1)

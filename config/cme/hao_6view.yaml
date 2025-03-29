@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf-cme/6view_v01"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme/6view_v01'
+base_path: "/glade/work/rjarolim/sunerf-cme/6view_v05"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme/6view_v05'
 
 instruments:
   - type: 'default'
@@ -8,34 +8,37 @@ instruments:
 
 model:
   encoding: 'positional'
-  dim: 256
+  dim: 512
 
 data:
   train_datasets:
     - type: 'HAO'
       key: 'HAO'
       instrument_key: 'HAO'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_6/*pB*.fits"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_6/*tB*.fits"
-#    - type: 'random'
-#      name: 'continuity'
-#      radius_range: [21.5, 130]
-#      unit: 'solRad'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_5/*pB*.fits"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_5/*tB*.fits"
+    - type: 'random'
+      name: 'continuity'
+      radius_range: [20, 100] #[ 21.5, 130 ]
+      unit: 'solRad'
   valid_datasets:
     - type: 'HAO'
       key: 'HAO_sample'
       instrument_key: 'HAO'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_6/dcmer_040W_bang_0000_pB_stepnum_030.fits"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_6/dcmer_040W_bang_0000_tB_stepnum_030.fits"
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_5/dcmer_040W_bang_0000_pB_stepnum_030.fits"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_5/dcmer_040W_bang_0000_tB_stepnum_030.fits"
     - type: 'reference_cube'
       key: 'cube'
       data_path: "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/dens_stepnum_030.sav"
       batch_size: 16384
-  ref_date: "2023-01-01"
+    - type: 'series'
+      name: 'series'
+      batch_size: 16384
+#  ref_date: "2010-04-03T09:04:00.000"
   debug: False
   Rs_per_ds: 1
   seconds_per_dt: 86400
-  batch_size: 2048
+  batch_size: 1024
   validation_batch_size: 4096
   num_workers: 16
 
@@ -43,15 +46,24 @@ callbacks:
   - type: 'thomson_image'
     ds_key: 'HAO_sample'
   - type: 'latitude_slice'
+    name: 'latitude_slice'
     ds_key: 'cube'
     latitude: 0
   - type: 'longitude_slice'
+    name: 'longitude_slice'
     ds_key: 'cube'
     longitude: 135
+  - type: 'velocity_slice'
+    name: 'velocity_slice'
+    ds_key: 'series'
+    latitude: 0
+  - type: 'cube'
+    ds_key: 'cube'
 
 logging:
-  project: "sunerf-cme"
-  name: "6 Viewpoints v01"
+  entity: "ssa_live_twin"
+  project: "sunerf-cme-test"
+  name: "new - 6 Viewpoints"
 
 sampling:
   type: "spherical"
@@ -59,11 +71,14 @@ sampling:
   max_distance: 130
 
 lambda:
-  lambda_image: 1.0
+  lambda_image: 10.0
   lambda_ratio: 0.0
-  lambda_radial: 0.0
-  lambda_continuity: 0.0
-  lambda_velocity: 0.0
+  lambda_radial: 1.0e-2
+  lambda_continuity: 1.0e-2
+  lambda_velocity: 1.0e-2
 
 training:
   log_every_n_steps: 2000
+
+module:
+  lr_config: {start: 1.0e-4, end: 1.0e-5, iterations: 1.0e+6}

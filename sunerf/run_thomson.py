@@ -10,7 +10,8 @@ from pytorch_lightning.loggers import WandbLogger
 from sunerf.data.loader.thomson_instrument import ThomsonDataModule
 from sunerf.model.sunerf import save_state
 from sunerf.model.thomson import ThomsonSuNeRFModule
-from sunerf.train.callback import ThomsonImageCallback, LatitudeSliceCallback, LongitudeSliceCallback
+from sunerf.train.callback import ThomsonImageCallback, LatitudeSliceCallback, LongitudeSliceCallback, CubeCallback, \
+    VelocitySliceCallback
 from sunerf.train.util import load_yaml_config
 
 if __name__ == '__main__':
@@ -33,14 +34,16 @@ if __name__ == '__main__':
     instruments = config['instruments']
     model_config = config['model'] if 'model' in config else {}
     sampling_config = config['sampling'] if 'sampling' in config else {}
-    hierarchical_sampling_config = config['hierarchical_sampling'] if 'hierarchical_sampling' in config else {}
     lambda_config = config['lambda'] if 'lambda' in config else {}
+    module_config = config['module'] if 'module' in config else {}
     training_config = config['training'] if 'training' in config else {}
     logging_config = config['logging'] if 'logging' in config else {'project': 'sunerf'}
 
     # setup training config
     epochs = training_config['epochs'] if 'epochs' in training_config else 1000
     log_every_n_steps = training_config['log_every_n_steps'] if 'log_every_n_steps' in training_config else None
+    check_val_every_n_epoch = training_config[
+        'check_val_every_n_epoch'] if 'check_val_every_n_epoch' in training_config else 1
     ckpt_path = training_config['meta_path'] if 'meta_path' in training_config else 'last'
 
     # initialize logger
@@ -48,7 +51,7 @@ if __name__ == '__main__':
     logger.experiment.config.update(config, allow_val_change=True)
 
     # initialize data module and model
-    data_module_save_path = os.path.join(base_path, 'data_module.pkl')
+    data_module_save_path = os.path.join(work_directory, 'data_module.pkl')
     if os.path.exists(data_module_save_path) and not args.reload:
         print('Loaded data module from file. If you want to reload the data, use --reload')
         data_module = torch.load(data_module_save_path)
@@ -65,7 +68,7 @@ if __name__ == '__main__':
                                  Rs_per_ds=data_module.Rs_per_ds, seconds_per_dt=data_module.seconds_per_dt,
                                  validation_dataset_mapping=data_module.validation_dataset_mapping,
                                  model_config=model_config,
-                                 sampling_config=sampling_config, hierarchical_sampling_config=hierarchical_sampling_config,
+                                 sampling_config=sampling_config, **module_config,
                                  **lambda_config)
 
     # initialize callbacks
@@ -93,6 +96,18 @@ if __name__ == '__main__':
         elif callback_type.lower() == 'longitude_slice':
             longitude = callback_config.get('longitude', 0)
             callback = LongitudeSliceCallback(ds_key=ds_key, longitude=longitude,
+                                              cube_shape=data_module.validation_datasets[ds_key].cube_shape,
+                                              rho_normalization=rho_normalization,
+                                              Rs_per_ds=data_module.Rs_per_ds,
+                                              seconds_per_dt=data_module.seconds_per_dt)
+        elif callback_type.lower() == 'cube':
+            callback = CubeCallback(ds_key=ds_key,
+                                    cube_shape=data_module.validation_datasets[ds_key].cube_shape,
+                                    Rs_per_ds=data_module.Rs_per_ds,
+                                    seconds_per_dt=data_module.seconds_per_dt)
+        elif callback_type.lower() == 'velocity_slice':
+            latitude = callback_config.get('latitude', 0)
+            callback = VelocitySliceCallback(ds_key=ds_key, latitude=latitude,
                                              cube_shape=data_module.validation_datasets[ds_key].cube_shape,
                                              rho_normalization=rho_normalization,
                                              Rs_per_ds=data_module.Rs_per_ds,
@@ -102,6 +117,8 @@ if __name__ == '__main__':
         callbacks.append(callback)
 
     N_GPUS = torch.cuda.device_count()
+    torch.set_float32_matmul_precision('high')
+
     trainer = Trainer(max_epochs=epochs,
                       logger=logger,
                       devices=N_GPUS,
@@ -109,6 +126,7 @@ if __name__ == '__main__':
                       strategy='dp' if N_GPUS > 1 else None,  # ddp breaks memory and wandb
                       num_sanity_val_steps=-1,  # validate all points to check the first image
                       val_check_interval=log_every_n_steps,
+                      check_val_every_n_epoch=check_val_every_n_epoch,
                       gradient_clip_val=0.5,
                       callbacks=callbacks)
 

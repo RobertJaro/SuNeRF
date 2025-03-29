@@ -12,7 +12,7 @@ class SphericalSampler(torch.nn.Module):
         self.min_distance = nn.Parameter(torch.tensor(min_distance / Rs_per_ds, dtype=torch.float32), requires_grad=False)
 
         t_vals = torch.linspace(0., 1., n_samples)[None]
-        self.register_buffer('t_vals', torch.tensor(t_vals, dtype=torch.float32))
+        self.t_vals = nn.Parameter(torch.tensor(t_vals, dtype=torch.float32), requires_grad=False)
 
     def forward(self, rays_o: torch.Tensor, rays_d: torch.Tensor):
         r"""
