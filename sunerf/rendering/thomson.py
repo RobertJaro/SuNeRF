@@ -56,11 +56,12 @@ class ThomsonScattering(nn.Module):
         # z = distance Q to observer
         z = z_vals * torch.norm(rays_d[..., None, :], dim=-1)  # distance between observer and scattering point Q
 
-        # chi = scattering angle between line of sight (OS) and QS (dot product)
-        # norm = r.pow(2).sum(-1) * rays_d[..., None, :].pow(2).sum(-1)
-        # sin_chi2 = torch.cross(r, rays_d[..., None, :], dim=-1).pow(2).sum(dim=-1) / norm
+        # chi = scattering angle between line of sight (OS) and QS
+        norm = r.pow(2).sum(-1) + 1e-8
+        sin_chi2 = torch.cross(r, rays_d[..., None, :], dim=-1).pow(2).sum(-1) / norm
 
-        sin_chi2 = torch.cross(rays_o, rays_d).pow(2).sum(-1)[:, None] / r.pow(2).sum(-1)
+        # Alternative angle calculation
+        # sin_chi2 = torch.cross(rays_o, rays_d).pow(2).sum(-1)[:, None] / r.pow(2).sum(-1)
 
         u_const = self.limb_darkening_coeff
 

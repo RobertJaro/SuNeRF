@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf-cme/6view_v05"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme/6view_v05'
+base_path: "/glade/work/rjarolim/sunerf-cme/6view_v01"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme/6view_v01'
 
 instruments:
   - type: 'default'
@@ -61,9 +61,9 @@ callbacks:
     ds_key: 'cube'
 
 logging:
-  entity: "ssa_live_twin"
-  project: "sunerf-cme-test"
-  name: "new - 6 Viewpoints"
+  entity: "robert_jarolim"
+  project: "sunerf-cme"
+  name: "6 Viewpoints"
 
 sampling:
   type: "spherical"
@@ -78,7 +78,7 @@ lambda:
   lambda_velocity: 1.0e-2
 
 training:
-  log_every_n_steps: 2000
+  log_every_n_steps: 5000
 
 module:
   lr_config: {start: 1.0e-4, end: 1.0e-5, iterations: 1.0e+6}
