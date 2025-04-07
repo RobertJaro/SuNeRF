@@ -1,14 +1,14 @@
 base_path: "/glade/work/rjarolim/sunerf-cme/1view_v01"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme/1view_v01'
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme/1view_v02'
 
 instruments:
   - type: 'default'
     key: 'HAO'
-    scaling: { type: 'log', vmin: -3.0, vmax: 1.0 }
+    scaling: {type: 'log', vmin: -8.0, vmax: -4.0}
 
 model:
-  encoding: 'gaussian'
-  dim: 256
+  encoding: 'positional'
+  dim: 128
 
 data:
   train_datasets:
@@ -42,11 +42,10 @@ data:
     - type: 'series'
       name: 'series'
       batch_size: 16384
-  ref_date: "2010-04-03T09:04:00.000"
   debug: False
-  Rs_per_ds: 100
-  seconds_per_dt: 100000
-  batch_size: 2048
+  Rs_per_ds: 1
+  seconds_per_dt: 86400
+  batch_size: 1024
   validation_batch_size: 4096
   num_workers: 16
 
@@ -69,6 +68,7 @@ callbacks:
     ds_key: 'cube'
 
 logging:
+  entity: "robert_jarolim"
   project: "sunerf-cme"
   name: "1 Viewpoint v01"
 
@@ -78,14 +78,14 @@ sampling:
   max_distance: 130
 
 lambda:
-  lambda_image: 1.0
-  lambda_ratio: 0.1
-  lambda_radial: 1.0e-1
-  lambda_continuity: 1.0e-2
-  lambda_velocity: 1.0e-1
+  image: 10.0
+  ratio: 1.0
+  radial: {start: 1.0, end: 1.0e-3, iterations: 1.0e+05} #1.0e-2
+  continuity: {start: 1.0e-4, end: 1.0e-1, iterations: 1.0e+05} #1.0e-2
+  velocity: {start: 1.0, end: 1.0e-3, iterations: 1.0e+05}  #1.0e-2
 
 training:
   log_every_n_steps: 5000
 
 module:
-  lr_config: {start: 1.0e-3, end: 1.0e-4, iterations: 1.0e+6}
+  lr_config: {start: 1.0e-4, end: 1.0e-5, iterations: 1.0e+6}

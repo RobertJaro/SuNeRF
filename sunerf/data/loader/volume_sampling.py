@@ -29,24 +29,25 @@ class RandomSphericalCoordinateDataset(Dataset):
         h_r = self.radius_range
         if self.radial_weighted_sampling:
             v_min, v_max = np.min(np.log(h_r)), np.max(np.log(h_r))
-            random_coords[:, 0] = v_min + random_coords[:, 0] * (v_max - v_min)
-            random_coords[:, 0] = torch.exp(random_coords[:, 0])
+            r = v_min + random_coords[:, 0] * (v_max - v_min)
+            r = torch.exp(r)
         else:
-            random_coords[:, 0] = h_r[0] + random_coords[:, 0] * (h_r[1] - h_r[0])
+            r = h_r[0] + random_coords[:, 0] * (h_r[1] - h_r[0])
         # theta [0, pi]
         if self.latitude_weighted_sampling:
             lat_r = self.latitude_range
             v_min, v_max = np.min(np.cos(lat_r)), np.max(np.cos(lat_r))
-            random_coords[:, 1] = v_min + random_coords[:, 1] * (v_max - v_min)
-            random_coords[:, 1] = torch.arccos(random_coords[:, 1])
+            lat = v_min + random_coords[:, 1] * (v_max - v_min)
+            lat = torch.arccos(lat)
         else:
             lat_r = self.latitude_range
-            random_coords[:, 1] = lat_r[0] + random_coords[:, 1] * (lat_r[1] - lat_r[0])
+            lat = lat_r[0] + random_coords[:, 1] * (lat_r[1] - lat_r[0])
         # phi [0, 2pi]
         lon_r = self.longitude_range
-        random_coords[:, 2] = lon_r[0] + random_coords[:, 2] * (lon_r[1] - lon_r[0])
+        lon = lon_r[0] + random_coords[:, 2] * (lon_r[1] - lon_r[0])
         # convert to cartesian
-        cartesian_coords = spherical_to_cartesian(random_coords[:, :3], f=torch)
+        spherical_coords = torch.stack([r, lat, lon], dim=1)
+        cartesian_coords = spherical_to_cartesian(spherical_coords, f=torch)
         cartesian_coords = cartesian_coords / self.Rs_per_ds
         # add time
         time_coords = self.time_range[0] + random_coords[:, 3:4] * (self.time_range[1] - self.time_range[0])

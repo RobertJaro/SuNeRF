@@ -12,9 +12,7 @@ from sunerf.train.scaling import ImageAsinhScaling, ImageLinearScaling, ImageLog
 
 class ThomsonSuNeRFModule(BaseSuNeRFModule):
     def __init__(self, Rs_per_ds, seconds_per_dt,
-                 instruments,
-                 lambda_image=1.0, lambda_ratio=1.0,
-                 lambda_continuity=1e-3, lambda_radial=1e-2, lambda_velocity=1e-3,
+                 instruments, lambda_config=None,
                  sampling_config=None,
                  model_config=None, **kwargs):
         # setup rendering
@@ -45,7 +43,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                 raise ValueError(f"Unknown scaling type: {scaling_type}")
 
         model_config = {} if model_config is None else model_config
-        model = RhoModel(**model_config)
+        model = RhoModel(Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt,**model_config)
         rendering = BasicRenderingModule(model=model,
                                          rendering_modules=rendering_modules,
                                          Rs_per_ds=Rs_per_ds,
@@ -57,11 +55,35 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         self.rendering_modules = rendering_modules
         self.model = model
 
-        self.lambda_image = lambda_image
-        self.lambda_ratio = lambda_ratio
-        self.lambda_continuity = lambda_continuity
-        self.lambda_radial = lambda_radial
-        self.lambda_velocity = lambda_velocity
+        # define lambda values
+        lambda_config = {'image':1.0,
+                         'ratio':1.0,
+                         'continuity':1e-3,
+                         'radial':1e-2,
+                         'velocity': 1e-3} if lambda_config is None else lambda_config
+        # check lambda config
+        available_lambdas = ['image', 'ratio', 'continuity', 'radial', 'velocity']
+        for k in available_lambdas:
+            if k not in lambda_config:
+                raise ValueError(f"Unknown lambda_config key: {k}")
+        # load lambda config
+        lambdas = {}
+        for k, v in lambda_config.items():
+            if isinstance(v, dict):
+                start = v['start']
+                end = v['end']
+                iterations = v['iterations']
+                gamma = (end / start) ** (1 / iterations)
+                l_type = 'exponential_decay' if start > end else 'exponential_growth'
+                lambdas[k] = {'gamma': nn.Parameter(torch.tensor(gamma, dtype=torch.float32), requires_grad=False),
+                              'end': nn.Parameter(torch.tensor(end, dtype=torch.float32), requires_grad=False),
+                              'value': nn.Parameter(torch.tensor(start, dtype=torch.float32), requires_grad=False),
+                              'type': l_type}
+            else:
+                lambdas[k] = {'value': nn.Parameter(torch.tensor(v, dtype=torch.float32), requires_grad=False),
+                              'type': 'constant'}
+
+        self.lambdas = nn.ParameterDict(lambdas)
 
         self.scaling_modules = nn.ModuleDict(scaling_modules)
         self.mse_loss = nn.MSELoss()
@@ -109,9 +131,8 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
         image_loss = torch.cat(instrument_image_diff).mean()
         ratio_loss = torch.cat(instrument_ratio_diff).mean()
-        # density_regularization = torch.stack(density_regularization).mean()
 
-        loss = self.lambda_image * image_loss + self.lambda_ratio * ratio_loss
+        loss = self.lambdas['image']['value'] * image_loss + self.lambdas['ratio']['value'] * ratio_loss
 
         with torch.no_grad():
             psnr = -10. * torch.log10(image_loss)
@@ -126,10 +147,12 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             model_out = self.model(query_points)
 
             rho = model_out['rho']
+            log_rho = model_out['log_rho']
             v = model_out['v']
-            continuity_loss = self.compute_continuity_loss(rho, v, query_points)
+            # continuity_loss = self.compute_continuity_loss(rho, v, query_points)
+            continuity_loss = self.compute_log_continuity_loss(log_rho, v, query_points)
 
-            loss += self.lambda_continuity * continuity_loss
+            loss += self.lambdas['continuity']['value'] * continuity_loss
             log_values['continuity'] = continuity_loss
 
             # velocity regularization
@@ -138,14 +161,14 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             max_v = torch.clip(v_abs - self.velocity_max, min=0).pow(2).mean()
             velocity_loss = min_v + max_v
             log_values['velocity'] = velocity_loss
-            loss += self.lambda_velocity * velocity_loss
+            loss += self.lambdas['velocity']['value'] * velocity_loss
 
             # radial regularization
             normalization = torch.norm(query_points[:, :3], dim=-1) * torch.norm(v, dim=-1) + 1e-7
             radial_loss = 1 - (v * query_points[:, :3]).sum(-1) / normalization
             radial_loss = radial_loss.pow(2).mean()
             log_values['radial'] = radial_loss
-            loss += self.lambda_radial * radial_loss
+            loss += self.lambdas['radial']['value'] * radial_loss
 
             # match target velocity profile
             # target_velocity = query_points[:, :3] / torch.norm(query_points[:, :3], dim=-1, keepdim=True)
@@ -159,63 +182,54 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
         return loss
 
-    # def compute_continuity_loss(self, rho, v, query_points):
-    #     rho_jac_matrix = jacobian(rho, query_points)
-    #     dRho_dx = rho_jac_matrix[:, 0, 0]
-    #     dRho_dy = rho_jac_matrix[:, 0, 1]
-    #     dRho_dz = rho_jac_matrix[:, 0, 2]
-    #     dRho_dt = rho_jac_matrix[:, 0, 3]
-    #
-    #     rho_v = rho * v
-    #     v_jac_matrix = jacobian(rho_v, query_points)
-    #     dRhoVx_dx = v_jac_matrix[:, 0, 0]
-    #     dRhoVy_dy = v_jac_matrix[:, 1, 1]
-    #     dRhoVz_dz = v_jac_matrix[:, 2, 2]
-    #
-    #     div_rho_v = dRhoVx_dx + dRhoVy_dy + dRhoVz_dz
-    #     continuity_eq = dRho_dt + div_rho_v
-    #
-    #     loss = continuity_eq.abs()
-    #     radial_distance = torch.norm(query_points[:, :3], dim=-1)
-    #     # compensate for the radial drop-off
-    #     loss = loss * radial_distance ** 2
-    #     # normalize density
-    #     loss = loss / (rho * radial_distance ** 2).mean()
-    #
-    #     return loss.mean()
-
     def compute_continuity_loss(self, rho, v, query_points):
-        out = torch.cat([rho, v], dim=-1)
-        jac_matrix = jacobian(out, query_points)
+        rho_jac_matrix = jacobian(rho, query_points)
+        dRho_dx = rho_jac_matrix[:, 0, 0]
+        dRho_dy = rho_jac_matrix[:, 0, 1]
+        dRho_dz = rho_jac_matrix[:, 0, 2]
+        dRho_dt = rho_jac_matrix[:, 0, 3]
 
-        dRho_dx = jac_matrix[:, 0, 0]
-        dVx_dx = jac_matrix[:, 1, 0]
-        dVy_dx = jac_matrix[:, 2, 0]
-        dVz_dx = jac_matrix[:, 3, 0]
+        rho_v = rho * v
+        v_jac_matrix = jacobian(rho_v, query_points)
+        dRhoVx_dx = v_jac_matrix[:, 0, 0]
+        dRhoVy_dy = v_jac_matrix[:, 1, 1]
+        dRhoVz_dz = v_jac_matrix[:, 2, 2]
 
-        dRho_dy = jac_matrix[:, 0, 1]
-        dVx_dy = jac_matrix[:, 1, 1]
-        dVy_dy = jac_matrix[:, 2, 1]
-        dVz_dy = jac_matrix[:, 3, 1]
+        div_rho_v = dRhoVx_dx + dRhoVy_dy + dRhoVz_dz
+        continuity_eq = dRho_dt + div_rho_v
 
-        dRho_dz = jac_matrix[:, 0, 2]
-        dVx_dz = jac_matrix[:, 1, 2]
-        dVy_dz = jac_matrix[:, 2, 2]
-        dVz_dz = jac_matrix[:, 3, 2]
+        loss = continuity_eq.abs()
+        radial_distance = torch.norm(query_points[:, :3], dim=-1)
+        # compensate for the radial drop-off
+        loss = loss * radial_distance ** 2
+        # normalize density
+        loss = loss / (rho * radial_distance ** 2).mean()
 
-        dRho_dt = jac_matrix[:, 0, 3]
-        dVx_dt = jac_matrix[:, 1, 3]
-        dVy_dt = jac_matrix[:, 2, 3]
-        dVz_dt = jac_matrix[:, 3, 3]
+        return loss.mean()
 
-        div_v = (dVx_dx + dVy_dy + dVz_dz)
-        grad_rho = torch.stack([dRho_dx, dRho_dy, dRho_dz], -1)
-        v_dot_grad_rho = (v * grad_rho).sum(-1)
-        continuity_loss = dRho_dt + rho * div_v + v_dot_grad_rho
-        radius = torch.norm(query_points[..., :3], dim=-1)
-        continuity_loss = continuity_loss.pow(2)  # * radius ** 2
-        continuity_loss = continuity_loss.mean() / rho.mean()
-        return continuity_loss
+    def compute_log_continuity_loss(self, log_rho, v, query_points):
+        rho_jac_matrix = jacobian(log_rho, query_points)
+        dlogRho_dx = rho_jac_matrix[:, 0, 0]
+        dlogRho_dy = rho_jac_matrix[:, 0, 1]
+        dlogRho_dz = rho_jac_matrix[:, 0, 2]
+        dlogRho_dt = rho_jac_matrix[:, 0, 3]
+
+        v_jac_matrix = jacobian(v, query_points)
+        dVx_dx = v_jac_matrix[:, 0, 0]
+        dVy_dy = v_jac_matrix[:, 1, 1]
+        dVz_dz = v_jac_matrix[:, 2, 2]
+
+        div_V = (dVx_dx + dVy_dy + dVz_dz)
+        grad_logRho = torch.stack([dlogRho_dx, dlogRho_dy, dlogRho_dz], -1)
+        v_dot_grad_Rho = (v * grad_logRho).sum(-1)
+        continuity_eq = dlogRho_dt + div_V + v_dot_grad_Rho
+
+        loss = continuity_eq.abs()
+        # compensate for the radial drop-off
+        # radial_distance = torch.norm(query_points[:, :3], dim=-1)
+        # loss = loss * radial_distance ** 2
+
+        return loss.mean()
 
     def validation_step(self, batch, batch_nb, *args):
         dataloader_idx = args[0] if len(args) > 0 else 0
@@ -266,3 +280,23 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                    for k, m in self.rendering_modules.items()}
         self.log(f'instrument_scaling', scaling)
         super().validation_epoch_end(*args, **kwargs)
+
+    def on_train_batch_end(self, *args, **kwargs):
+        # update lambda values
+        for k, v in self.lambdas.items():
+            if v['type'] == 'exponential_decay':
+                new_value = v['value'] * v['gamma']
+                if new_value <= v['end']:
+                    new_value = v['end']
+                v['value'] = new_value
+                self.log(f'lambda_{k}', float(v['value'].detach().cpu().numpy()))
+            if v['type'] == 'exponential_growth':
+                new_value = v['value'] * v['gamma']
+                if new_value >= v['end']:
+                    new_value = v['end']
+                v['value'] = new_value
+                self.log(f'lambda_{k}', float(v['value'].detach().cpu().numpy()))
+            if v['type'] == 'constant':
+                pass # no change required, no logging
+
+        super().on_train_batch_end(*args, **kwargs)

@@ -97,8 +97,8 @@ class ThomsonScattering(nn.Module):
         # for one electron * electron density * weighted by line element ds- separation between sampling points
         rho = rho[..., 0]  # squeeze last dimension
         # TODO clarify z ** -2
-        point_tB = self.C_0 * rho * intensity_tB  #* (z ** -2)
-        point_pB = self.C_0 * rho * intensity_pB  #* (z ** -2)
+        point_tB = self.C_0 * rho * intensity_tB * (z ** -2)
+        point_pB = self.C_0 * rho * intensity_pB * (z ** -2)
 
         # integrate all intensity contributions along LOS
         image_tB = (point_tB * dists).sum(-1)

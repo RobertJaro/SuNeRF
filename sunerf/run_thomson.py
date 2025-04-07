@@ -69,7 +69,7 @@ if __name__ == '__main__':
                                  validation_dataset_mapping=data_module.validation_dataset_mapping,
                                  model_config=model_config,
                                  sampling_config=sampling_config, **module_config,
-                                 **lambda_config)
+                                 lambda_config=lambda_config)
 
     # initialize callbacks
     checkpoint_callback = ModelCheckpoint(dirpath=base_path,

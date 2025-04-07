@@ -12,6 +12,7 @@ from matplotlib.colors import Normalize, LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from pytorch_lightning import Callback
 from skimage.metrics import structural_similarity
+from sklearn.linear_model import LinearRegression
 
 from sunerf.data.date_util import unnormalize_datetime
 from sunerf.data.utils import sdo_img_norm
@@ -459,14 +460,25 @@ class CubeCallback(BaseCallback):
         rho_true = outputs['rho_true'].reshape(self.cube_shape).cpu().numpy()
         rho_pred = outputs['rho_pred'].reshape(self.cube_shape).cpu().numpy()
 
+        flat_rho_true = rho_true.flatten()
+        flat_rho_pred = rho_pred.flatten()
+
+        corr_coeff = np.corrcoef(flat_rho_true, flat_rho_pred)[0, 1]
+        wandb.log({f'corr_coeff': corr_coeff})
+
+        model = LinearRegression(fit_intercept=False)
+        model.fit(flat_rho_pred.reshape(-1, 1), flat_rho_true)
+        calibration_str = f'GT: {flat_rho_true.mean():.2E} SuNeRF: {flat_rho_pred.mean():.2E}; Coeff: {model.coef_[0]:.2E}'
+        flat_rho_pred = model.predict(flat_rho_pred.reshape(-1, 1))
+
         # 2D Histogram of the true and predicted densities
 
         fig, ax = plt.subplots(1, 1, figsize=(5, 5))
 
-        ax.hist2d(np.log10(rho_true).flatten(), np.log10(rho_pred).flatten(), bins=100, cmap='viridis', norm=LogNorm())
-        ax.set_xlabel('True Density [N$_e$ cm$^{-3}$]')
-        ax.set_ylabel('Predicted Density [N$_e$ cm$^{-3}$]')
-        ax.set_title('2D Histogram of True and Predicted Densities')
+        ax.hist2d(np.log10(flat_rho_true), np.log10(flat_rho_pred), bins=100, cmap='viridis', norm=LogNorm())
+        ax.set_xlabel('True Density [log N$_e$ cm$^{-3}$]')
+        ax.set_ylabel('Predicted Density [log N$_e$ cm$^{-3}$]')
+        ax.set_title(calibration_str)
         min_true, min_pred = np.min(np.log10(rho_true)), np.min(np.log10(rho_pred))
         max_true, max_pred = np.max(np.log10(rho_true)), np.max(np.log10(rho_pred))
         # plot 1:1 line

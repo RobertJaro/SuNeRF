@@ -2,6 +2,7 @@ import torch
 from torch import nn
 from torch.distributions import Normal
 
+from astropy import units as u
 
 class GenericModel(nn.Module):
 
@@ -95,14 +96,20 @@ class PlasmaModel(GenericModel):
 
 class RhoModel(GenericModel):
 
-    def __init__(self, **kwargs):
+    def __init__(self, Rs_per_ds, seconds_per_dt, **kwargs):
         super().__init__(in_dim=4, out_dim=4, **kwargs)
+        v = 400 * (u.km / u.s)
+        v = v.to_value(u.solRad / u.s) / Rs_per_ds * seconds_per_dt # normalize to model units
+        self.v = nn.Parameter(torch.tensor(v, dtype=torch.float32), requires_grad=False)
 
     def forward(self, x):
+        coords = x
         x = super().forward(x)
         log_rho = x[..., 0:1]
-        v = x[..., 1:]
-        rho = 10 ** log_rho
+        radial = coords[..., :3] / (torch.norm(coords[..., :3], dim=-1, keepdim=True) + 1e-8)
+        v = self.v * radial
+        v = v + x[..., 1:]
+        rho = torch.exp(log_rho)
         result = {'log_rho': log_rho, 'rho': rho, 'v': v}
         return result
 
@@ -196,7 +203,7 @@ class PositionalEncoding(nn.Module):
 
 class GaussianPositionalEncoding(nn.Module):
 
-    def __init__(self, d_input, num_freqs=128, scale=512):
+    def __init__(self, d_input, num_freqs=32, scale=4):
         super().__init__()
         dist = Normal(loc=0, scale=scale)
         frequencies = dist.sample([num_freqs, d_input])

@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf-cme/6view_v03"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme/6view_v03'
+base_path: "/glade/work/rjarolim/sunerf-cme/2view_v01"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme/2view_v01'
 
 instruments:
   - type: 'default'
@@ -15,18 +15,26 @@ data:
     - type: 'HAO'
       key: 'HAO'
       instrument_key: 'HAO'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_5/*pB*.fits"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_5/*tB*.fits"
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_2/*pB*.fits"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_2/*tB*.fits"
+      batch_size: 1024
+    - type: 'HAO'
+      key: 'background'
+      instrument_key: 'HAO'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_ecliptic_background/*pB*.fits"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_ecliptic_background/*tB*.fits"
+      batch_size: 1024
     - type: 'random'
       name: 'continuity'
-      radius_range: [20, 130] #[ 21.5, 130 ]
+      radius_range: [20, 140] #[ 21.5, 130 ]
       unit: 'solRad'
+      batch_size: 2048
   valid_datasets:
     - type: 'HAO'
       key: 'HAO_sample'
       instrument_key: 'HAO'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_5/dcmer_040W_bang_0000_pB_stepnum_030.fits"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_5/dcmer_040W_bang_0000_tB_stepnum_030.fits"
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_1/dcmer_060W_bang_0000_pB_stepnum_030.fits"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data/prep_HAO_1/dcmer_060W_bang_0000_tB_stepnum_030.fits"
     - type: 'reference_cube'
       key: 'cube'
       data_path: "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/dens_stepnum_030.sav"
@@ -34,11 +42,10 @@ data:
     - type: 'series'
       name: 'series'
       batch_size: 16384
-#  ref_date: "2010-04-03T09:04:00.000"
   debug: False
   Rs_per_ds: 1
   seconds_per_dt: 86400
-  batch_size: 2048
+  batch_size: 1024
   validation_batch_size: 4096
   num_workers: 16
 
@@ -63,7 +70,7 @@ callbacks:
 logging:
   entity: "robert_jarolim"
   project: "sunerf-cme"
-  name: "6 Viewpoints z^-2"
+  name: "2 Viewpoint"
 
 sampling:
   type: "spherical"
