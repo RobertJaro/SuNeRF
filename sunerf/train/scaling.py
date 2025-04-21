@@ -4,7 +4,7 @@ from torch import nn
 
 
 class ImageLogScaling(nn.Module):
-    def __init__(self, vmin, vmax):
+    def __init__(self, vmin=0, vmax=1):
         super().__init__()
         self.vmin = nn.Parameter(torch.tensor(vmin, dtype=torch.float32), requires_grad=False)
         self.vmax = nn.Parameter(torch.tensor(vmax, dtype=torch.float32), requires_grad=False)

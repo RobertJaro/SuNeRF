@@ -8,7 +8,7 @@ class ThomsonScattering(nn.Module):
 
     def __init__(self, Rs_per_ds, scaling_config=None, **kwargs):
         super().__init__(**kwargs)
-        c_0 = 1.0  # (8.69e-7 * u.cm ** 2).to_value(u.R_sun ** 2) / (Rs_per_ds ** 2)
+        c_0 = 1.0e8 # (8.69e-7 * u.cm ** 2).to_value(u.R_sun ** 2) / (Rs_per_ds ** 2)
         solar_radius = 1 / Rs_per_ds
         #
         self.limb_darkening_coeff = nn.Parameter(torch.tensor(0.63, dtype=torch.float32), requires_grad=False)
@@ -85,13 +85,9 @@ class ThomsonScattering(nn.Module):
         intensity_pB[intensity_pB < 0] = 0
         intensity_tB[intensity_tB < 0] = 0
 
-        if torch.isnan(intensity_tB).any() or torch.isnan(intensity_pB).any():
-            cond = torch.isnan(intensity_tB) | torch.isnan(intensity_pB)
-            # print(f'Invalid values in intensity_tB or intensity_pB: query points {query_points[cond]}')
-            # remove nan values (where omega close to 0)
-            intensity_tB = torch.nan_to_num(intensity_tB, nan=0.0, posinf=0.0, neginf=0.0)
-            intensity_pB = torch.nan_to_num(intensity_pB, nan=0.0, posinf=0.0, neginf=0.0)
-            # raise ValueError('Invalid values in intensity_tB or intensity_pB')
+        # remove nan values (where omega close to 0)
+        intensity_tB = torch.nan_to_num(intensity_tB, nan=0.0, posinf=0.0, neginf=0.0)
+        intensity_pB = torch.nan_to_num(intensity_pB, nan=0.0, posinf=0.0, neginf=0.0)
 
         # intensity (total and polarised) from all electrons
         # for one electron * electron density * weighted by line element ds- separation between sampling points
@@ -101,8 +97,8 @@ class ThomsonScattering(nn.Module):
         point_pB = self.C_0 * rho * intensity_pB * (z ** -2)
 
         # integrate all intensity contributions along LOS
-        image_tB = (point_tB * dists).sum(-1)
-        image_pB = (point_pB * dists).sum(-1)
+        image_tB = (point_tB * dists).sum(1)
+        image_pB = (point_pB * dists).sum(1)
 
         # print("pixel tB smaller than 0? - {} - Value: {}".format((image_tB < 0).any(),(image_tB < 0).nonzero()))
         # print("Intensity tB smaller than 0? - {} - Value: {}".format((intensity_tB < 0).any(),(intensity_tB < 0).nonzero()))
@@ -114,7 +110,8 @@ class ThomsonScattering(nn.Module):
 
         # set the weigths to the intensity contributions (sample primary contributing regions)
         # need weights for sampling for fine model
-        weights = rho / (rho.sum(1, keepdim=True) + 1e-10)
+        weights = point_pB + point_tB
+        weights = weights / (weights.sum(1, keepdim=True) + 1e-10)
 
         image = torch.stack([image_tB, image_pB], dim=-1)
         image = image * self.scaling

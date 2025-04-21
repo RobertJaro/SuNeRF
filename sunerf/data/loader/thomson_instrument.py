@@ -182,12 +182,12 @@ class GenericThomsonDataset(TensorsDataset):
 class HAOThomsonDataset(GenericThomsonDataset):
 
     def __init__(self, **kwargs):
-        super().__init__(scaling=1, **kwargs)
+        super().__init__(scaling=5e-5, **kwargs)
 
 
 class ReferenceCubeDataset(TensorsDataset):
 
-    def __init__(self, data_path, ref_date, seconds_per_dt, Rs_per_ds, max_radius=100, **kwargs):
+    def __init__(self, data_path, ref_date, seconds_per_dt, Rs_per_ds, min_radius=30, max_radius=100, **kwargs):
 
         o = scipy.io.readsav(data_path)
         date0 = parse("2010-04-03T09:04:00.000")
@@ -200,7 +200,7 @@ class ReferenceCubeDataset(TensorsDataset):
         th = o['th1d'].astype(np.float32) - np.pi / 2
 
         # clip radius to 100 Rsun
-        mask = r < max_radius
+        mask = (r < max_radius) & (r > min_radius)
         r = r[mask]
         density = density[mask]
 

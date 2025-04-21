@@ -464,12 +464,15 @@ class CubeCallback(BaseCallback):
         flat_rho_pred = rho_pred.flatten()
 
         corr_coeff = np.corrcoef(flat_rho_true, flat_rho_pred)[0, 1]
-        wandb.log({f'corr_coeff': corr_coeff})
+        wandb.log({f'valid.corr_coeff': corr_coeff})
 
         model = LinearRegression(fit_intercept=False)
         model.fit(flat_rho_pred.reshape(-1, 1), flat_rho_true)
         calibration_str = f'GT: {flat_rho_true.mean():.2E} SuNeRF: {flat_rho_pred.mean():.2E}; Coeff: {model.coef_[0]:.2E}'
         flat_rho_pred = model.predict(flat_rho_pred.reshape(-1, 1))
+
+        mae = np.mean(np.abs(flat_rho_true - flat_rho_pred))
+        wandb.log({f'valid.mae': mae})
 
         # 2D Histogram of the true and predicted densities
 

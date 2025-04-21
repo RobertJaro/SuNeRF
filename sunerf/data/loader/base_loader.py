@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from sunerf.data.dataset import MmapDataset
 from sunerf.data.ray_sampling import get_rays
+from sunerf.data.utils import get_azimuthal_equidistant_coordinates
 from sunerf.train.coordinate_transformation import pose_spherical
 
 
@@ -104,8 +105,12 @@ def _load_map_data(data):
         raise ValueError('reference_frame must be "heliographic" or "carrington"')
 
     image = s_map.data.astype(np.float32)
-    img_coords = all_coordinates_from_map(s_map).transform_to(frames.Helioprojective)
-    all_rays = np.stack(get_rays(img_coords, pose), -2)
+    img_coords = get_azimuthal_equidistant_coordinates(s_map)
+
+    x = img_coords[..., 0]
+    y = img_coords[..., 1]
+
+    all_rays = np.stack(get_rays(x, y, pose), -2)
 
     return {'image': image, 'pose': pose, 'rays': all_rays, 'time': time}
 

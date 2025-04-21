@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-v2/all_v06"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme/all_v05'
+base_path: "/glade/work/rjarolim/sunerf-cme-v2/all_nophysics_v01"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme/all_nophysics_v01'
 
 instruments:
   - type: 'default'
@@ -18,11 +18,6 @@ data:
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_all/*pB*.fits"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_all/*tB*.fits"
       batch_size: 2048
-    - type: 'random'
-      name: 'continuity'
-      radius_range: [ 20, 140 ]
-      unit: 'solRad'
-      batch_size: 4096
   valid_datasets:
     - type: 'HAO'
       key: 'HAO_sample'
@@ -64,7 +59,7 @@ callbacks:
 logging:
   entity: "robert_jarolim"
   project: "sunerf-cme"
-  name: "All Viewpoints v01"
+  name: "All Viewpoints - No Physics - v01"
 
 sampling:
   type: "spherical"
@@ -74,9 +69,6 @@ sampling:
 lambda:
   image: 1.0
   ratio: 1.0
-  radial: 1.0e-3
-  continuity: 1.0e-3
-  velocity: 1.0e-3
 
 training:
   log_every_n_steps: 5000

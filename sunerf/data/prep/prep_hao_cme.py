@@ -6,10 +6,11 @@ from itertools import repeat
 
 import numpy as np
 from astropy import units as u
+from astropy.coordinates import SkyCoord
 from astropy.io.fits import getheader, getdata
 from sunpy.map import Map
-from sunpy.map.maputils import all_coordinates_from_map
-from astropy.coordinates import SkyCoord
+
+from sunerf.data.utils import get_azimuthal_equidistant_coordinates
 
 
 def _load_HAO(file_path):
@@ -29,6 +30,7 @@ def _load_HAO(file_path):
     header['HGLT_OBS'] = 90 - np.rad2deg(header["OBS_LAT"])
 
     header['DSUN_OBS'] = (header["OBS_R0"] * u.Rsun).to("m").value  # solar radii to m
+    header['RSUN'] = np.rad2deg(header["RSUN"]) * 3600  # rad to arcsec
 
     header["CTYPE1"] = "HPLN-TAN"
     header["CTYPE2"] = "HPLT-TAN"
@@ -44,7 +46,7 @@ def _load_HAO(file_path):
     header["CRPIX2"] = header["NAXIS2"] * 0.5 + 0.5
 
     header['wavelnth'] = 5200  # dummy value for wavelength
-    header['rsun_ref'] = (1 * u.R_sun).to_value(u.m) # add solar radius
+    header['rsun_ref'] = (1 * u.R_sun).to_value(u.m)  # add solar radius
 
     return Map(data, header)
 
@@ -68,11 +70,13 @@ def _loadMLprepMap(file_path, out_path, resolution, occ_rad=0.1 * u.AU, outer_ra
     s_map = s_map.resample((resolution, resolution) * u.pix)
 
     # mask occultor
-    pixel_coords = all_coordinates_from_map(s_map)
+    img_coords = get_azimuthal_equidistant_coordinates(s_map)
+    x = img_coords[..., 0]
+    y = img_coords[..., 1]
     solar_center = SkyCoord(0 * u.deg, 0 * u.deg, frame=s_map.coordinate_frame)
 
-    pixel_radii = np.sqrt((pixel_coords.Tx - solar_center.Tx) ** 2 + \
-                          (pixel_coords.Ty - solar_center.Ty) ** 2)
+    pixel_radii = np.sqrt((x - solar_center.Tx) ** 2 + (y - solar_center.Ty) ** 2)
+
     mask = ((pixel_radii < s_map.rsun_obs * occ_rad.to_value(u.R_sun)) |
             (pixel_radii > s_map.rsun_obs * outer_rad.to_value(u.R_sun)))
 

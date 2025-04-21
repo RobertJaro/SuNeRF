@@ -98,18 +98,22 @@ class RhoModel(GenericModel):
 
     def __init__(self, Rs_per_ds, seconds_per_dt, **kwargs):
         super().__init__(in_dim=4, out_dim=4, **kwargs)
-        v = 400 * (u.km / u.s)
+        v = 300 * (u.km / u.s)
         v = v.to_value(u.solRad / u.s) / Rs_per_ds * seconds_per_dt # normalize to model units
         self.v = nn.Parameter(torch.tensor(v, dtype=torch.float32), requires_grad=False)
 
     def forward(self, x):
         coords = x
+        radial_distance = torch.norm(coords[..., :3], dim=-1, keepdim=True)
+        radial = coords[..., :3] / (radial_distance + 1e-8)
+
         x = super().forward(x)
-        log_rho = x[..., 0:1]
-        radial = coords[..., :3] / (torch.norm(coords[..., :3], dim=-1, keepdim=True) + 1e-8)
+        log_rho = x[..., 0:1] - 2 * torch.log(radial_distance)
+        rho = torch.exp(log_rho)
+
         v = self.v * radial
         v = v + x[..., 1:]
-        rho = torch.exp(log_rho)
+
         result = {'log_rho': log_rho, 'rho': rho, 'v': v}
         return result
 

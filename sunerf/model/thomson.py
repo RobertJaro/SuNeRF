@@ -62,10 +62,14 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                          'radial':1e-2,
                          'velocity': 1e-3} if lambda_config is None else lambda_config
         # check lambda config
-        available_lambdas = ['image', 'ratio', 'continuity', 'radial', 'velocity']
+        available_lambdas = ['image', 'ratio', 'continuity', 'radial', 'velocity', 'target_velocity']
+        for k in lambda_config:
+            if k not in available_lambdas:
+                raise ValueError(f"Unknown lambda_config key: {k}")
+        # set lambdas default to 0.0
         for k in available_lambdas:
             if k not in lambda_config:
-                raise ValueError(f"Unknown lambda_config key: {k}")
+                lambda_config[k] = 0.0
         # load lambda config
         lambdas = {}
         for k, v in lambda_config.items():
@@ -93,6 +97,8 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         self.velocity_min = nn.Parameter(torch.tensor(velocity_min, dtype=torch.float32), requires_grad=False)
         velocity_max = (800.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
         self.velocity_max = nn.Parameter(torch.tensor(velocity_max, dtype=torch.float32), requires_grad=False)
+        velocity_avg = (300.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
+        self.velocity_avg = nn.Parameter(torch.tensor(velocity_avg, dtype=torch.float32), requires_grad=False)
 
         print(f'Velocity min: {velocity_min}, max: {velocity_max}')
         drop_off_distance = (1 * u.AU).to_value(u.R_sun) / Rs_per_ds
@@ -115,8 +121,8 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             target_image = dataset_batch[k]['image']
 
             # compute polarization ratios
-            ratio_target_image = target_image[..., 1] / (target_image[..., 0] + 1e-6)
-            ratio_model_image = model_image[..., 1] / (model_image[..., 0] + 1e-6)
+            ratio_target_image = target_image[..., 1] / (target_image[..., 0] + 1e-8)
+            ratio_model_image = model_image[..., 1] / (model_image[..., 0] + 1e-8)
 
             # scale images
             scaled_model_image = image_scaling(model_image)
@@ -131,6 +137,9 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
         image_loss = torch.cat(instrument_image_diff).mean()
         ratio_loss = torch.cat(instrument_ratio_diff).mean()
+
+        assert torch.isnan(image_loss).sum() == 0, 'Invalid loss detected: image_loss'
+        assert torch.isnan(ratio_loss).sum() == 0, 'Invalid loss detected: ratio_loss'
 
         loss = self.lambdas['image']['value'] * image_loss + self.lambdas['ratio']['value'] * ratio_loss
 
@@ -170,12 +179,16 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             log_values['radial'] = radial_loss
             loss += self.lambdas['radial']['value'] * radial_loss
 
-            # match target velocity profile
-            # target_velocity = query_points[:, :3] / torch.norm(query_points[:, :3], dim=-1, keepdim=True)
-            # velocity_loss = (v - target_velocity).pow(2).sum(-1).mean()
-            # log_values['velocity_loss'] = velocity_loss
-            # loss += self.lambda_velocity * velocity_loss
+            # target velocity regularization
+            target_velocity = query_points[:, :3] / (torch.norm(query_points[:, :3], dim=-1, keepdim=True) + 1e-7)
+            target_velocity = target_velocity * self.velocity_avg
+            target_loss = (v - target_velocity).pow(2).sum(-1)
+            target_loss = target_loss.mean()
+            log_values['target_velocity'] = target_loss
+            loss += self.lambdas['target_velocity']['value'] * target_loss
 
+
+        assert torch.isnan(loss).sum() == 0, 'Invalid loss detected: loss'
         # log results to WANDB
         self.log("loss", loss)
         self.log("train", log_values)
@@ -221,8 +234,8 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
         div_V = (dVx_dx + dVy_dy + dVz_dz)
         grad_logRho = torch.stack([dlogRho_dx, dlogRho_dy, dlogRho_dz], -1)
-        v_dot_grad_Rho = (v * grad_logRho).sum(-1)
-        continuity_eq = dlogRho_dt + div_V + v_dot_grad_Rho
+        v_dot_grad_logRho = (v * grad_logRho).sum(-1)
+        continuity_eq = dlogRho_dt + div_V + v_dot_grad_logRho
 
         loss = continuity_eq.abs()
         # compensate for the radial drop-off
@@ -247,8 +260,8 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
             model_image = model_out['image']
 
-            target_ratio = image[..., 1:2] / (image[..., 0:1] + 1e-6)
-            model_ratio = model_image[..., 1:2] / (model_image[..., 0:1] + 1e-6)
+            target_ratio = image[..., 1:2] / (image[..., 0:1] + 1e-8)
+            model_ratio = model_image[..., 1:2] / (model_image[..., 0:1] + 1e-8)
 
             image_scaling = self.scaling_modules[instrument_key]
             target_image = image_scaling(image)

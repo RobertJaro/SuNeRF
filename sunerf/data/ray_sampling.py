@@ -4,19 +4,14 @@ import numpy as np
 from astropy import units as u
 
 
-def get_rays(img_coords, c2w: np.array) -> Tuple[np.array, np.array]:
+def get_rays(Tx, Ty, c2w: np.array) -> Tuple[np.array, np.array]:
     r"""
     Find origin and direction of rays through every pixel and camera origin.
     """
-    Tx = img_coords.Tx.to_value(u.rad)
-    Ty = img_coords.Ty.to_value(u.rad)
+    Tx = Tx.to_value(u.rad)
+    Ty = Ty.to_value(u.rad)
     # get direction vector --> 0,0 is the down the z axis
     # central pixel (Tx=Ty=0) = (0, 0, -1)
-
-    # original version
-    # x = np.sin(Tx)
-    # y = np.cos(Tx) * np.sin(Ty)
-    # z = - np.cos(Tx) * np.cos(Ty)
 
     # alternative rotation (might need verification)
     alpha = np.arctan2(Tx, Ty)
