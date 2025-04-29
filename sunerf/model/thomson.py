@@ -174,7 +174,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
             # radial regularization
             normalization = torch.norm(query_points[:, :3], dim=-1) * torch.norm(v, dim=-1) + 1e-7
-            radial_loss = 1 - (v * query_points[:, :3]).sum(-1) / normalization
+            radial_loss = torch.norm(torch.cross(v, query_points[:, :3], dim=-1), dim=-1) / normalization
             radial_loss = radial_loss.pow(2).mean()
             log_values['radial'] = radial_loss
             loss += self.lambdas['radial']['value'] * radial_loss

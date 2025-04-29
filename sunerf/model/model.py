@@ -1,45 +1,107 @@
+import numpy as np
 import torch
+from functorch.einops import rearrange
 from torch import nn
 from torch.distributions import Normal
 
 from astropy import units as u
+from torch.nn.functional import linear
 
-class GenericModel(nn.Module):
 
-    def __init__(self, in_dim, out_dim, dim=512, n_layers=8, encoding=None, activation='sine'):
+def cast_tuple(val, repeat = 1):
+    return val if isinstance(val, tuple) else ((val,) * repeat)
+
+class SirenLayer(nn.Module):
+    def __init__(
+        self,
+        dim_in,
+        dim_out,
+        w0 = 1.,
+        c = 6.,
+        is_first = False,
+        use_bias = True,
+        activation = None,
+        dropout = 0.
+    ):
         super().__init__()
-        if encoding is None or encoding == 'none':
-            self.d_in = nn.Linear(in_dim, dim)
-        elif encoding == 'positional':
-            posenc = PositionalEncoding(in_dim, 10)
-            d_in = nn.Linear(posenc.d_output, dim)
-            self.d_in = nn.Sequential(posenc, d_in)
-        elif encoding == 'gaussian':
-            posenc = GaussianPositionalEncoding(in_dim)
-            d_in = nn.Linear(posenc.d_output, dim)
-            self.d_in = nn.Sequential(posenc, d_in)
-        else:
-            raise NotImplementedError(f'Unknown encoding {encoding}')
-        lin = [nn.Linear(dim, dim) for _ in range(n_layers)]
-        self.linear_layers = nn.ModuleList(lin)
-        self.d_out = nn.Linear(dim, out_dim)
-        activation_mapping = {'relu': nn.ReLU, 'swish': Swish, 'tanh': nn.Tanh, 'sine': Sine}
-        activation_f = activation_mapping[activation]
-        self.in_activation = activation_f()
-        self.activations = nn.ModuleList([activation_f() for _ in range(n_layers)])
+        self.dim_in = dim_in
+        self.is_first = is_first
+
+        weight = torch.zeros(dim_out, dim_in)
+        bias = torch.zeros(dim_out) if use_bias else None
+        self.init_(weight, bias, c = c, w0 = w0)
+
+        self.weight = nn.Parameter(weight)
+        self.bias = nn.Parameter(bias) if use_bias else None
+        self.activation = Sine(w0) if activation is None else activation
+        self.dropout = nn.Dropout(dropout)
+
+    def init_(self, weight, bias, c, w0):
+        dim = self.dim_in
+
+        w_std = (1 / dim) if self.is_first else (np.sqrt(c / dim) / w0)
+        weight.uniform_(-w_std, w_std)
+
+        if bias is not None:
+            bias.uniform_(-w_std, w_std)
 
     def forward(self, x):
-        x = self.in_activation(self.d_in(x))
-        for l, a in zip(self.linear_layers, self.activations):
-            x = a(l(x))
-        x = self.d_out(x)
-        return x
+        out =  linear(x, self.weight, self.bias)
+        out = self.activation(out)
+        out = self.dropout(out)
+        return out
+
+# siren network
+
+class SirenNet(nn.Module):
+    def __init__(
+        self,
+        in_dim,
+        out_dim,
+        dim=512,
+        num_layers=8,
+        w0 = 1.,
+        w0_initial = 30.,
+        use_bias = True,
+        final_activation = None,
+        dropout = 0.
+    ):
+        super().__init__()
+        self.num_layers = num_layers
+        self.dim_hidden = dim
+
+        self.layers = nn.ModuleList([])
+        for ind in range(num_layers):
+            is_first = ind == 0
+            layer_w0 = w0_initial if is_first else w0
+            layer_dim_in = in_dim if is_first else dim
+
+            layer = SirenLayer(
+                dim_in = layer_dim_in,
+                dim_out = dim,
+                w0 = layer_w0,
+                use_bias = use_bias,
+                is_first = is_first,
+                dropout = dropout
+            )
+
+            self.layers.append(layer)
+
+        final_activation = nn.Identity() if not final_activation is not None else final_activation
+        self.last_layer = SirenLayer(dim_in = dim, dim_out = out_dim, w0 = w0, use_bias = use_bias, activation = final_activation)
+
+    def forward(self, x):
+
+        for layer in self.layers:
+            x = layer(x)
+
+        return self.last_layer(x)
 
 
-class EmissionModel(GenericModel):
+class EmissionModel(SirenNet):
 
-    def __init__(self, n_channels=1, encoding='positional', **kwargs):
-        super().__init__(in_dim=4, out_dim=n_channels * 2, encoding=encoding, **kwargs)
+    def __init__(self, n_channels=1, **kwargs):
+        super().__init__(in_dim=4, out_dim=n_channels * 2, **kwargs)
         self.n_channels = n_channels
 
     def forward(self, x):
@@ -49,10 +111,10 @@ class EmissionModel(GenericModel):
         return {'emission': emission, 'alpha': alpha}
 
 
-class PlasmaModel(GenericModel):
+class PlasmaModel(SirenNet):
 
-    def __init__(self, log_T, decay_distance=2.0, encoding='gaussian', **kwargs):
-        super().__init__(in_dim=4, out_dim=3, encoding=encoding, **kwargs)
+    def __init__(self, log_T, decay_distance=2.0, **kwargs):
+        super().__init__(in_dim=4, out_dim=3, **kwargs)
         self.log_T = nn.Parameter(log_T, requires_grad=False)
         self.decay_distance = decay_distance
 
@@ -94,13 +156,16 @@ class PlasmaModel(GenericModel):
                 }
 
 
-class RhoModel(GenericModel):
+class RhoModel(SirenNet):
 
     def __init__(self, Rs_per_ds, seconds_per_dt, **kwargs):
         super().__init__(in_dim=4, out_dim=4, **kwargs)
         v = 300 * (u.km / u.s)
         v = v.to_value(u.solRad / u.s) / Rs_per_ds * seconds_per_dt # normalize to model units
-        self.v = nn.Parameter(torch.tensor(v, dtype=torch.float32), requires_grad=False)
+        self.v_radial = nn.Parameter(torch.tensor(v, dtype=torch.float32), requires_grad=False)
+        v_scale = 10 * (u.km / u.s)
+        v_scale = v_scale.to_value(u.solRad / u.s) / Rs_per_ds * seconds_per_dt # normalize to model units
+        self.v_scale = nn.Parameter(torch.tensor(v_scale, dtype=torch.float32), requires_grad=False)
 
     def forward(self, x):
         coords = x
@@ -111,14 +176,14 @@ class RhoModel(GenericModel):
         log_rho = x[..., 0:1] - 2 * torch.log(radial_distance)
         rho = torch.exp(log_rho)
 
-        v = self.v * radial
-        v = v + x[..., 1:]
+        v = self.v_radial * radial
+        v = v + x[..., 1:] * self.v_scale
 
         result = {'log_rho': log_rho, 'rho': rho, 'v': v}
         return result
 
 
-class VelocityModel(GenericModel):
+class VelocityModel(SirenNet):
 
     def __init__(self, **kwargs):
         super().__init__(in_dim=4, out_dim=3, **kwargs)
@@ -128,7 +193,7 @@ class VelocityModel(GenericModel):
         return {'v': v}
 
 
-class AbsorptionModel(GenericModel):
+class AbsorptionModel(SirenNet):
 
     def __init__(self, **kwargs):
         super().__init__(in_dim=2, out_dim=1, **kwargs)

@@ -40,7 +40,7 @@ if __name__ == '__main__':
     logging_config = config['logging'] if 'logging' in config else {'project': 'sunerf'}
 
     # setup training config
-    epochs = training_config['epochs'] if 'epochs' in training_config else 1000
+    epochs = training_config['epochs'] if 'epochs' in training_config else 50
     log_every_n_steps = training_config['log_every_n_steps'] if 'log_every_n_steps' in training_config else None
     check_val_every_n_epoch = training_config[
         'check_val_every_n_epoch'] if 'check_val_every_n_epoch' in training_config else 1

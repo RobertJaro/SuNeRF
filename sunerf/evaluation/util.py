@@ -6,3 +6,8 @@ def convert_spherical_to_cartesian(r, lat, lon):
     y = r * np.cos(lat) * np.sin(lon)
     z = r * np.sin(lat)
     return x, y, z
+
+def none_or_float(value):
+    if value == 'None':
+        return None
+    return float(value)

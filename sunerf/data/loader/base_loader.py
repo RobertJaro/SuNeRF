@@ -97,10 +97,18 @@ def _load_map_data(data):
         pose = pose_spherical(s_map.carrington_longitude.to(u.rad).value,
                               s_map.carrington_latitude.to(u.rad).value,
                               s_map.dsun.to_value(u.solRad) / Rs_per_ds).float().numpy()
+        observer = {'radius': s_map.dsun.to(u.solRad),
+                    'latitude': s_map.carrington_latitude.to(u.deg),
+                    'longitude': s_map.carrington_longitude.to(u.deg),
+                    'time': time}
     elif reference_frame == 'heliographic':
         pose = pose_spherical(s_map.heliographic_longitude.to(u.rad).value,
                               s_map.heliographic_latitude.to(u.rad).value,
                               s_map.dsun.to_value(u.solRad) / Rs_per_ds).float().numpy()
+        observer = {'radius': s_map.dsun.to(u.solRad),
+                    'latitude': s_map.heliographic_latitude.to(u.deg),
+                    'longitude': s_map.heliographic_longitude.to(u.deg),
+                    'time': time}
     else:
         raise ValueError('reference_frame must be "heliographic" or "carrington"')
 
@@ -112,7 +120,7 @@ def _load_map_data(data):
 
     all_rays = np.stack(get_rays(x, y, pose), -2)
 
-    return {'image': image, 'pose': pose, 'rays': all_rays, 'time': time}
+    return {'image': image, 'pose': pose, 'rays': all_rays, 'time': time, 'observer': observer}
 
 
 class BatchesDataset(Dataset):

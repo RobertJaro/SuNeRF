@@ -12,6 +12,7 @@ from tqdm import tqdm
 from sunerf.data.date_util import normalize_datetime, unnormalize_datetime
 from sunerf.data.ray_sampling import get_rays
 from sunerf.evaluation.util import convert_spherical_to_cartesian
+from sunerf.rendering.base_tracing import MultiResolutionRenderingModule
 from sunerf.train.coordinate_transformation import pose_spherical
 
 
@@ -25,10 +26,11 @@ class SuNeRFLoader:
         data_config = state['data_config']
         self.instrument_keys = list(data_config.keys())
         self.config = data_config
+        self.observers = [o for k in data_config.keys() for o in data_config[k]['observers']]
 
         rendering = state['rendering']
         self.rendering = rendering.to(device)
-        model = rendering.fine_model
+        model = rendering.fine_model if isinstance(rendering, MultiResolutionRenderingModule) else rendering.model
         self.model = model.to(device)
 
         self.seconds_per_dt = state['seconds_per_dt']
@@ -161,24 +163,17 @@ class SuNeRFLoader:
         flat_query_points = query_points.reshape(-1, 4)
         n_batches = np.ceil(len(flat_query_points) / batch_size).astype(int)
 
-        out_dict = {'log_ne': [], 'total_ne': [], 'mean_log_T': [], 'total_log_ne': [], 'ne': []}
+        out_dict = {}
         iter = range(n_batches) if not progress else tqdm(range(n_batches))
         for j in iter:
             batch = flat_query_points[j * batch_size:(j + 1) * batch_size].to(self.device)
             out = self.model(batch)
             for k, v in out.items():
                 if k not in out_dict:
-                    continue
+                    out_dict[k] = []
                 out_dict[k].append(v.detach().cpu())
-            # set temperature from model
 
         output = {k: torch.cat(v).reshape(*target_shape, *v[0].shape[1:]).numpy() for k, v in out_dict.items()}
-        output['log_T'] = out['log_T'].detach().cpu()  # TODO move
-
-        # unnomalize rho
-        output['ne'] = output['ne'] * self.ne_scaling
-        output['total_ne'] = output['total_ne'] * self.ne_scaling
-        output['total_log_ne'] = output['total_log_ne'] + np.log10(self.ne_scaling)
 
         return output
 
@@ -218,3 +213,18 @@ class SuNeRFLoader:
             header = make_fitswcs_header(img, reference_coord, scale=scale)
             maps[channel] = Map(img, header)
         return maps
+
+
+class ThomsonSuNeRFLoader(SuNeRFLoader):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.rho_scaling = 57.80811838603689 # from calibration
+
+    def load_coords(self, *args, **kwargs):
+        output = super().load_coords(*args, **kwargs)
+        # unnormalize rho
+        output['rho'] = output['rho'] * self.rho_scaling
+        output['log_rho'] = output['log_rho'] * self.rho_scaling
+
+        return output

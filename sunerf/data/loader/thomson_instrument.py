@@ -34,15 +34,17 @@ class ThomsonDataModule(BaseDataModule):
         base_config = {'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt, 'ref_date': ref_date,
                        'debug': debug, 'work_directory': work_directory, 'batch_size': batch_size * N_GPUS}
 
-        train_dict = self._load_dataset(train_datasets, base_config)
+        train_dict, ref_date = self._load_dataset(train_datasets, base_config)
+
         module_config = {}
-        for k, ref_ds in train_dict.items():
-            if not isinstance(ref_ds, GenericThomsonDataset):
+        for k, train_ds in train_dict.items():
+            if not isinstance(train_ds, GenericThomsonDataset):
                 continue
-            dc = ref_ds.data_config
+            dc = train_ds.data_config
             module_config[k] = {'type': 'thomson', 'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt,
-                                'ref_date': ref_date, 'image_scaling': ref_ds.scaling,
-                                'wcs': dc['wcs'], 'image_shape': dc['image_shape'], 'times': ref_ds.times}
+                                'ref_date': ref_date, 'image_scaling': train_ds.scaling,
+                                'wcs': dc['wcs'], 'image_shape': dc['image_shape'], 'times': train_ds.times,
+                                'observers': dc['observers']}
 
         base_config['batch_size'] = validation_batch_size
         times = np.concatenate([dataset.normalized_times for dataset in train_dict.values() if isinstance(dataset, GenericThomsonDataset)])
@@ -81,7 +83,7 @@ class ThomsonDataModule(BaseDataModule):
                 base_config['ref_date'] = ref_date
             assert ds_key not in train_dict, f'Duplicate dataset key {ds_key}'
             train_dict[ds_key] = dataset
-        return train_dict
+        return train_dict, ref_date
 
     def _load_valid_dataset(self, data_config, base_config, time_range):
         data_config = copy.deepcopy(data_config)
@@ -115,14 +117,6 @@ class GenericThomsonDataset(TensorsDataset):
         pB_files = sorted(glob.glob(data_path_pB))
         tB_files = sorted(glob.glob(data_path_tB))
 
-        data_config = {}
-        # load reference info
-        ref_map = Map(pB_files[0])
-        data_config['image_shape'] = ref_map.data.shape
-        data_config['wcs'] = ref_map.wcs
-        data_config['wavelength'] = ref_map.wavelength
-        self.data_config = data_config
-
         if debug:
             sampling = len(pB_files) // 20
             pB_files = pB_files[::sampling]
@@ -139,6 +133,7 @@ class GenericThomsonDataset(TensorsDataset):
             data = [v for v in
                     tqdm(p.imap(_load_map_data, zip(tB_files, repeat(Rs_per_ds), repeat('heliographic'))), total=len(tB_files),
                          desc=f'Loading tB + rays')]
+        observers = [d.pop('observer') for d in data]
         for k in data[0].keys():
             data_dict[k] = np.stack([d[k] for d in data], axis=0)
 
@@ -175,6 +170,16 @@ class GenericThomsonDataset(TensorsDataset):
 
         # info for plotting
         self.image_shape = image_stack.shape[1:3]
+
+        # data config for model checkpoint
+        data_config = {}
+        # load reference info
+        ref_map = Map(pB_files[0])
+        data_config['image_shape'] = ref_map.data.shape
+        data_config['wcs'] = ref_map.wcs
+        data_config['wavelength'] = ref_map.wavelength
+        data_config['observers'] = observers
+        self.data_config = data_config
 
         super().__init__(tensors=tensors, batch_size=batch_size, shuffle=not test, filter_nans=not test, instrument=instrument_key, **kwargs)
 
