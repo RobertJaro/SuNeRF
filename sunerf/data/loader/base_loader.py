@@ -25,6 +25,7 @@ class BaseDataModule(LightningDataModule):
                  module_config,
                  num_workers=None, **kwargs):
         super().__init__()
+        self.training_batch_size = None
         self.training_datasets = training_datasets
         self.validation_datasets = validation_datasets
         self.datasets = {**self.training_datasets, **self.validation_datasets}
@@ -46,13 +47,13 @@ class BaseDataModule(LightningDataModule):
         # data loader with iterations based on the largest dataset
         ref_idx = np.argmax([len(ds) for ds in datasets.values()])
         ref_dataset_name, ref_dataset = list(datasets.items())[ref_idx]
-        loaders = {ref_dataset_name: DataLoader(ref_dataset, batch_size=None, num_workers=self.num_workers,
+        loaders = {ref_dataset_name: DataLoader(ref_dataset, batch_size=self.training_batch_size, num_workers=self.num_workers,
                                                 pin_memory=True, shuffle=True)}
         for i, (name, dataset) in enumerate(datasets.items()):
             if i == ref_idx:
                 continue  # reference dataset already added
             sampler = RandomSampler(dataset, replacement=True, num_samples=len(ref_dataset))
-            loaders[name] = DataLoader(dataset, batch_size=None, num_workers=self.num_workers,
+            loaders[name] = DataLoader(dataset, batch_size=self.training_batch_size, num_workers=self.num_workers,
                                        pin_memory=True, sampler=sampler)
         return loaders
 

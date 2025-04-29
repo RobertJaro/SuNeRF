@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sunpy.io.special import read_genx
 
-save_file = '/Users/rjarolim/PycharmProjects/SuNeRF/data/response_functions/aia_resonses.npz'
+save_file = '/Users/rjarolim/PycharmProjects/SuNeRF/data/response_functions/aia_responses.npz'
 genx_file = '/Users/rjarolim/PycharmProjects/SuNeRF/data/response_functions/aia_temp_resp.genx'
 
 data = read_genx(genx_file)

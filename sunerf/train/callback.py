@@ -135,11 +135,13 @@ class TestImageCallback(BaseCallback):
 
 class PlasmaImageCallback(BaseCallback):
 
-    def __init__(self, name, image_shape, cmaps=None):
+    def __init__(self, name, image_shape, cmaps=None, target_normalization=True, total_ne_vmax=None):
         super().__init__(name)
         self.image_shape = image_shape
         self.cmaps = cmaps
         self.normalize = ImageNormalize(vmin=0, vmax=1, clip=True)
+        self.target_normalization = target_normalization
+        self.total_ne_vmax = total_ne_vmax
 
     def on_validation_epoch_end(self, trainer, pl_module):
         outputs = self.get_validation_outputs(pl_module)
@@ -162,12 +164,17 @@ class PlasmaImageCallback(BaseCallback):
             cmap = plt.get_cmap(cmap)
             col = axs[:, i]
 
+            
             v_max = np.nanmax(target_image[..., i])
+
             im = col[0].imshow(target_image[..., i], cmap=cmap, vmin=0, vmax=v_max)
             divider = make_axes_locatable(col[0])
             cax = divider.append_axes("right", size="5%", pad=0.05)
             plt.colorbar(im, cax=cax)
             col[0].set_title(f'Target')
+            
+            if not self.target_normalization:
+                v_max = np.nanmax(fine_image[..., i])
 
             im = col[1].imshow(fine_image[..., i], cmap=cmap, vmin=0, vmax=v_max)
             divider = make_axes_locatable(col[1])
@@ -221,7 +228,10 @@ class PlasmaImageCallback(BaseCallback):
         ax.set_title(f'mean log(T)')
 
         ax = axs[2]
-        im = ax.imshow(total_ne, cmap='viridis', norm='log')
+        vmax = np.nanmax(total_ne)
+        if self.total_ne_vmax is not None:
+            vmax = self.total_ne_vmax
+        im = ax.imshow(total_ne, cmap='viridis', vmax=vmax, norm='log')
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
         plt.colorbar(im, cax=cax)

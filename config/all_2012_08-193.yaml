@@ -23,6 +23,7 @@ training:
   log_every_n_steps: 2000
 
 model:
+  absorption: True
   image_scaling_config:
     AIA: { vmax: 1.0 }
     EUVI-A: { vmax: 1.0 }

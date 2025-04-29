@@ -25,10 +25,8 @@ class MultiInstrumentDataModule(BaseDataModule):
 
     def __init__(self, data_config, working_dir, Rs_per_ds=1, seconds_per_dt=86400, ref_time=None,
                  batch_size=int(2 ** 10), validation_batch_size=int(2 ** 11), debug=False, random_config=None,
-                 **kwargs):
+                 absorption=False, **kwargs):
         os.makedirs(working_dir, exist_ok=True)
-
-
 
         ref_time = parse(ref_time) if ref_time is not None else None  # parse ref time if specified
         base_config = {'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt, 'ref_time': ref_time,
@@ -41,7 +39,7 @@ class MultiInstrumentDataModule(BaseDataModule):
             module_config[k] = {'type': 'plasma', 'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt,
                                 'ref_time': ref_time,
                                 'wcs': dc['wcs'], 'image_shape': dc['image_shape'], 'times': ref_ds.times,
-                                'cmaps': dc['cmaps']}
+                                'cmaps': dc['cmaps'], 'wavelengths':ref_ds.data_config['wavelengths']}
 
         # include random sampling if specified
         if random_config is not None:
@@ -54,7 +52,8 @@ class MultiInstrumentDataModule(BaseDataModule):
         base_config['validation_batch_size'] = validation_batch_size
         valid_dict = self._load_dataset(data_config, base_config, test_ds=True)
 
-        valid_dict['absorption'] = AbsorptionTestDataset(batch_size=validation_batch_size)
+        if absorption:
+            valid_dict['absorption'] = AbsorptionTestDataset(batch_size=validation_batch_size)
 
         super().__init__(train_dict, valid_dict,
                          Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt, ref_time=ref_time,
@@ -128,6 +127,7 @@ class GenericEUVDataset(TensorsDataset):
         data_config['image_shape'] = ref_map.data.shape
         data_config['wcs'] = ref_map.wcs
         data_config['wavelength'] = ref_map.wavelength
+        data_config['wavelengths'] = wavelengths
         data_config['cmaps'] = ['gray'] * len(wavelengths) if cmaps is None else cmaps
         self.data_config = data_config
 
