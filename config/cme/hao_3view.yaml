@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf-cme/3view_v01"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme/3view_v01'
+base_path: "/glade/work/rjarolim/sunerf-cme-v2/3view_v01"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-v2/3view_v01'
 
 instruments:
   - type: 'default'
@@ -7,7 +7,6 @@ instruments:
     scaling: {type: 'log'}
 
 model:
-  encoding: 'gaussian'
   dim: 512
 
 data:
@@ -37,8 +36,8 @@ data:
       name: 'series'
       batch_size: 16384
   debug: False
-  Rs_per_ds: 1
-  seconds_per_dt: 86400
+  Rs_per_ds: 100
+  seconds_per_dt: 100000
   batch_size: 4096
   validation_batch_size: 4096
   num_workers: 16
@@ -74,10 +73,9 @@ sampling:
 lambda:
   image: 1.0
   ratio: 1.0
-  radial: 0.0
+  radial: 1.0e-2
   continuity: 1.0e-2
-  velocity: 0.0
-  target_velocity: 1.0e-1
+  velocity: 1.0
 
 training:
   log_every_n_steps: 5000

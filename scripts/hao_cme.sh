@@ -55,19 +55,19 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_*_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_ecliptic" --check_matching
 
 # all viewpoints
-#python -m sunerf.run_thomson --config "config/cme_v02/hao_all.yaml"
+#python -m sunerf.run_thomson --config "config/cme/hao_all.yaml"
 # ecliptic
-#python -m sunerf.run_thomson --config "config/cme_v02/hao_ecliptic.yaml"
+#python -m sunerf.run_thomson --config "config/cme/hao_ecliptic.yaml"
 # 3 viewpoints
-#python -m sunerf.run_thomson --config "config/cme_v02/hao_helio.yaml"
-#python -m sunerf.run_thomson --config "config/cme_v02/hao_3view.yaml"
+#python -m sunerf.run_thomson --config "config/cme/hao_helio.yaml"
+#python -m sunerf.run_thomson --config "config/cme/hao_3view.yaml"
 # 2 viewpoints
-#python -m sunerf.run_thomson --config "config/cme_v02/hao_2view.yaml"
+#python -m sunerf.run_thomson --config "config/cme/hao_2view.yaml"
 python -m sunerf.run_thomson --config "config/cme_v02/hao_2view_no_physics.yaml"
-#python -m sunerf.run_thomson --config "config/cme_v02/hao_2view_background.yaml"
-#python -m sunerf.run_thomson --config "config/cme_v02/hao_polar.yaml"
+#python -m sunerf.run_thomson --config "config/cme/hao_2view_background.yaml"
+#python -m sunerf.run_thomson --config "config/cme/hao_polar.yaml"
 # 1 viewpoints
-#python -m sunerf.run_thomson --config "config/cme_v02/hao_1view.yaml"
+#python -m sunerf.run_thomson --config "config/cme/hao_1view.yaml"
 
 #####################################################################
 # 2 viewpoints variations (60 deg separation)
@@ -76,47 +76,47 @@ python -m sunerf.run_thomson --config "config/cme_v02/hao_2view_no_physics.yaml"
 # 000 deg and 60 deg -- id: 000_060
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_0000_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_000_060" --check_matching
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_060W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_000_060" --check_matching
-#python -m sunerf.run_thomson --config "config/cme_v02/hao_2view_variations.yaml" --id "000_060" --reload
+#python -m sunerf.run_thomson --config "config/cme/hao_2view_variations.yaml" --id "000_060" --reload
 
 # 040 deg and 100 deg -- id: 040_100
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_040W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_040_100" --check_matching
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_100W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_040_100" --check_matching
-#python -m sunerf.run_thomson --config "config/cme_v02/hao_2view_variations.yaml" --id "040_100" --reload
+#python -m sunerf.run_thomson --config "config/cme/hao_2view_variations.yaml" --id "040_100" --reload
 
 # 080 deg and 140 deg -- id: 080_140
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_080W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_080_140" --check_matching
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_140W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_080_140" --check_matching
-#python -m sunerf.run_thomson --config "config/cme_v02/hao_2view_variations.yaml" --id "080_140" --reload
+#python -m sunerf.run_thomson --config "config/cme/hao_2view_variations.yaml" --id "080_140" --reload
 
 # 120 deg and 180 deg -- id: 120_180
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_120W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_120_180" --check_matching
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_180W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_120_180" --check_matching
-#python -m sunerf.run_thomson --config "config/cme_v02/hao_2view_variations.yaml" --id "120_180" --reload
+#python -m sunerf.run_thomson --config "config/cme/hao_2view_variations.yaml" --id "120_180" --reload
 
 # 160 deg and 220 deg -- id: 160_220
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_160W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_160_220" --check_matching
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_220W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_160_220" --check_matching
-#python -m sunerf.run_thomson --config "config/cme_v02/hao_2view_variations.yaml" --id "160_220" --reload
+#python -m sunerf.run_thomson --config "config/cme/hao_2view_variations.yaml" --id "160_220" --reload
 
 # 200 deg and 260 deg -- id: 200_260
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_200W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_200_260" --check_matching
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_260W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_200_260" --check_matching
-#python -m sunerf.run_thomson --config "config/cme_v02/hao_2view_variations.yaml" --id "200_260" --reload
+#python -m sunerf.run_thomson --config "config/cme/hao_2view_variations.yaml" --id "200_260" --reload
 
 # 240 deg and 300 deg -- id: 240_300
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_240W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_240_300" --check_matching
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_300W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_240_300" --check_matching
-#python -m sunerf.run_thomson --config "config/cme_v02/hao_2view_variations.yaml" --id "240_300" --reload
+#python -m sunerf.run_thomson --config "config/cme/hao_2view_variations.yaml" --id "240_300" --reload
 
 # 280 deg and 340 deg -- id: 280_340
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_280W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_280_340" --check_matching
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_340W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_280_340" --check_matching
-#python -m sunerf.run_thomson --config "config/cme_v02/hao_2view_variations.yaml" --id "280_340" --reload
+#python -m sunerf.run_thomson --config "config/cme/hao_2view_variations.yaml" --id "280_340" --reload
 
 # 320 deg and 20 deg -- id: 320_020
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_320W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_320_020" --check_matching
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_020W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_320_020" --check_matching
-#python -m sunerf.run_thomson --config "config/cme_v02/hao_2view_variations.yaml" --id "320_020" --reload
+#python -m sunerf.run_thomson --config "config/cme/hao_2view_variations.yaml" --id "320_020" --reload
 
 
 ####################################################################
@@ -172,3 +172,12 @@ python -m sunerf.evaluation.center_of_mass --sunerf_path "/glade/work/rjarolim/s
 python -m sunerf.evaluation.cme_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/ecliptic_v02/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav" --plot_ground_truth
 python -m sunerf.evaluation.cme_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/3view_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
 python -m sunerf.evaluation.cme_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_040_100_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
+
+
+#######################################################################
+# VTK
+python -m sunerf.convert.sunerf_to_vtk --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/all_v01/save_state.snf" --times 30
+
+#######################################################################
+# Visualize CME
+python -i -m sunerf.evaluation.cme_visualization --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/helio_v03/save_state.snf"

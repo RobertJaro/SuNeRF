@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 from sunerf.data.date_util import normalize_datetime, unnormalize_datetime
 from sunerf.data.ray_sampling import get_rays
+from sunerf.data.utils import get_azimuthal_equidistant_coordinates
 from sunerf.evaluation.util import convert_spherical_to_cartesian
 from sunerf.rendering.base_tracing import MultiResolutionRenderingModule
 from sunerf.train.coordinate_transformation import pose_spherical
@@ -39,7 +40,6 @@ class SuNeRFLoader:
         self.ref_date = state['ref_date']
 
         self.ref_maps = {k: Map(np.zeros(self.resolution(k)), self.wcs(k)) for k in self.instrument_keys}
-        self.ne_scaling = (1e-21 * 10000) ** 0.5  #TODO read from config
 
     def start_time(self, instrument_key=None):
         instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
@@ -72,21 +72,24 @@ class SuNeRFLoader:
                             instrument_key=None,
                             **kwargs):
         # convert to pose
-        target_pose = pose_spherical(-lon.to_value(u.rad), lat.to_value(u.rad), distance.to_value(u.solRad),
+        target_pose = pose_spherical(lon.to_value(u.rad), lat.to_value(u.rad),
+                                     distance.to_value(u.solRad) / self.Rs_per_ds,
                                      center).numpy()
         # load rays
         ref_map = self.ref_map(instrument_key)
         if resolution is not None:
             ref_map = ref_map.resample(resolution)
-            img_coords = all_coordinates_from_map(ref_map).transform_to(frames.Helioprojective)
+            img_coords = get_azimuthal_equidistant_coordinates(ref_map)
         else:
-            img_coords = all_coordinates_from_map(ref_map).transform_to(frames.Helioprojective)
+            img_coords = get_azimuthal_equidistant_coordinates(ref_map)
 
         pose_out = self.load_pose(img_coords, target_pose, time, **kwargs)
-        scale = [ref_map.scale[0].to_value(u.arcsec / u.pix), ref_map.scale[1].to_value(u.arcsec / u.pix)] * u.arcsec / u.pix
+        scale = [ref_map.scale[0].to_value(u.arcsec / u.pix),
+                 ref_map.scale[1].to_value(u.arcsec / u.pix)] * u.arcsec / u.pix
 
         reference_coord = ref_map.reference_coordinate
-        observer = SkyCoord(lat=lat, lon=lon, obstime=time, radius=distance, frame=frames.HeliographicCarrington, observer='earth')
+        observer = SkyCoord(lat=lat, lon=lon, obstime=time, radius=distance, frame=frames.HeliographicCarrington,
+                            observer='earth')
         reference_coord = SkyCoord(reference_coord.Tx, reference_coord.Ty, observer=observer,
                                    frame=frames.Helioprojective)
         maps = self.get_maps(pose_out['image'], reference_coord, scale, instrument_key)
@@ -121,13 +124,13 @@ class SuNeRFLoader:
 
     def load_pose(self, img_coords, target_pose, time, batch_size=int(2 ** 10), instrument_key=None, progress=True):
         # load rays
-        rays_o, rays_d = get_rays(img_coords, target_pose)
+        rays_o, rays_d = get_rays(img_coords[..., 0], img_coords[..., 1], target_pose)
         rays_o, rays_d = torch.from_numpy(rays_o), torch.from_numpy(rays_d)
         img_shape = rays_o.shape[:2]
 
         flat_rays_o = rays_o.reshape([-1, 3]).to(self.device)
         flat_rays_d = rays_d.reshape([-1, 3]).to(self.device)
-        time = normalize_datetime(time, self.seconds_per_dt, self.ref_date)
+        time = self.normalize_datetime(time)
         flat_time = torch.ones_like(flat_rays_o[:, 0:1]) * time
 
         # make batches
@@ -139,9 +142,9 @@ class SuNeRFLoader:
         iter = tqdm(zip(rays_o, rays_d, time), total=len(rays_o)) if progress else zip(rays_o, rays_d, time)
         for b_rays_o, b_rays_d, b_time in iter:
             b_rays = torch.stack([b_rays_o, b_rays_d], 1)
-            batch = {instrument_key: {'rays': b_rays, 'time': b_time}}
-            fine_out, _ = self.rendering(batch)
-            for k, v in fine_out[instrument_key].items():
+            batch = {instrument_key: {'rays': b_rays, 'time': b_time, 'instrument': instrument_key}}
+            rendering_out = self.rendering(batch)
+            for k, v in rendering_out['model_out'][instrument_key].items():
                 if k not in outputs:
                     outputs[k] = []
                 outputs[k].append(v.detach().cpu())
@@ -150,6 +153,8 @@ class SuNeRFLoader:
         return results
 
     def normalize_datetime(self, time):
+        if isinstance(time, Iterable):
+            return [normalize_datetime(t, self.seconds_per_dt, self.ref_date) for t in time]
         return normalize_datetime(time, self.seconds_per_dt, self.ref_date)
 
     def unnormalize_datetime(self, time):
@@ -209,7 +214,7 @@ class SuNeRFLoader:
 
         maps = {}
         for i, channel in enumerate(channels):
-            img = channel_images[..., i].T
+            img = channel_images[..., i]
             header = make_fitswcs_header(img, reference_coord, scale=scale)
             maps[channel] = Map(img, header)
         return maps
@@ -219,7 +224,7 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.rho_scaling = 57.80811838603689 # from calibration
+        self.rho_scaling = 57.80811838603689  # from calibration
 
     def load_coords(self, *args, **kwargs):
         output = super().load_coords(*args, **kwargs)
@@ -228,3 +233,33 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
         output['log_rho'] = output['log_rho'] * self.rho_scaling
 
         return output
+
+    def load_cube(self, radius_range, time, pixel_per_Rs, **kwargs):
+        max_radius = radius_range[1]
+        #
+        cartesian_coords = np.stack(np.meshgrid(
+            np.linspace(-max_radius, max_radius, int((2 * max_radius + 1) * pixel_per_Rs)),
+            np.linspace(-max_radius, max_radius, int((2 * max_radius + 1) * pixel_per_Rs)),
+            np.linspace(-max_radius, max_radius, int((2 * max_radius + 1) * pixel_per_Rs)),
+            self.normalize_datetime(time),
+            indexing='ij'
+        ), -1)
+        # only load the points in the radius range
+        r = np.linalg.norm(cartesian_coords[..., :3], axis=-1)
+        mask = (r >= radius_range[0]) & (r <= radius_range[1])
+        sub_coords = cartesian_coords[mask]
+
+        # normalize coordinates
+        sub_coords[..., 0:3] = sub_coords[..., 0:3] / self.Rs_per_ds
+        # load the coordinates
+        model_out = self.load_coords(sub_coords, **kwargs)
+        rho = model_out['rho']
+        v = model_out['v']
+
+        rho_cube = np.zeros((*cartesian_coords.shape[:-1],))
+        rho_cube[mask] = rho.squeeze(-1)
+
+        v_cube = np.zeros((*cartesian_coords.shape[:-1], 3))
+        v_cube[mask] = v
+
+        return {'rho': rho_cube, 'v': v_cube, 'cartesian_coords': cartesian_coords}

@@ -28,6 +28,15 @@ def compute_velocity(times, radius):
 
 def plot_longitude_slice(rho, spherical_coords, img_path, target_longitude=135,
                          slices=[-20, -10, 0, 10, 20]):
+    """Plot multiple longitude slices of the density cube.
+    
+    Args:
+        rho: Density cube data
+        spherical_coords: Coordinates in spherical system
+        img_path: Output image path
+        target_longitude: Center longitude for slices in degrees
+        slices: List of longitude offsets from target in degrees
+    """
     rho_norm = LogNorm(vmin=1e1, vmax=1e3)
     subplot_kw = {str(i): {"projection": "polar"} for i in range(len(slices))}
     fig, axs = plt.subplot_mosaic([[str(i) for i in range(len(slices))] + ['CB']],
@@ -78,13 +87,11 @@ if __name__ == '__main__':
         args.out_path = os.path.join(os.path.dirname(args.sunerf_path), 'tomography')
     os.makedirs(args.out_path, exist_ok=True)
 
-    ##########################################################
     sunerf_loader = ThomsonSuNeRFLoader(args.sunerf_path)
     seconds_per_dt = sunerf_loader.seconds_per_dt
     ref_date = sunerf_loader.ref_date
     observers = sunerf_loader.observers
 
-    ##########################################################
     max_radius = args.max_radius
     min_radius = args.min_radius
     min_longitude = args.min_longitude
@@ -92,15 +99,6 @@ if __name__ == '__main__':
     min_latitude = args.min_latitude
     max_latitude = args.max_latitude
     Rs_per_ds = sunerf_loader.Rs_per_ds
-
-    times = []
-    center_of_mass_true = []
-    center_of_mass_pred = []
-    center_of_mass_diff = []
-    shock_front_true = []
-    shock_front_pred = []
-    mass_true = []
-    mass_pred = []
 
     date0 = parse("2010-04-03T09:04:00.000")
     files = sorted(glob.glob(args.data_path))
@@ -114,7 +112,6 @@ if __name__ == '__main__':
 
     print('Loading CME files')
     for i, file in enumerate(foreground_files):
-        ##########################################################
         # load data
         cartesian_coords, time, query_points, rho_true, spherical_coords = load_ref_file(Rs_per_ds, date0,
                                                                                          file, max_latitude,
@@ -125,11 +122,9 @@ if __name__ == '__main__':
                                                                                          min_radius, ref_date,
                                                                                          seconds_per_dt)
 
-        ##########################################################
         outputs = sunerf_loader.load_coords(query_points)
         rho_pred = outputs['rho'][:, :, :, 0, 0]
 
-        ##############################################################
         # plot longitude slice
         plot_longitude_slice(rho_pred, spherical_coords, img_path=os.path.join(args.out_path, f"tomography_{i:03d}.jpg"))
         if args.plot_ground_truth:
