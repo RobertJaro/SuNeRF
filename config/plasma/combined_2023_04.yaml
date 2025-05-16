@@ -1,0 +1,70 @@
+base_path: "/glade/work/rjarolim/sunerf/2023_04_combined_v06"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/2023_04_combined_v06"
+
+instruments:
+  - type: 'plasma'
+    key: 'AIA'
+    scaling: { type: 'asinh' }
+    temperature_response:
+      file: '/glade/work/rjarolim/sunerf/response_v02/aia_response_functions.npz'
+      scaling: 0.0
+      learnable: False
+      normalization: 1.0e-21
+  - type: 'plasma'
+    key: 'EUI'
+    scaling: { type: 'asinh' }
+    temperature_response:
+      file: '/glade/work/rjarolim/sunerf/response_v02/eui_response_functions.npz'
+      scaling: 0.03677
+      learnable: True
+      normalization: 1.0e-21
+
+data:
+  train_datasets:
+    - type: 'AIA'
+      key: 'AIA_FD'
+      instrument_key: 'AIA'
+      data_path: '/glade/work/rjarolim/data/sunerf/2023_04/prep/aia_fd/*.fits'
+      batch_size: 256
+      max_radius: 2.3
+    - type: 'EUI'
+      key: 'EUI_FD'
+      instrument_key: 'EUI'
+      data_path: '/glade/work/rjarolim/data/sunerf/2023_04/prep/eui_fd/*.fits'
+      batch_size: 256
+      max_radius: 2.3
+  valid_datasets:
+    - type: 'AIA'
+      key: 'AIA_FD'
+      instrument_key: 'AIA'
+      data_path: '/glade/work/rjarolim/data/sunerf/2023_04/prep/aia_fd/*.fits'
+      batch_size: 256
+      max_radius: 2.3
+    - type: 'EUI'
+      key: 'EUI_FD'
+      instrument_key: 'EUI'
+      data_path: '/glade/work/rjarolim/data/sunerf/2023_04/prep/eui_fd/*.fits'
+      batch_size: 256
+      max_radius: 2.3
+  random_config:
+    radius_range: [ 1.0, 2.5 ]
+    batch_size: 512
+  validation_batch_size: 1024
+  num_workers: 16
+
+logging:
+  project: "sunerf"
+  name: "2023-04 combined"
+
+training:
+  log_every_n_steps: 10000
+
+shuffle:
+  type: 'time'
+  probability: 0.5
+  data_sets: [ 'AIA_FD', 'EUI_FD' ]
+
+sampling:
+  type: "spherical"
+  n_samples: 64
+  max_distance: 2.5

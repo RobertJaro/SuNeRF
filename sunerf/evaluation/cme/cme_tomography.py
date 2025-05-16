@@ -9,7 +9,7 @@ from matplotlib import pyplot as plt
 from matplotlib.colors import LogNorm
 from sklearn.linear_model import LinearRegression
 
-from sunerf.evaluation.center_of_mass import load_ref_file
+from sunerf.evaluation.cme.center_of_mass import load_ref_file
 from sunerf.evaluation.loader import ThomsonSuNeRFLoader
 from sunerf.evaluation.util import none_or_float
 
@@ -41,7 +41,7 @@ def plot_longitude_slice(rho, spherical_coords, img_path, target_longitude=135,
     subplot_kw = {str(i): {"projection": "polar"} for i in range(len(slices))}
     fig, axs = plt.subplot_mosaic([[str(i) for i in range(len(slices))] + ['CB']],
                                   width_ratios=[1 for _ in range(len(slices))] + [0.1],
-                                  per_subplot_kw=subplot_kw, figsize=(2 * len(slices), 2.5))
+                                  per_subplot_kw=subplot_kw, figsize=(1.7 * len(slices), 2.2))
 
     for i, shift in enumerate(slices):
         ax = axs[str(i)]
@@ -59,12 +59,99 @@ def plot_longitude_slice(rho, spherical_coords, img_path, target_longitude=135,
     for ax in [axs[str(i)] for i in range(len(slices))]:
         if min_latitude is not None:
             ax.set_xlim(np.deg2rad([min_latitude, max_latitude]))
-        # add dashed white line at latitude 0
         ax.set_rticks([30, 60, 90, 120])
+        ax.set_xticks(np.deg2rad([-45, 0, 45]))
     fig.tight_layout(w_pad=0.1)
-    fig.savefig(img_path, dpi=300)
+    fig.savefig(img_path, dpi=300, transparent=True)
     plt.close('all')
 
+
+def plot_longitude_diff_slice(rho_diff, spherical_coords, img_path, target_longitude=135,
+                         slices=[-20, -10, 0, 10, 20]):
+    """Plot multiple longitude slices of the density cube.
+
+    Args:
+        rho: Density cube data
+        spherical_coords: Coordinates in spherical system
+        img_path: Output image path
+        target_longitude: Center longitude for slices in degrees
+        slices: List of longitude offsets from target in degrees
+    """
+    subplot_kw = {str(i): {"projection": "polar"} for i in range(len(slices))}
+    fig, axs = plt.subplot_mosaic([[str(i) for i in range(len(slices))] + ['CB']],
+                                  width_ratios=[1 for _ in range(len(slices))] + [0.1],
+                                  per_subplot_kw=subplot_kw, figsize=(1.7 * len(slices), 2.2))
+
+    for i, shift in enumerate(slices):
+        ax = axs[str(i)]
+        lon_idx = np.argmin(np.abs(spherical_coords[0, 0, :, 0, 2] - np.deg2rad(target_longitude + shift)))
+
+        r = spherical_coords[:, :, lon_idx, 0, 0]
+        th = spherical_coords[:, :, lon_idx, 0, 1]
+        z = rho_diff[:, :, lon_idx]
+
+        pc = ax.pcolormesh(th, r, z, edgecolors='face', cmap='Reds', norm=LogNorm(vmin=1e1, vmax=1e3))
+
+    cbar_ax = axs['CB']
+    fig.colorbar(pc, cax=cbar_ax, label=r'Error [N$_\text{e}$ cm$^{-3}$]')
+
+    for ax in [axs[str(i)] for i in range(len(slices))]:
+        if min_latitude is not None:
+            ax.set_xlim(np.deg2rad([min_latitude, max_latitude]))
+        ax.set_rticks([30, 60, 90, 120])
+        ax.set_xticks(np.deg2rad([-45, 0, 45]))
+    fig.tight_layout(w_pad=0.1)
+    fig.savefig(img_path, dpi=300, transparent=True)
+    plt.close('all')
+
+def _plot_latitude_slice(rho, spherical_coords, img_path, target_latitude=0, target_longitudes=[115, 125, 135, 145, 155]):
+    rho_norm = LogNorm(vmin=1e1, vmax=1e3)
+
+    lat_idx = np.argmin(np.abs(spherical_coords[0, :, 0, 0, 1] - np.deg2rad(target_latitude)))
+    r = spherical_coords[:, lat_idx, :, 0, 0]
+    ph = spherical_coords[:, lat_idx, :, 0, 2]
+    z = rho[:, lat_idx, :]
+
+    fig, ax = plt.subplots(1, 1, subplot_kw={'projection': 'polar'}, figsize=(3.5, 3.5))
+
+    pc = ax.pcolormesh(ph, r, z, edgecolors='face', norm=rho_norm, cmap='inferno')
+    # ax.set_title(title, va='bottom')
+    if min_longitude is not None:
+        ax.set_xlim(np.deg2rad([min_longitude, max_longitude]))
+    # add dashed cyan line at longitude 135
+    for lon in target_longitudes:
+        ax.plot(np.deg2rad([lon, lon]), np.array([min_radius, max_radius]),
+                color='cyan', linestyle='--', linewidth=1)
+    ax.set_rticks([30, 60, 90, 120])
+
+    ax.set_rlim(0, max_radius)
+    # add arrows for observers
+    fig.tight_layout()
+    fig.savefig(img_path, dpi=300, transparent=True)
+    plt.close('all')
+
+def _plot_latitude_diff_slice(rho, spherical_coords, img_path, target_latitude=0, target_longitudes=[115, 125, 135, 145, 155]):
+    rho_norm = LogNorm(vmin=1e1, vmax=1e3)
+
+    lat_idx = np.argmin(np.abs(spherical_coords[0, :, 0, 0, 1] - np.deg2rad(target_latitude)))
+    r = spherical_coords[:, lat_idx, :, 0, 0]
+    ph = spherical_coords[:, lat_idx, :, 0, 2]
+    z = rho[:, lat_idx, :]
+
+    fig, ax = plt.subplots(1, 1, subplot_kw={'projection': 'polar'}, figsize=(3.5, 3.5))
+
+    pc = ax.pcolormesh(ph, r, z, edgecolors='face', norm=rho_norm, cmap='Reds',)
+    # ax.set_title(title, va='bottom')
+    if min_longitude is not None:
+        ax.set_xlim(np.deg2rad([min_longitude, max_longitude]))
+    # add dashed cyan line at longitude 135
+    ax.set_rticks([30, 60, 90, 120])
+
+    ax.set_rlim(0, max_radius)
+    # add arrows for observers
+    fig.tight_layout()
+    fig.savefig(img_path, dpi=300, transparent=True)
+    plt.close('all')
 
 if __name__ == '__main__':
     # parse arguments
@@ -125,8 +212,19 @@ if __name__ == '__main__':
         outputs = sunerf_loader.load_coords(query_points)
         rho_pred = outputs['rho'][:, :, :, 0, 0]
 
-        # plot longitude slice
-        plot_longitude_slice(rho_pred, spherical_coords, img_path=os.path.join(args.out_path, f"tomography_{i:03d}.jpg"))
+        # plot slices
+        plot_longitude_slice(rho_pred, spherical_coords, img_path=os.path.join(args.out_path, f"tomography_{i:03d}.png"))
+        _plot_latitude_slice(rho_pred, spherical_coords, img_path=os.path.join(args.out_path, f"tomography_lat_{i:03d}.png"))
+
+        # plot differences
+        rho_diff = np.abs(rho_pred - rho_true)
+        plot_longitude_diff_slice(rho_diff, spherical_coords,
+                             img_path=os.path.join(args.out_path, f"diff_{i:03d}.png"))
+        _plot_latitude_diff_slice(rho_diff, spherical_coords,
+                             img_path=os.path.join(args.out_path, f"diff_lat_{i:03d}.png"))
+
         if args.plot_ground_truth:
             plot_longitude_slice(rho_true, spherical_coords,
-                                 img_path=os.path.join(args.out_path, f"gt_tomography_{i:03d}.jpg"))
+                                 img_path=os.path.join(args.out_path, f"gt_tomography_{i:03d}.png"))
+            _plot_latitude_slice(rho_true, spherical_coords,
+                                 img_path=os.path.join(args.out_path, f"gt_tomography_lat_{i:03d}.png"))

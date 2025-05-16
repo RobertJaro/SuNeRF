@@ -23,7 +23,7 @@ from sunerf.train.callback import log_overview
 
 class MultiInstrumentDataModule(BaseDataModule):
 
-    def __init__(self, datasets, work_directory, Rs_per_ds=1, seconds_per_dt=86400, ref_date=None,
+    def __init__(self, train_datasets, valid_datasets, work_directory, Rs_per_ds=1, seconds_per_dt=86400, ref_date=None,
                  batch_size=int(2 ** 10), validation_batch_size=int(2 ** 11), debug=False, random_config=None,
                  **kwargs):
         os.makedirs(work_directory, exist_ok=True)
@@ -32,7 +32,9 @@ class MultiInstrumentDataModule(BaseDataModule):
         base_config = {'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt, 'ref_date': ref_date,
                        'debug': debug, 'work_directory': work_directory, 'batch_size': batch_size}
 
-        train_dict = self._load_dataset(datasets, base_config)
+        train_dict = self._load_dataset(train_datasets, base_config)
+        ref_date = base_config['ref_date'] # update ref date if not specified
+
         module_config = {}
         for k, ref_ds in train_dict.items():
             dc = ref_ds.data_config
@@ -50,7 +52,7 @@ class MultiInstrumentDataModule(BaseDataModule):
 
 
         base_config['validation_batch_size'] = validation_batch_size
-        valid_dict = self._load_dataset(datasets, base_config, test_ds=True)
+        valid_dict = self._load_dataset(valid_datasets, base_config, test_ds=True)
 
         valid_dict['absorption'] = AbsorptionTestDataset(batch_size=validation_batch_size)
 
@@ -67,19 +69,20 @@ class MultiInstrumentDataModule(BaseDataModule):
         for config in data_config:
             ds_type = config.pop('type')
             ds_key = config.pop('key') if 'key' in config else ds_type
+            instrument_key = config.pop('instrument_key') # instrument key is required
             ds_config = copy.deepcopy(base_config)
             ds_config.update(config)
             # adjust batch size for multi-gpu
             ds_config['batch_size'] = ds_config['validation_batch_size'] if test_ds else ds_config['batch_size']
             ds_config['batch_size'] = ds_config['batch_size'] * N_GPUS if N_GPUS > 1 else ds_config['batch_size']
             if ds_type == 'AIA':
-                dataset = AIADataset(**ds_config, ds_key=ds_key, test=test_ds)
+                dataset = AIADataset(**ds_config, ds_key=ds_key, test=test_ds, instrument_key=instrument_key)
             elif ds_type == 'EUI':
-                dataset = EUIDataset(**ds_config, ds_key=ds_key, test=test_ds)
+                dataset = EUIDataset(**ds_config, ds_key=ds_key, test=test_ds, instrument_key=instrument_key)
             elif ds_type == 'EUVI':
-                dataset = EUVIDataset(**ds_config, ds_key=ds_key, test=test_ds)
+                dataset = EUVIDataset(**ds_config, ds_key=ds_key, test=test_ds, instrument_key=instrument_key)
             elif ds_type == 'PSI':
-                dataset = PSIDataset(**ds_config, ds_key=ds_key, test=test_ds)
+                dataset = PSIDataset(**ds_config, ds_key=ds_key, test=test_ds, instrument_key=instrument_key)
             else:
                 raise ValueError(f'Unknown dataset type {ds_type}')
             # update ref time
@@ -92,8 +95,8 @@ class MultiInstrumentDataModule(BaseDataModule):
 
 
 class GenericEUVDataset(TensorsDataset):
-    def __init__(self, file_dict, date_dict, work_directory, ds_key, Rs_per_ds=1, seconds_per_dt=86400, ref_date=None,
-                 batch_size=int(2 ** 10), debug=False, test=False, cmaps=None, scaling=1, static=False, **kwargs):
+    def __init__(self, file_dict, date_dict, work_directory, ds_key, instrument_key, Rs_per_ds=1, seconds_per_dt=86400, ref_date=None,
+                 batch_size=int(2 ** 10), debug=False, test=False, cmaps=None, scaling=1, static=False, max_radius=None, **kwargs):
         self.scaling = scaling
         # choose channel with min number of dates
         min_wl = min(date_dict, key=lambda k: len(date_dict[k]))
@@ -144,7 +147,7 @@ class GenericEUVDataset(TensorsDataset):
         with multiprocessing.Pool(os.cpu_count()) as p:
             f = file_dict[wavelengths[0]]
             data = [v for v in
-                    tqdm(p.imap(_load_map_data, zip(f, repeat(Rs_per_ds))), total=len(f),
+                    tqdm(p.imap(_load_map_data, zip(f, repeat(Rs_per_ds), repeat('carrington'), repeat(max_radius))), total=len(f),
                          desc=f'Loading {wavelengths[0]} + rays')]
         for k in data[0].keys():
             data_dict[k] = np.stack([d[k] for d in data], axis=0)
@@ -180,12 +183,12 @@ class GenericEUVDataset(TensorsDataset):
         data_dict['time'] = times_arr
 
         if not test:
-            log_overview(data_dict["image"], data_dict['pose'], times, 'gray', seconds_per_dt, ref_date, ds_key=ds_key)
+            log_overview(data_dict["image"], data_dict['pose'], times, 'gray', seconds_per_dt, Rs_per_ds, ref_date, ds_key=ds_key)
 
         tensors = {k: v.reshape((-1, *v.shape[3:])) for k, v in data_dict.items() if k in ['image', 'rays', 'time']}
 
         super().__init__(tensors=tensors, work_directory=work_directory, batch_size=batch_size,
-                         shuffle=not test, filter_nans=not test)
+                         shuffle=not test, filter_nans=not test, instrument=instrument_key)
 
 
 class AIADataset(GenericEUVDataset):
@@ -261,15 +264,7 @@ class EUVIDataset(GenericEUVDataset):
             file_dict[wl].append(f)
             date_dict[wl].append(date)
 
-        # choose channel with smalest number of dates
-        min_wl = min(date_dict, key=lambda k: len(date_dict[k]))
-        ref_dates = date_dict[min_wl]
-        # select files with min diff in dates
-        for wl, f, dates in zip(file_dict.keys(), file_dict.values(), date_dict.values()):
-            dates = np.array(dates)
-            file_dict[wl] = [f[np.argmin(np.abs(dates - t), axis=0)] for t in ref_dates]
-
-        super().__init__(file_dict,
+        super().__init__(file_dict, date_dict,
                          cmaps=cmaps,
                          scaling=scaling,
                          **kwargs)

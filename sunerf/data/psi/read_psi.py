@@ -8,7 +8,7 @@ from matplotlib.colors import LogNorm
 from sunerf.train.coordinate_transformation import spherical_to_cartesian
 
 
-def read_PSI(rho_hdf5, T_hdf5, min_radius=1.01, max_radius=2.6):
+def read_PSI(rho_hdf5, T_hdf5, min_radius=1.0, max_radius=2.6):
     print(f'Reading {rho_hdf5} and {T_hdf5}')
     time = int(os.path.basename(rho_hdf5)[3:9]) - 1813
     with File(rho_hdf5, 'r') as h5file:
@@ -23,7 +23,9 @@ def read_PSI(rho_hdf5, T_hdf5, min_radius=1.01, max_radius=2.6):
 
     print(f'r_range: {r_mhd.min(), r_mhd.max()}, th_range: {th_mhd.min(), th_mhd.max()}, phi_range: {phi_mhd.min(), phi_mhd.max()}')
     # remove values outside of the max_radius
-    r_mask = (r_mhd <= max_radius) & (r_mhd > min_radius)
+    r_mask = (r_mhd <= max_radius)
+    if min_radius is not None:
+        r_mask = r_mask & (r_mhd > min_radius)
     # apply mask
     r_mhd = r_mhd[r_mask]
     rho = rho[r_mask]

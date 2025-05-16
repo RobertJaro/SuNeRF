@@ -1,34 +1,72 @@
+import numpy as np
 import torch
 from torch import nn
 from torch.optim.lr_scheduler import ExponentialLR
 
+from sunerf.model.model import PlasmaModel
 from sunerf.model.sunerf import BaseSuNeRFModule
 from sunerf.model.util import jacobian
-from sunerf.rendering.plasma import PlasmaRadiativeTransfer
-from sunerf.train.scaling import ImageAsinhScaling
+from sunerf.rendering.base_tracing import BasicRenderingModule
+from sunerf.rendering.plasma import PlasmaRadiativeTransfer, init_absorption_model
+from sunerf.train.scaling import ImageAsinhScaling, ImageLinearScaling, ImageLogScaling
 
 
 class PlasmaSuNeRFModule(BaseSuNeRFModule):
-    def __init__(self, Rs_per_ds, seconds_per_dt,
-                 image_scaling_config, temperature_response_config,
+    def __init__(self, Rs_per_ds, seconds_per_dt, instruments_config,
                  lambda_image=1.0, lambda_regularization=1.0e-4, lambda_absorption=1.0e-4,
-                 sampling_config=None, hierarchical_sampling_config=None,
+                 sampling_config=None, hierarchical_sampling_config=None, absorption_config=None,
                  model_config=None, shuffle_config=None, **kwargs):
+        # Temperature range
+        log_T_range = np.arange(4, 8.001, 0.05).astype(np.float32)
+        self.log_T_range = log_T_range
+
+        # absorption model
+        absorption_config = absorption_config if absorption_config is not None else {'type': 'learned'}
+        absorption_model = init_absorption_model(absorption_config)
+
         # setup rendering
-        rendering = PlasmaRadiativeTransfer(
-            temperature_response_config=temperature_response_config, Rs_per_ds=Rs_per_ds,
-            sampling_config=sampling_config,
-            hierarchical_sampling_config=hierarchical_sampling_config,
-            model_config=model_config, shuffle_config=shuffle_config, **kwargs)
+        rendering_modules = {}
+        scaling_modules = {}
+        for instrument in instruments_config:
+            instrument = instrument.copy()
+            instrument_key = instrument.pop('key')
+            instrument_type = instrument.pop('type')
+            if instrument_type == 'plasma':
+                rendering_modules[instrument_key] = PlasmaRadiativeTransfer(
+                    temperature_response_config=instrument['temperature_response'],
+                    log_T_range=log_T_range, absorption_model=absorption_model)
+            else:
+                raise ValueError(f"Unknown instrument type: {instrument_type}")
+            # image scaling
+            scaling_config = instrument.pop('scaling', {})
+            scaling_type = scaling_config.pop('type', 'asinh')
+            if scaling_type == 'asinh':
+                scaling_modules[instrument_key] = ImageAsinhScaling(**scaling_config)
+            elif scaling_type == 'linear':
+                scaling_modules[instrument_key] = ImageLinearScaling(**scaling_config)
+            elif scaling_type == 'log':
+                scaling_modules[instrument_key] = ImageLogScaling(**scaling_config)
+            else:
+                raise ValueError(f"Unknown scaling type: {scaling_type}")
+
+        model = PlasmaModel(log_T=log_T_range, **model_config)
+        rendering = BasicRenderingModule(model=model,
+                                         rendering_modules=rendering_modules,
+                                         Rs_per_ds=Rs_per_ds,
+                                         sampling_config=sampling_config,
+                                         hierarchical_sampling_config=hierarchical_sampling_config,
+                                         shuffle_config=shuffle_config)
+
         super().__init__(Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt,
                          rendering=rendering, **kwargs)
         self.lambda_image = lambda_image
         self.lambda_regularization = lambda_regularization
         self.lambda_absorption = lambda_absorption
 
-        image_scaling = {k: ImageAsinhScaling(**c) for k, c in image_scaling_config.items()}
-        self.image_scaling = nn.ModuleDict(image_scaling)
+        self.absorption_model = absorption_model
+        self.image_scaling = nn.ModuleDict(scaling_modules)
         self.mse_loss = nn.MSELoss()
+        self.temperature_response_normalization = {k: v.normalization for k, v in rendering_modules.items()}
 
     def configure_optimizers(self):
         params = list(self.rendering.parameters())
@@ -39,48 +77,29 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
 
     def training_step(self, batch, batch_nb):
         instrument_batch = {k: v for k, v in batch.items() if k != 'random'}
-        instruments = instrument_batch.keys()
-        rendering_out = self.rendering(instrument_batch)
-        fine_out, coarse_out = rendering_out['fine_out'], rendering_out['coarse_out']
+        instruments = [v['instrument'] for v in instrument_batch.values()]
+        ds_keys = list(instrument_batch.keys())
+        rendering_out = self.rendering(instrument_batch)['model_out']
 
-        for k in instruments:
-            assert torch.isnan(
-                fine_out[k]['query_points']).any() == False, f"! [Numerical Alert] query_points contains NaN. In {k}"
-
-        coarse_diff = []
-        fine_diff = []
+        image_diff = []
         absorption_regularization = []
         density_regularization = []
 
-        for k in instruments:
-            image_scaling = self.image_scaling[k]
-            coarse_image = image_scaling(coarse_out[k]['image'])
-            fine_image = image_scaling(fine_out[k]['image'])
-            target_image = image_scaling(instrument_batch[k]['image'])
+        for inst_key, ds_key in zip(instruments, ds_keys):
+            pred_image = self.image_scaling[inst_key](rendering_out[ds_key]['image'])
+            target_image = self.image_scaling[inst_key](instrument_batch[ds_key]['image'])
 
             # Check for any numerical issues.
-            assert not torch.isnan(coarse_image).any(), f"! [Numerical Alert] target_image contains NaN."
-            assert not torch.isnan(fine_image).any(), f"! [Numerical Alert] target_image contains NaN."
+            assert not torch.isnan(pred_image).any(), f"! [Numerical Alert] predicted image contains NaN."
 
-            # backpropagation
-            # optimize coarse model
-            # coarse_loss = (coarse_image - target_image) / target_image.mean(0, keepdim=True)
-            # coarse_loss = coarse_loss.pow(2).mean()
-            coarse_diff.append((coarse_image - target_image).pow(2).sum(-1))
-            # optimize fine model
-            # fine_loss = (fine_image - target_image) / target_image.mean(0, keepdim=True)
-            # fine_loss = fine_loss.pow(2).mean()
-            fine_diff.append((fine_image - target_image).pow(2).sum(-1))
+            image_diff.append((pred_image - target_image).pow(2).sum(-1))
 
-            absorption_regularization.append(
-                coarse_out[k]['mean_absorption'].mean() + fine_out[k]['mean_absorption'].mean())
+            absorption_regularization.append(rendering_out[ds_key]['mean_absorption'].mean())
 
-            coarse_density = coarse_out[k]['em'] * torch.clip(coarse_out[k]['distance'] - 1.2, min=0) ** 2
-            fine_density = fine_out[k]['em'] * torch.clip(fine_out[k]['distance'] - 1.2, min=0) ** 2
-            density_regularization.append(coarse_density.mean() + fine_density.mean())
+            density = rendering_out[ds_key]['em'] * torch.clip(rendering_out[ds_key]['distance'] - 1.2, min=0) ** 2
+            density_regularization.append(density.mean())
 
-        coarse_loss = torch.cat(coarse_diff).mean()
-        fine_loss = torch.cat(fine_diff).mean()
+        image_loss = torch.cat(image_diff).mean()
         absorption_regularization = torch.stack(absorption_regularization).mean()
         density_regularization = torch.stack(density_regularization).mean()
 
@@ -88,33 +107,24 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
             query_points = batch['random']['coords']
             query_points.requires_grad = True
 
-            fine_out = self.rendering.fine_model(query_points)
-            total_ne = fine_out['total_ne']
-            mean_log_T = fine_out['mean_log_T']
-            # velocity = fine_out['velocity']
-            fine_regularization = self.compute_static_regularization(total_ne, mean_log_T, query_points)
-
-            coarse_out = self.rendering.coarse_model(query_points)
-            total_ne = coarse_out['total_ne']
-            mean_log_T = coarse_out['mean_log_T']
-            # velocity = coarse_out['velocity']
-            coarse_regularization = self.compute_static_regularization(total_ne, mean_log_T, query_points)
-
-            regularization = fine_regularization + coarse_regularization
+            rendering_out = self.rendering.model(query_points)
+            total_ne = rendering_out['total_ne']
+            mean_log_T = rendering_out['mean_log_T']
+            regularization = self.compute_static_regularization(total_ne, mean_log_T, query_points)
         else:
             regularization = density_regularization
 
-        loss = (self.lambda_image * (coarse_loss + fine_loss) +
+        loss = (self.lambda_image * image_loss +
                 self.lambda_regularization * regularization +
                 self.lambda_absorption * absorption_regularization)
         #
         with torch.no_grad():
-            psnr = -10. * torch.log10(fine_loss)
+            psnr = -10. * torch.log10(image_loss)
 
         # log results to WANDB
         self.log("loss", loss)
         self.log("train",
-                 {'coarse': coarse_loss, 'fine': fine_loss, 'psnr': psnr,
+                 {'image': image_loss, 'psnr': psnr,
                   'density_regularization': regularization, 'absorption_regularization': absorption_regularization})
 
         return loss
@@ -165,21 +175,23 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
         if valid_ds_id == 'absorption':
             log_T, log_ne = batch['log_T'], batch['log_ne']
             absorption_input = torch.cat([log_ne, log_T], dim=-1)
-            abs_out = self.rendering.absorption_model(absorption_input)
+            abs_out = self.absorption_model(absorption_input)
             return {**abs_out, 'log_T': log_T, 'log_ne': log_ne}
         else:
-            instrument_key = self.validation_dataset_mapping[dataloader_idx]
+            ds_key = self.validation_dataset_mapping[dataloader_idx]
             image = batch['image']
+            instrument_key = batch['instrument']
 
-            fine_out, coarse_out = self.rendering({instrument_key: batch})
+            rendering_out = self.rendering({ds_key: batch})
+            model_out = rendering_out['model_out']
 
             image_scaling = self.image_scaling[instrument_key]
 
             image = torch.nan_to_num(image, nan=0.0)
 
             target_image = image_scaling(image)
-            fine_image = image_scaling(fine_out[instrument_key]['image'])
-            coarse_image = image_scaling(coarse_out[instrument_key]['image'])
+            fine_image = image_scaling(model_out[ds_key]['image'])
+            coarse_image = image_scaling(model_out[ds_key]['image'])
 
             # set nans to zero
             target_image = torch.nan_to_num(target_image, nan=0.0)
@@ -189,15 +201,15 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
             return {'target_image': target_image,
                     'fine_image': fine_image,
                     'coarse_image': coarse_image,
-                    'mean_T': fine_out[instrument_key]['mean_T'], 'total_ne': fine_out[instrument_key]['total_ne'],
-                    'height_map': fine_out[instrument_key]['height_map'],
-                    'mean_absorption': fine_out[instrument_key]['mean_absorption'],
-                    'z_vals_stratified': coarse_out[instrument_key]['z_vals'],
-                    'z_vals_hierarchical': fine_out[instrument_key]['z_vals'],
-                    'distance': fine_out[instrument_key]['distance']}
+                    'mean_T': model_out[ds_key]['mean_T'], 'total_ne': model_out[ds_key]['total_ne'],
+                    'height_map': model_out[ds_key]['height_map'],
+                    'mean_absorption': model_out[ds_key]['mean_absorption'],
+                    'z_vals_stratified': rendering_out['z_vals_stratified'],
+                    'z_vals_hierarchical': rendering_out['z_vals'],
+                    'distance': model_out[ds_key]['distance']}
 
     def validation_epoch_end(self, *args, **kwargs):
-        scaling = {k: float(self.rendering.instrument_scaling[idx].detach().cpu().numpy())
-                   for k, idx in self.rendering.temperature_response_mapping.items()}
+        scaling = {k: float(m.instrument_scaling.detach().cpu().numpy())
+                   for k, m in self.rendering.rendering_modules.items()}
         self.log(f'instrument_scaling', scaling)
         super().validation_epoch_end(*args, **kwargs)

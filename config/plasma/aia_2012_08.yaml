@@ -1,0 +1,44 @@
+base_path: "/glade/work/rjarolim/sunerf/aia_v01"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/aia_v01"
+
+instruments:
+  - type: 'plasma'
+    key: 'AIA'
+    scaling: { type: 'asinh' }
+    temperature_response:
+      file: '/glade/work/rjarolim/sunerf/response_v02/aia_response_functions.npz'
+      scaling: 0.0
+      learnable: False
+      normalization: 1.0e-21
+
+data:
+  train_datasets:
+    - type: 'AIA'
+      key: 'AIA'
+      instrument_key: 'AIA'
+      data_path: '/glade/work/rjarolim/data/sunerf/2012_08_prep/aia/*.fits'
+      max_radius: 2.2
+  valid_datasets:
+    - type: 'AIA'
+      key: 'AIA'
+      instrument_key: 'AIA'
+      data_path: '/glade/work/rjarolim/data/sunerf/2012_08_prep/aia/*.fits'
+      max_radius: 2.2
+  debug: False
+  batch_size: 1024
+  num_workers: 16
+
+logging:
+  project: "sunerf"
+  name: "AIA"
+
+sampling:
+  type: "spherical"
+  n_samples: 64
+  max_distance: 2.5
+
+shuffle:
+  type: "time"
+
+training:
+  log_every_n_steps: 2000

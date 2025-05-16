@@ -27,7 +27,7 @@ class SuNeRFLoader:
         data_config = state['data_config']
         self.instrument_keys = list(data_config.keys())
         self.config = data_config
-        self.observers = [o for k in data_config.keys() for o in data_config[k]['observers']]
+        self.observers = [o for k in data_config.keys() if 'observers' in data_config[k] for o in data_config[k]['observers']]
 
         rendering = state['rendering']
         self.rendering = rendering.to(device)
@@ -116,7 +116,7 @@ class SuNeRFLoader:
         # convert to pose
         target_pose = pose_spherical(-lon.to_value(u.rad), lat.to_value(u.rad), distance.to_value(u.solRad)).numpy()
         # load image coordinates
-        img_coords = all_coordinates_from_map(ref_map).transform_to(frames.Helioprojective)
+        img_coords = get_azimuthal_equidistant_coordinates(ref_map)
 
         pose_out = self.load_pose(img_coords, target_pose, time, **kwargs)
         pose_out['maps'] = self.get_maps(pose_out['image'], reference_coord, scale, instrument_key)
@@ -177,15 +177,12 @@ class SuNeRFLoader:
                 if k not in out_dict:
                     out_dict[k] = []
                 out_dict[k].append(v.detach().cpu())
-
+        print({k: torch.cat(v).shape for k, v in out_dict.items()})
         output = {k: torch.cat(v).reshape(*target_shape, *v[0].shape[1:]).numpy() for k, v in out_dict.items()}
 
         return output
 
-    def load_slice(self, latitude_range=None,
-                   longitude_range=None,
-                   time=None,
-                   radius_range=None, **kwargs):
+    def load_spherical(self, latitude_range=None, longitude_range=None, time=None, radius_range=None, **kwargs):
         latitude_range = np.arange(-90, 90, 1) * u.deg if latitude_range is None else latitude_range
         longitude_range = np.arange(0, 360, 1) * u.deg if longitude_range is None else longitude_range
         radius_range = np.linspace(1, 2, 10) * u.solRad if radius_range is None else radius_range
@@ -231,6 +228,7 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
         # unnormalize rho
         output['rho'] = output['rho'] * self.rho_scaling
         output['log_rho'] = output['log_rho'] * self.rho_scaling
+        output['v'] = output['v'] * (self.Mm_per_ds / self.seconds_per_dt) * 1e3  # convert to km/s
 
         return output
 

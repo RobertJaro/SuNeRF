@@ -8,7 +8,7 @@ import scipy
 from astropy import units as u
 from dateutil.parser import parse
 from matplotlib import pyplot as plt
-from matplotlib.colors import LogNorm
+from matplotlib.colors import LogNorm, Normalize
 from nf2.data.util import cartesian_to_spherical
 from sklearn.linear_model import LinearRegression
 
@@ -83,9 +83,9 @@ def load_ref_file(Rs_per_ds, date0, file, max_latitude, max_longitude, max_radiu
     ph_deg = np.rad2deg(ph)
     mask_ph = longitude_mask(ph_deg, min_lon=min_longitude, max_lon=max_longitude)
     mark_th = np.ones_like(th, dtype=bool)
-    if max_latitude is not None:
-        mark_th = mark_th & (th > np.deg2rad(min_latitude))
     if min_latitude is not None:
+        mark_th = mark_th & (th > np.deg2rad(min_latitude))
+    if max_latitude is not None:
         mark_th = mark_th & (th < np.deg2rad(max_latitude))
     # apply mask
     r = r[mask_r]
@@ -120,7 +120,7 @@ def compute_velocity(times, radius):
 
 
 def plot_latitude_slice(rho, spherical_coords, title, img_path, target_latitude=0, target_longitude=135,
-                        add_observers=True, ):
+                        add_observers=True, plot_white_r_ticks=False):
     rho_norm = LogNorm(vmin=1e1, vmax=1e3)
 
     lat_idx = np.argmin(np.abs(spherical_coords[0, :, 0, 0, 1] - np.deg2rad(target_latitude)))
@@ -128,11 +128,11 @@ def plot_latitude_slice(rho, spherical_coords, title, img_path, target_latitude=
     ph = spherical_coords[:, lat_idx, :, 0, 2]
     z = rho[:, lat_idx, :]
 
-    fig, ax = plt.subplots(1, 1, subplot_kw={'projection': 'polar'}, figsize=(5, 5))
+    fig, ax = plt.subplots(1, 1, subplot_kw={'projection': 'polar'}, figsize=(4.5, 4.5))
 
     pc = ax.pcolormesh(ph, r, z, edgecolors='face', norm=rho_norm, cmap='inferno')
     fig.colorbar(pc, ax=ax, label=r'Density [N$_\text{e}$ cm$^{-3}$]', orientation='horizontal', shrink=0.7)
-    ax.set_title(title, va='bottom')
+    # ax.set_title(title, va='bottom')
     if min_longitude is not None:
         ax.set_xlim(np.deg2rad([min_longitude, max_longitude]))
     # add dashed white line at longitude 135
@@ -140,15 +140,22 @@ def plot_latitude_slice(rho, spherical_coords, title, img_path, target_latitude=
             linestyle='--',
             linewidth=1)
     ax.set_rticks([30, 60, 90, 120])
+    # make r ticks white
+    if plot_white_r_ticks:
+        ax.tick_params(axis='y', which='major', labelcolor='white')
+        ax.tick_params(axis='y', which='minor', labelcolor='white')
+    ax.set_rlim(0, max_radius)
     # add arrows for observers
     if add_observers:
         for observer in observers:
             obs_lon = observer['longitude'].to_value(u.rad) % (2 * np.pi)
             if max_longitude is not None and min_longitude is not None:
                 arrow_mid_radius = max_radius if (np.rad2deg(obs_lon) < max_longitude) and (np.rad2deg(obs_lon) > min_longitude) else max_radius / 2
+                text_lon = (obs_lon + 0.12) if (np.rad2deg(obs_lon) < max_longitude) and (np.rad2deg(obs_lon) > min_longitude) else (obs_lon + 0.25)
             else:
                 arrow_mid_radius = max_radius
-            arrow_length = 17
+                text_lon = (obs_lon + 0.17)
+            arrow_length = 20
             r_start = arrow_mid_radius + arrow_length / 2
             r_end = arrow_mid_radius - arrow_length
             dx = -arrow_length * np.cos(obs_lon)
@@ -164,14 +171,81 @@ def plot_latitude_slice(rho, spherical_coords, title, img_path, target_latitude=
                         arrowprops=arrowprops, annotation_clip=False)
             ax.annotate(f'{np.rad2deg(obs_lon):.0f}°',
                         xy=(obs_lon, arrow_mid_radius),
-                        xytext=(obs_lon + 0.15, arrow_mid_radius - 5),
+                        xytext=(text_lon, arrow_mid_radius - 4),
                         color='cyan', ha='center', va='center',
                         annotation_clip=False)
-    #
     fig.tight_layout()
-    fig.savefig(img_path, dpi=300)
+    fig.savefig(img_path, dpi=300, transparent=True)
     plt.close('all')
 
+def plot_latitude_velocity_slice(velocity, spherical_coords, title, img_path, target_latitude=0, target_longitude=135,
+                        add_observers=True, plot_white_r_ticks=False):
+    v_norm = Normalize(vmin=200, vmax=800)
+
+    lat_idx = np.argmin(np.abs(spherical_coords[0, :, 0, 0, 1] - np.deg2rad(target_latitude)))
+    r = spherical_coords[:, lat_idx, :, 0, 0]
+    ph = spherical_coords[:, lat_idx, :, 0, 2]
+    velocity = velocity[:, lat_idx, :, :]
+    velocity_norm = np.linalg.norm(velocity, axis=-1)
+    z = velocity_norm
+
+    fig, ax = plt.subplots(1, 1, subplot_kw={'projection': 'polar'}, figsize=(4.5, 4.5))
+
+    pc = ax.pcolormesh(ph, r, z, edgecolors='face', norm=v_norm, cmap='cividis')
+    fig.colorbar(pc, ax=ax, label=r'Velocity [km s$^{-1}$]', orientation='horizontal', shrink=0.7)
+    # ax.set_title(title, va='bottom')
+    if min_longitude is not None:
+        ax.set_xlim(np.deg2rad([min_longitude, max_longitude]))
+    # add dashed white line at longitude 135
+    ax.plot(np.deg2rad([target_longitude, target_longitude]), np.array([min_radius, max_radius]), color='red',
+            linestyle='--',
+            linewidth=1)
+    ax.set_rticks([30, 60, 90, 120])
+    # make r ticks white
+    if plot_white_r_ticks:
+        ax.tick_params(axis='y', which='major', labelcolor='white')
+        ax.tick_params(axis='y', which='minor', labelcolor='white')
+    ax.set_rlim(0, max_radius)
+    # add arrows for observers
+    if add_observers:
+        for observer in observers:
+            obs_lon = observer['longitude'].to_value(u.rad) % (2 * np.pi)
+            if max_longitude is not None and min_longitude is not None:
+                arrow_mid_radius = max_radius if (np.rad2deg(obs_lon) < max_longitude) and (np.rad2deg(obs_lon) > min_longitude) else max_radius / 2
+                text_lon = (obs_lon + 0.12) if (np.rad2deg(obs_lon) < max_longitude) and (np.rad2deg(obs_lon) > min_longitude) else (obs_lon + 0.25)
+            else:
+                arrow_mid_radius = max_radius
+                text_lon = (obs_lon + 0.17)
+            arrow_length = 20
+            r_start = arrow_mid_radius + arrow_length / 2
+            r_end = arrow_mid_radius - arrow_length
+            dx = -arrow_length * np.cos(obs_lon)
+            dy = -arrow_length * np.sin(obs_lon)
+            arrowprops = dict(
+                arrowstyle='->',
+                color='cyan',
+                linewidth=2,
+            )
+            ax.annotate(f'',
+                        xy=(obs_lon, r_end),
+                        xytext=(obs_lon, r_start),
+                        arrowprops=arrowprops, annotation_clip=False)
+            ax.annotate(f'{np.rad2deg(obs_lon):.0f}°',
+                        xy=(obs_lon, arrow_mid_radius),
+                        xytext=(text_lon, arrow_mid_radius - 4),
+                        color='cyan', ha='center', va='center',
+                        annotation_clip=False)
+
+    quiver_vel = velocity[::8, ::3]
+    quiver_vel[np.linalg.norm(quiver_vel, axis=-1) < 300] = np.nan
+    ax.quiver(ph[::8, ::3], r[::8, ::3],
+              quiver_vel[:, :, 0], quiver_vel[:, :, 1],
+              scale=10000,
+              color='white')
+
+    fig.tight_layout()
+    fig.savefig(img_path, dpi=300, transparent=True)
+    plt.close('all')
 
 def plot_longitude_slice(rho, spherical_coords, title, img_path, target_latitude=0, target_longitude=135,
                          add_observers=True, ):
@@ -183,17 +257,19 @@ def plot_longitude_slice(rho, spherical_coords, title, img_path, target_latitude
     th = spherical_coords[:, :, lon_idx, 0, 1]
     z = rho[:, :, lon_idx]
 
-    fig, ax = plt.subplots(1, 1, subplot_kw={'projection': 'polar'}, figsize=(5, 5))
+    fig, ax = plt.subplots(1, 1, subplot_kw={'projection': 'polar'}, figsize=(3.5, 3.5))
 
     pc = ax.pcolormesh(th, r, z, edgecolors='face', norm=rho_norm, cmap='inferno')
     fig.colorbar(pc, ax=ax, label=r'Density [N$_\text{e}$ cm$^{-3}$]', orientation='horizontal', shrink=0.7)
 
-    ax.set_title(title, va='bottom')
+    ax.set_rlim(0, max_radius)
+
+    # ax.set_title(title, va='bottom')
     if add_observers:
         for observer in observers:
             obs_lat = observer['latitude'].to_value(u.rad)
             arrow_mid_radius = max_radius
-            arrow_length = 17
+            arrow_length = 24
             r_start = arrow_mid_radius + arrow_length / 2
             r_end = arrow_mid_radius - arrow_length
             dx = -arrow_length * np.cos(obs_lat)
@@ -220,9 +296,68 @@ def plot_longitude_slice(rho, spherical_coords, title, img_path, target_latitude
     ax.set_rticks([30, 60, 90, 120])
 
     fig.tight_layout()
-    fig.savefig(img_path, dpi=300)
+    fig.savefig(img_path, dpi=300, transparent=True)
     plt.close('all')
 
+def plot_longitude_velocity_slice(velocity, spherical_coords, title, img_path, target_latitude=0, target_longitude=135,
+                         add_observers=True, ):
+    v_norm = Normalize(vmin=200, vmax=800)
+
+    lon_idx = np.argmin(np.abs(spherical_coords[0, 0, :, 0, 2] - np.deg2rad(target_longitude)))
+
+    r = spherical_coords[:, :, lon_idx, 0, 0]
+    th = spherical_coords[:, :, lon_idx, 0, 1]
+    velocity = velocity[:, :, lon_idx, :]
+    velocity_norm = np.linalg.norm(velocity, axis=-1)
+    z = velocity_norm
+
+    fig, ax = plt.subplots(1, 1, subplot_kw={'projection': 'polar'}, figsize=(3.5, 3.5))
+
+    pc = ax.pcolormesh(th, r, z, edgecolors='face', norm=v_norm, cmap='cividis')
+    fig.colorbar(pc, ax=ax, label=r'Velocity [km s$^{-1}$]', orientation='horizontal', shrink=0.7)
+
+    ax.set_rlim(0, max_radius)
+
+    # ax.set_title(title, va='bottom')
+    if add_observers:
+        for observer in observers:
+            obs_lat = observer['latitude'].to_value(u.rad)
+            arrow_mid_radius = max_radius
+            arrow_length = 24
+            r_start = arrow_mid_radius + arrow_length / 2
+            r_end = arrow_mid_radius - arrow_length
+            dx = -arrow_length * np.cos(obs_lat)
+            dy = -arrow_length * np.sin(obs_lat)
+            arrowprops = dict(
+                arrowstyle='->',
+                color='cyan',
+                linewidth=2,
+            )
+            ax.annotate(f'',
+                        xy=(obs_lat, r_end),
+                        xytext=(obs_lat, r_start),
+                        arrowprops=arrowprops, annotation_clip=False)
+            ax.annotate(f'{np.rad2deg(obs_lat):.0f}°',
+                        xy=(obs_lat, arrow_mid_radius),
+                        xytext=(obs_lat + 0.15, arrow_mid_radius - 5),
+                        color='cyan', ha='center', va='center',
+                        annotation_clip=False)
+
+    if min_latitude is not None:
+        ax.set_xlim(np.deg2rad([min_latitude, max_latitude]))
+    # add dashed white line at latitude 0
+    ax.plot(np.deg2rad([target_latitude, target_latitude]), np.array([min_radius, max_radius]), color='red', linestyle='--', linewidth=1)
+    ax.set_rticks([30, 60, 90, 120])
+
+    quiver_vel = velocity[::8, ::3]
+    quiver_vel[np.linalg.norm(quiver_vel, axis=-1) < 300] = np.nan
+    ax.quiver(th[::8, ::3], r[::8, ::3],
+              quiver_vel[:, :, 1], quiver_vel[:, :, 2],
+              scale=10000, color='white')
+
+    fig.tight_layout()
+    fig.savefig(img_path, dpi=300, transparent=True)
+    plt.close('all')
 
 if __name__ == '__main__':
     # parse arguments
@@ -234,9 +369,11 @@ if __name__ == '__main__':
     parser.add_argument('--min_radius', type=float, default=30.0, help='Minimum radius in solar radii')
     parser.add_argument('--min_longitude', type=none_or_float, default=90 - 20, help='Minimum longitude in degrees')
     parser.add_argument('--max_longitude', type=none_or_float, default=180 + 20, help='Maximum longitude in degrees')
-    parser.add_argument('--min_latitude', type=float, default=-60.0, help='Minimum latitude in degrees')
-    parser.add_argument('--max_latitude', type=float, default=60.0, help='Maximum latitude in degrees')
+    parser.add_argument('--min_latitude', type=none_or_float, default=-60.0, help='Minimum latitude in degrees')
+    parser.add_argument('--max_latitude', type=none_or_float, default=60.0, help='Maximum latitude in degrees')
     parser.add_argument('--plot_ground_truth', action='store_true', help='Plot ground truth data')
+    parser.add_argument('--plot_white_r_ticks', action='store_true', help='Plot white ticks for r axis')
+    parser.add_argument('--plot_velocity', action='store_true', help='Plot velocity data')
 
     args = parser.parse_args()
 
@@ -259,6 +396,7 @@ if __name__ == '__main__':
     min_latitude = args.min_latitude
     max_latitude = args.max_latitude
     Rs_per_ds = sunerf_loader.Rs_per_ds
+
 
     times = []
     center_of_mass_true = []
@@ -318,27 +456,36 @@ if __name__ == '__main__':
         ##########################################################
         outputs = sunerf_loader.load_coords(query_points)
         rho_pred = outputs['rho'][:, :, :, 0, 0]
+        v_pred = outputs['v'][:, :, :, 0, :]
 
         ##############################################################
         # plot latitude slice
         plot_latitude_slice(rho_pred, spherical_coords,
                             title=r"SuNeRF $\theta={0}^\circ$",
-                            img_path=os.path.join(args.out_path, f"lat_{i:03d}.jpg"))
+                            img_path=os.path.join(args.out_path, f"lat_{i:03d}.png"), plot_white_r_ticks=args.plot_white_r_ticks)
+        if args.plot_velocity:
+            plot_latitude_velocity_slice(v_pred, spherical_coords,
+                                         title=r"SuNeRF $\theta={0}^\circ$",
+                                         img_path=os.path.join(args.out_path, f"lat_{i:03d}_v.png"), plot_white_r_ticks=args.plot_white_r_ticks)
         if args.plot_ground_truth:
             plot_latitude_slice(rho_true, spherical_coords,
                                 title=r"Ground-truth $\theta=0^\cdot$",
-                                img_path=os.path.join(args.out_path, f"gt_lat_{i:03d}.jpg"), add_observers=False)
+                                img_path=os.path.join(args.out_path, f"gt_lat_{i:03d}.png"), add_observers=False, plot_white_r_ticks=args.plot_white_r_ticks)
 
         ##############################################################
         # plot longitude slice
 
         plot_longitude_slice(rho_pred, spherical_coords,
                              title=r"SuNeRF $\phi=135^\circ$",
-                             img_path=os.path.join(args.out_path, f"lon_{i:03d}.jpg"))
+                             img_path=os.path.join(args.out_path, f"lon_{i:03d}.png"))
+        if args.plot_velocity:
+            plot_longitude_velocity_slice(v_pred, spherical_coords,
+                                            title=r"SuNeRF $\phi=135^\circ$",
+                                            img_path=os.path.join(args.out_path, f"lon_{i:03d}_v.png"))
         if args.plot_ground_truth:
             plot_longitude_slice(rho_true, spherical_coords,
                                  title=r"Ground-truth $\phi=135^\circ$",
-                                 img_path=os.path.join(args.out_path, f"gt_lon_{i:03d}.jpg"), add_observers=False)
+                                 img_path=os.path.join(args.out_path, f"gt_lon_{i:03d}.png"), add_observers=False)
 
         ##########################################################
         # compute center of mass
@@ -359,7 +506,7 @@ if __name__ == '__main__':
         com_spherical_pred[..., 2] = np.rad2deg(com_spherical_pred[..., 2]) % 360
 
         # add to lists
-        center_of_mass_true.append(com_spheraical_true)
+        center_of_mass_true.append(com_spherical_true)
         center_of_mass_pred.append(com_spherical_pred)
         times.append(time)
         center_of_mass_diff.append(np.linalg.norm(com_true - com_pred, axis=-1))
@@ -367,7 +514,7 @@ if __name__ == '__main__':
         ###################################################
         # compute mean absolute error and cross-correlation
         mae = np.abs(rho_true - rho_pred).mean()
-        mae_relative = (np.abs(rho_true - rho_pred) / rho_true).mean()
+        mae_relative = np.abs(rho_true - rho_pred).sum() / rho_true.sum() * 100
         corr_coeff = np.corrcoef(rho_true.flatten(), rho_pred.flatten())[0, 1]
 
         metrics['mae'].append(mae)
@@ -451,6 +598,7 @@ if __name__ == '__main__':
     ax.set_ylabel('Radius [R$_\odot$]')
     ax.set_xlabel('Time [UTC]')
     ax.set_title('Radius', va='bottom')
+    ax.legend()
 
     ax = axs[1]
     ax.plot(times, shock_front_true, '-o', label='Ground-truth', alpha=0.7)
@@ -479,7 +627,6 @@ if __name__ == '__main__':
     ax.set_ylabel('Mass [Ne]')
     ax.set_xlabel('Time [UTC]')
     ax.set_title('Mass', va='bottom')
-    ax.legend()
 
     ax = axs[5]
     ax.plot(times, center_of_mass_diff, '-o', color='red', alpha=0.7)
@@ -491,7 +638,7 @@ if __name__ == '__main__':
     fig.autofmt_xdate()
 
     fig.tight_layout()
-    fig.savefig(os.path.join(args.out_path, "center_of_mass.jpg"), dpi=300)
+    fig.savefig(os.path.join(args.out_path, "center_of_mass.png"), dpi=300, transparent=True)
     plt.close('all')
 
     ###########################################################
@@ -511,6 +658,10 @@ if __name__ == '__main__':
         mean_mae = np.mean(metrics['mae'])
         std_mae = np.std(metrics['mae'])
         print(f"Mean MAE: {mean_mae:.2f} +/- {std_mae:.2f} (density)", file=f)
+
+        mean_relative_mae = np.mean(metrics['mae_relative'])
+        std_relative_mae = np.std(metrics['mae_relative'])
+        print(f"Mean relative MAE: {mean_relative_mae:.2f} +/- {std_relative_mae:.2f} (%)", file=f)
 
         mean_corr = np.mean(metrics['corr_coeff'])
         std_corr = np.std(metrics['corr_coeff'])
@@ -532,7 +683,12 @@ if __name__ == '__main__':
              times=times,
              center_of_mass_true=center_of_mass_true,
              center_of_mass_pred=center_of_mass_pred,
-             center_of_mass_diff=center_of_mass_diff, **metrics)
+             center_of_mass_diff=center_of_mass_diff,
+             shock_front_true=shock_front_true,
+             shock_front_pred=shock_front_pred,
+             mass_true=mass_true,
+             mass_pred=mass_pred,
+             **metrics)
 
     # save center of mass to csv
     with open(os.path.join(args.out_path, "center_of_mass.csv"), 'w') as f:

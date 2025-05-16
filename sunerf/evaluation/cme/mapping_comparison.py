@@ -4,9 +4,9 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 if __name__ == '__main__':
-    files = sorted(glob.glob('/glade/work/rjarolim/sunerf-cme-v2/variations/**/evaluation/center_of_mass.npz'))
+    files = ['']
     files += ['/glade/work/rjarolim/sunerf-cme-v2/3view_v01/evaluation/center_of_mass.npz']
-    angles = [0, 40, 80, 120, 160, 200, 240, 280, 320, 340]
+    labels = ['all', 'ecliptic', '3 views']
 
     diffs = []
     mass_diffs = []

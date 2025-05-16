@@ -35,6 +35,9 @@ class BaseSuNeRFModule(LightningModule):
             self.scheduler.step()
         self.log('Learning Rate', self.scheduler.get_last_lr()[0])
 
+        if self.rendering.shuffler is not None:
+            self.rendering.shuffler.on_train_batch_end()
+
     def validation_epoch_end(self, outputs_list):
         if len(outputs_list) == 0:
             return  # skip invalid validation steps
@@ -66,6 +69,8 @@ def save_state(sunerf: BaseSuNeRFModule, data_module: BaseDataModule, save_path)
         # data scaling
         'Rs_per_ds': data_module.Rs_per_ds,
         'seconds_per_dt': data_module.seconds_per_dt,
-        'ref_date': data_module.ref_date
+        'ref_date': data_module.ref_date,
+        'temperature_response_normalization': sunerf.temperature_response_normalization,
+        'log_T_range': sunerf.log_T_range,
     }
     torch.save(state, save_path)

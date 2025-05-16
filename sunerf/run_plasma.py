@@ -17,6 +17,7 @@ from sunerf.train.util import load_yaml_config
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str)
+    parser.add_argument('--reload', action='store_true')
     args, overwrite_args = parser.parse_known_args()
 
     yaml_config_file = args.config
@@ -29,10 +30,13 @@ if __name__ == '__main__':
     os.makedirs(work_directory, exist_ok=True)
 
     # setup default configs
+    instruments_config = config['instruments']
     data_config = config['data']
     model_config = config['model'] if 'model' in config else {}
+    sampling_config = config['sampling'] if 'sampling' in config else {}
     training_config = config['training'] if 'training' in config else {}
     logging_config = config['logging'] if 'logging' in config else {'project': 'sunerf'}
+    shuffle_config = config['shuffle'] if 'shuffle' in config else {}
 
     # setup training config
     epochs = training_config['epochs'] if 'epochs' in training_config else 1000
@@ -44,13 +48,21 @@ if __name__ == '__main__':
     logger.experiment.config.update(config, allow_val_change=True)
 
     # initialize data module and model
-    warnings.filterwarnings("ignore")  # ignore warnings from sunpy
-    data_module = MultiInstrumentDataModule(**data_config, work_directory=work_directory)
+    # initialize data module and model
+    data_module_save_path = os.path.join(work_directory, 'data_module.pkl')
+    if os.path.exists(data_module_save_path) and not args.reload:
+        print('Loaded data module from file. If you want to reload the data, use --reload')
+        data_module = torch.load(data_module_save_path)
+    else:
+        warnings.filterwarnings("ignore")  # ignore warnings from sunpy
+        data_module = MultiInstrumentDataModule(**data_config, work_directory=work_directory)
+        torch.save(data_module, data_module_save_path)
 
     # initialize SuNeRF model
     sunerf = PlasmaSuNeRFModule(Rs_per_ds=data_module.Rs_per_ds, seconds_per_dt=data_module.seconds_per_dt,
                                 validation_dataset_mapping=data_module.validation_dataset_mapping,
-                                **model_config)
+                                instruments_config=instruments_config, model_config=model_config,
+                                sampling_config=sampling_config, shuffle_config=shuffle_config)
 
     # initialize callbacks
     checkpoint_callback = ModelCheckpoint(dirpath=base_path,

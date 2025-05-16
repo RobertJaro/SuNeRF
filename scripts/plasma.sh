@@ -18,10 +18,13 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 #python -m sunerf.data.euv.prep_psi --data_path "/glade/work/rjarolim/data/sunerf/psi_data/psi_data/**/*.fits" --out_path "/glade/work/rjarolim/data/sunerf/psi_data_prep" --resolution 1024
 
 
-python -i -m sunerf.run_plasma --config "config/aia_2012_08.yaml"
-#python -i -m sunerf.run_plasma --config "config/all_2012_08-193.yaml"
-#python -i -m sunerf.run_plasma --config "config/psi.yaml"
-#python -i -m sunerf.run_plasma --config "config/euvi_2012_08.yaml"
+#python -m sunerf.run_plasma --config "config/aia_2012_08.yaml"
+#python -m sunerf.run_plasma --config "config/all_2012_08-193.yaml"
+#python -m sunerf.run_plasma --config "config/psi.yaml"
+#python -m sunerf.run_plasma --config "config/euvi_2012_08.yaml"
+#python -m sunerf.run_plasma --config "config/plasma/all_2012_08.yaml"
+#python -m sunerf.run_plasma --config "config/plasma/aia_2012_08.yaml"
+python -m sunerf.run_plasma --config "config/plasma/combined_2023_04.yaml"
 
 # Debugging
 #python -i -m sunerf.run_plasma --config "config/psi_plasma_193.yaml"
@@ -29,6 +32,8 @@ python -i -m sunerf.run_plasma --config "config/aia_2012_08.yaml"
 
 ########### EVALUATION ###########
 
-#python -i -m  sunerf.evaluation.video --chk_path "/glade/work/rjarolim/sunerf/aia_v05/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/aia_v05/evaluation/video"
+#python -i -m  sunerf.evaluation.video --chk_path "/glade/work/rjarolim/sunerf/aia_v01/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/aia_v01/evaluation/video"
 #python -i -m  sunerf.evaluation.video_observer --chk_path "/glade/work/rjarolim/sunerf/aia_v01/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/aia_v01/evaluation/video_observer"
 #python -i -m  sunerf.evaluation.slices --chk_path "/glade/work/rjarolim/sunerf/aia_v05/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/aia_v05/evaluation/slices"
+python -i -m  sunerf.evaluation.load_cube --chk_path "/glade/work/rjarolim/sunerf/aia_v01/save_state.snf" --out_path "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_3D_cube/sunerf_cube.npz"
+

@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from sunerf.model.model import GenericModel
+from sunerf.model.model import SirenNet
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -27,7 +27,7 @@ if __name__ == '__main__':
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model = GenericModel(1, response.shape[0], dim=16, n_layers=2)
+    model = SirenNet(1, response.shape[0], dim=16, n_layers=2)
     model.to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)

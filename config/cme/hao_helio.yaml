@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-v2/helio_v03"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-v2/helio_v03'
+base_path: "/glade/work/rjarolim/sunerf-cme-v2/helio_v04"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-v2/helio_v04'
 
 instruments:
   - type: 'default'

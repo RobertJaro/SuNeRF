@@ -16,7 +16,7 @@ parser = argparse.ArgumentParser('Create video of ecliptic and polar views')
 parser.add_argument('--chk_path', type=str)
 parser.add_argument('--video_path', type=str)
 parser.add_argument('--resolution', type=int, default=256)
-parser.add_argument('--batch_size', type=int, default=4096)
+parser.add_argument('--batch_size', type=int, default=512)
 args = parser.parse_args()
 
 chk_path = args.chk_path
@@ -29,6 +29,7 @@ os.makedirs(video_path, exist_ok=True)
 
 # init loader
 loader = SuNeRFLoader(chk_path)
+# loader.rendering.rendering_modules['PSI'].absorption_model.coefficient = 0.5
 avg_time = loader.start_time() + (loader.end_time() - loader.start_time()) / 2
 
 n_points = 20
@@ -57,8 +58,8 @@ points_4 = zip(np.linspace(45, 45, n_points),
 points = list(points_1) + list(points_2) + list(points_3) + list(points_4)
 
 ne_norm = LogNorm(vmin=1)
-absorption_norm = LogNorm(vmin=1, vmax=100)
-img_norm = 'log' #ImageNormalize(stretch=AsinhStretch(0.005))#ImageNormalize(vmin=0, vmax=0.7, stretch=AsinhStretch(0.005))
+absorption_norm = LogNorm()#LogNorm(vmin=1, vmax=100)
+img_norm = ImageNormalize(vmin=0, vmax=0.7, stretch=AsinhStretch(0.005))
 
 # cmaps = [cm.sdoaia171, cm.sdoaia193, cm.sdoaia211]
 cmaps = [cm.sdoaia94, cm.sdoaia131, cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia304, cm.sdoaia335]

@@ -39,10 +39,10 @@ longitude_range = np.arange(center_lon - 60, center_lon + 60.5, 0.5) * u.deg
 radius = np.linspace(1, 1.4, 100) * u.solRad
 
 # Load data
-out = loader.load_slice(longitude_range=(360 * u.deg - longitude_range)[::-1],
-                        radius_range=radius,
-                        latitude_range=latitude_range,
-                        time=ref_time)
+out = loader.load_spherical(longitude_range=(360 * u.deg - longitude_range)[::-1],
+                            radius_range=radius,
+                            latitude_range=latitude_range,
+                            time=ref_time)
 ne = out['ne']
 log_T = out['log_T']
 mean_log_T = out['mean_log_T']

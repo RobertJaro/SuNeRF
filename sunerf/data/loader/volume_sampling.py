@@ -10,7 +10,7 @@ class RandomSphericalCoordinateDataset(Dataset):
     def __init__(self, radius_range, batch_size, time_range, Rs_per_ds=1,
                  latitude_range=(-np.pi/2, np.pi/2) * u.rad, longitude_range=(0, 2 * np.pi) * u.rad,
                  radial_weighted_sampling=False, latitude_weighted_sampling=False, **kwargs):
-        self.radius_range = radius_range.to_value(u.Rsun)
+        self.radius_range = radius_range.to_value(u.Rsun) if isinstance(radius_range, u.Quantity) else radius_range
         self.time_range = time_range
         self.Rs_per_ds = Rs_per_ds
         self.latitude_range = latitude_range.to_value(u.rad)

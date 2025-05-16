@@ -42,6 +42,11 @@ class PSICubeDataset(TensorsDataset):
         log_T = log_T.reshape((-1, 1))
         coords = coords.reshape((-1, 4))
 
+        # filter low temperatures
+        # t_mask = log_rho > np.log10(50)
+        # log_rho[t_mask] = np.nan
+        # log_T[t_mask] = np.nan
+
         nan_mask = np.isnan(log_rho).any(-1) | np.isnan(log_T).any(-1)
         log_rho = log_rho[~nan_mask]
         log_T = log_T[~nan_mask]

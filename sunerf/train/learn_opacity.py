@@ -8,7 +8,7 @@ from matplotlib.colors import Normalize
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from torch import nn
 
-from sunerf.model.model import GenericModel
+from sunerf.model.model import SirenNet
 
 if __name__ == '__main__':
     # parse arguments
@@ -57,7 +57,7 @@ if __name__ == '__main__':
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model = GenericModel(2, 1, dim=16, n_layers=3)
+    model = SirenNet(2, 1, dim=16, n_layers=3)
     model.to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)

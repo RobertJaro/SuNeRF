@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 from sunerf.train.sampling import SphericalSampler, HierarchicalSampler, StratifiedSampler
-from sunerf.train.util import TimeShuffler
+from sunerf.train.util import TimeShuffler, NormalTimeShuffler
 
 
 class MultiResolutionRenderingModule(nn.Module):
@@ -34,14 +34,7 @@ class MultiResolutionRenderingModule(nn.Module):
         else:
             raise ValueError(f'Unknown sampling type {hierarchical_sampling_type}')
 
-        if shuffle_config:
-            shuffle_type = shuffle_config.pop('type')
-            if shuffle_type == 'time':
-                self.shuffler = TimeShuffler(**shuffle_config)
-            else:
-                raise NotImplementedError(f"Shuffle type {shuffle_type} not implemented.")
-        else:
-            self.shuffler = None
+        self.shuffler = load_shuffler(shuffle_config)
 
         self.coarse_model = coarse_model
         self.fine_model = fine_model
@@ -149,14 +142,7 @@ class BasicRenderingModule(nn.Module):
         else:
             raise ValueError(f'Unknown sampling type {hierarchical_sampling_type}')
 
-        if shuffle_config:
-            shuffle_type = shuffle_config.pop('type')
-            if shuffle_type == 'time':
-                self.shuffler = TimeShuffler(**shuffle_config)
-            else:
-                raise NotImplementedError(f"Shuffle type {shuffle_type} not implemented.")
-        else:
-            self.shuffler = None
+        self.shuffler = load_shuffler(shuffle_config)
 
         print('Shuffle config:', self.shuffler)
 
@@ -216,7 +202,7 @@ class BasicRenderingModule(nn.Module):
                  'query_points': query_points_time}
         model_out = self.render_instruments(dataset_n_rays, dataset_instrument, state)
 
-        return {'model_out': model_out, 'z_vals': z_vals_combined}
+        return {'model_out': model_out, 'z_vals': z_vals_combined, 'z_vals_stratified': z_vals}
 
     def render_instruments(self, dataset_n_rays, dataset_instrument, state):
         ray_idx = 0
@@ -262,3 +248,16 @@ def cumprod_exclusive(tensor: torch.Tensor, dim=1) -> torch.Tensor:
         raise NotImplementedError(f"cumprod_exclusive not implemented for dim={dim}")
 
     return cumprod
+
+
+def load_shuffler(shuffle_config):
+    if shuffle_config:
+        shuffle_type = shuffle_config.pop('type')
+        if shuffle_type == 'time':
+            return TimeShuffler(**shuffle_config)
+        elif shuffle_type == 'normal_time':
+            return NormalTimeShuffler(**shuffle_config)
+        else:
+            raise NotImplementedError(f"Shuffle type {shuffle_type} not implemented.")
+    else:
+        return None

@@ -88,7 +88,7 @@ def get_data(data_path, Rs_per_ds, debug=False):
 
 
 def _load_map_data(data):
-    map_path, Rs_per_ds, reference_frame = data
+    map_path, Rs_per_ds, reference_frame, max_radius = data
 
     s_map = Map(map_path)
     time = s_map.date.datetime
@@ -119,6 +119,13 @@ def _load_map_data(data):
     y = img_coords[..., 1]
 
     all_rays = np.stack(get_rays(x, y, pose), -2)
+
+    if max_radius is not None:
+        radius = np.sqrt(x ** 2 + y ** 2) / s_map.rsun_obs.to(u.arcsec) * u.Rsun
+        mask = radius > (max_radius * u.Rsun)
+        # apply mask
+        all_rays[mask] = np.nan
+        image[mask] = np.nan
 
     return {'image': image, 'pose': pose, 'rays': all_rays, 'time': time, 'observer': observer}
 
