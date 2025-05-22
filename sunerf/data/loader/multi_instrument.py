@@ -24,7 +24,7 @@ from sunerf.train.callback import log_overview
 class MultiInstrumentDataModule(BaseDataModule):
 
     def __init__(self, train_datasets, valid_datasets, work_directory, Rs_per_ds=1, seconds_per_dt=86400, ref_date=None,
-                 batch_size=int(2 ** 10), validation_batch_size=int(2 ** 11), debug=False, random_config=None,
+                 batch_size=int(2 ** 10), validation_batch_size=int(2 ** 11), debug=False, random_config=None, use_absorption=False,
                  **kwargs):
         os.makedirs(work_directory, exist_ok=True)
 
@@ -54,7 +54,8 @@ class MultiInstrumentDataModule(BaseDataModule):
         base_config['validation_batch_size'] = validation_batch_size
         valid_dict = self._load_dataset(valid_datasets, base_config, test_ds=True)
 
-        valid_dict['absorption'] = AbsorptionTestDataset(batch_size=validation_batch_size)
+        if use_absorption:
+            valid_dict['absorption'] = AbsorptionTestDataset(batch_size=validation_batch_size)
 
         super().__init__(train_dict, valid_dict,
                          Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt, ref_date=ref_date,

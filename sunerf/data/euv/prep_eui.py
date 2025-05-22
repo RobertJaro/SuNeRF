@@ -51,10 +51,14 @@ if __name__ == '__main__':
 
         s_map = Map(map_path)
 
+
         # skip SOOPs
         if s_map.meta['SOOPTYPE'] != 'none':
             print(f'Skipping SOOP: {s_map.meta["SOOPTYPE"]}')
             return
+
+        # north up
+        s_map = s_map.rotate(recenter=True)
 
         if date_range is not None:
             s_map_date = s_map.date
@@ -88,8 +92,7 @@ if __name__ == '__main__':
             s_map.data[map_radius > max_radius] = np.nan
 
         s_map.save(out_path, overwrite=True)
-        # save image with north up
-        s_map = s_map.rotate()
+
         fig, ax =  plt.subplots(figsize=(5, 5), dpi=100, subplot_kw={'projection': s_map})
         s_map.plot(axes=ax, norm=LogNorm(vmin=1, vmax=1e3))
         fig.savefig(os.path.join(os.path.dirname(out_path), 'img', os.path.basename(out_path) + '.png'))

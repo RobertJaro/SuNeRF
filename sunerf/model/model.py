@@ -51,19 +51,6 @@ class SirenNet(nn.Module):
         return self.last_layer(x)
 
 
-class EmissionModel(SirenNet):
-
-    def __init__(self, n_channels=1, **kwargs):
-        super().__init__(in_dim=4, out_dim=n_channels * 2, **kwargs)
-        self.n_channels = n_channels
-
-    def forward(self, x):
-        out = super().forward(x)
-        emission = torch.exp(out[..., :self.n_channels])
-        alpha = nn.functional.relu(out[..., self.n_channels:])
-        return {'emission': emission, 'alpha': alpha}
-
-
 class GenericModel(nn.Module):
 
     def __init__(self, in_dim, out_dim, dim=512, n_layers=8, encoding=None, activation='sine'):
@@ -95,17 +82,29 @@ class GenericModel(nn.Module):
         x = self.d_out(x)
         return x
 
+class EmissionModel(GenericModel):
+
+    def __init__(self, n_channels=1, **kwargs):
+        super().__init__(in_dim=4, out_dim=n_channels * 2, **kwargs)
+        self.n_channels = n_channels
+
+    def forward(self, x):
+        out = super().forward(x)
+        emission = torch.exp(out[..., :self.n_channels])
+        alpha = nn.functional.relu(out[..., self.n_channels:])
+        return {'emission': emission, 'alpha': alpha}
 
 class PlasmaModel(GenericModel):
 
-    def __init__(self, log_T, decay_distance=2.0, **kwargs):
-        super().__init__(in_dim=4, out_dim=3, encoding='gaussian', **kwargs)
+    def __init__(self, log_T, decay_distance=1.3, **kwargs):
+        super().__init__(in_dim=4, out_dim=3, **kwargs)
         self.log_T = nn.Parameter(torch.tensor(log_T, dtype=torch.float32), requires_grad=False)
         self.decay_distance = decay_distance
 
         self.T_range = nn.Parameter(torch.tensor([3.8, 8.0], dtype=torch.float32), requires_grad=False)
 
     def forward(self, x):
+        radius = torch.norm(x[..., :3], dim=-1, keepdim=True)
         raw = super().forward(x)
 
         center_log_T, scaling, sigma = raw[..., 0:1], raw[..., 1:2], raw[..., 2:3]
@@ -116,6 +115,9 @@ class PlasmaModel(GenericModel):
         # maybe allow for very dense plasma in the cold temperature regime?
         center_log_T = torch.sigmoid(center_log_T) * (self.T_range[1] - self.T_range[0]) + self.T_range[0]
         sigma = torch.sigmoid(sigma) + 1e-2
+
+        # scale density with radius ** -2
+        scaling = scaling - 2 * torch.log10(radius)
 
         log_T_range = self.log_T.reshape([1] * (len(center_log_T.shape) - 1) + [-1])
         # log10 --> 10 ** (scaling) * exp(N) * (2 * pi * sigma ** 2) ** -0.5
@@ -179,20 +181,13 @@ class RhoModel(SirenNet):
         return result
 
 
-class VelocityModel(SirenNet):
+class AbsorptionModel(GenericModel):
 
-    def __init__(self, **kwargs):
-        super().__init__(in_dim=4, out_dim=3, **kwargs)
-
-    def forward(self, x):
-        v = super().forward(x)
-        return {'v': v}
-
-
-class AbsorptionModel(SirenNet):
-
-    def __init__(self, **kwargs):
-        super().__init__(in_dim=2, out_dim=1, w0_initial=1, n_layers=2, dim=16, **kwargs)
+    def __init__(self, freeze=False, **kwargs):
+        super().__init__(in_dim=2, out_dim=1, n_layers=2, dim=16, w0_initial=1.0, **kwargs)
+        if freeze:
+            for param in self.parameters():
+                param.requires_grad = False
 
     def forward(self, x):
         log_kappa = super().forward(x) - 2

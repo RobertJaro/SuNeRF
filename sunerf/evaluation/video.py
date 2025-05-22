@@ -59,10 +59,11 @@ points = list(points_1) + list(points_2) + list(points_3) + list(points_4)
 
 ne_norm = LogNorm(vmin=1)
 absorption_norm = LogNorm()#LogNorm(vmin=1, vmax=100)
-img_norm = ImageNormalize(vmin=0, vmax=0.7, stretch=AsinhStretch(0.005))
 
-# cmaps = [cm.sdoaia171, cm.sdoaia193, cm.sdoaia211]
-cmaps = [cm.sdoaia94, cm.sdoaia131, cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia304, cm.sdoaia335]
+# cmaps = [cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia304]
+# cmaps = [cm.sdoaia94, cm.sdoaia131, cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia304, cm.sdoaia335]
+cmaps = [cm.sdoaia94, cm.sdoaia131, cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia335]
+img_norms = [ImageNormalize(stretch=AsinhStretch(0.001)) for _ in cmaps]
 
 for i, (lat, lon, time, d) in tqdm(list(enumerate(points)), total=len(points)):
     outputs = loader.load_image(lat * u.deg, lon * u.deg, time, distance=d * u.AU, batch_size=batch_size,
@@ -70,7 +71,7 @@ for i, (lat, lon, time, d) in tqdm(list(enumerate(points)), total=len(points)):
     fig, axs = plt.subplots(2, len(cmaps), figsize=(len(cmaps) * 3, 5))
 
     for j, cmap in enumerate(cmaps):
-        im = axs[0, j].imshow(outputs['image'][..., j], cmap=cmap, norm=img_norm, origin='lower')
+        im = axs[0, j].imshow(outputs['image'][..., j], cmap=cmap, norm=img_norms[j], origin='lower')
         divider = make_axes_locatable(axs[0, j])
         cax = divider.append_axes("right", size="5%", pad=0.05)
         fig.colorbar(im, cax=cax)

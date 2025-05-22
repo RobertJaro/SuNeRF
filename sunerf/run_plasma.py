@@ -3,14 +3,13 @@ import os
 import warnings
 
 import torch
-import yaml
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, LambdaCallback
 from pytorch_lightning.loggers import WandbLogger
 
 from sunerf.data.loader.multi_instrument import MultiInstrumentDataModule
-from sunerf.model.sunerf import save_state
 from sunerf.model.plasma import PlasmaSuNeRFModule
+from sunerf.model.sunerf import save_state
 from sunerf.train.callback import PlasmaImageCallback, AbsorptionCallback
 from sunerf.train.util import load_yaml_config
 
@@ -37,6 +36,11 @@ if __name__ == '__main__':
     training_config = config['training'] if 'training' in config else {}
     logging_config = config['logging'] if 'logging' in config else {'project': 'sunerf'}
     shuffle_config = config['shuffle'] if 'shuffle' in config else {}
+    lambda_config = config['lambda'] if 'lambda' in config else {}
+    absorption_config = config['absorption'] if 'absorption' in config else {}
+
+    # absorption config
+    use_absorption = 'type' in absorption_config and absorption_config['type'] is not None
 
     # setup training config
     epochs = training_config['epochs'] if 'epochs' in training_config else 1000
@@ -53,16 +57,23 @@ if __name__ == '__main__':
     if os.path.exists(data_module_save_path) and not args.reload:
         print('Loaded data module from file. If you want to reload the data, use --reload')
         data_module = torch.load(data_module_save_path)
+        # update batch size
+        default_batch_size = data_config['batch_size']
+        train_ds_config = data_config['train_datasets']
+        ds_batch_size = {config['key']: config.get('batch_size', default_batch_size) for config in train_ds_config}
+        for ds_key, ds in data_module.training_datasets.items():
+           ds.batch_size = ds_batch_size[ds_key]
     else:
         warnings.filterwarnings("ignore")  # ignore warnings from sunpy
-        data_module = MultiInstrumentDataModule(**data_config, work_directory=work_directory)
+        data_module = MultiInstrumentDataModule(**data_config, work_directory=work_directory, use_absorption=use_absorption)
         torch.save(data_module, data_module_save_path)
 
     # initialize SuNeRF model
     sunerf = PlasmaSuNeRFModule(Rs_per_ds=data_module.Rs_per_ds, seconds_per_dt=data_module.seconds_per_dt,
                                 validation_dataset_mapping=data_module.validation_dataset_mapping,
                                 instruments_config=instruments_config, model_config=model_config,
-                                sampling_config=sampling_config, shuffle_config=shuffle_config)
+                                sampling_config=sampling_config, shuffle_config=shuffle_config,
+                                lambda_config=lambda_config, absorption_config=absorption_config)
 
     # initialize callbacks
     checkpoint_callback = ModelCheckpoint(dirpath=base_path,
@@ -71,8 +82,11 @@ if __name__ == '__main__':
     save_path = os.path.join(base_path, 'save_state.snf')
     save_callback = LambdaCallback(on_validation_end=lambda *args: save_state(sunerf, data_module, save_path))
 
-    absorption_callback = AbsorptionCallback('absorption', data_module.validation_datasets['absorption'].image_shape)
-    callbacks = [checkpoint_callback, save_callback, absorption_callback]
+    callbacks = [checkpoint_callback, save_callback]
+    if use_absorption:
+        absorption_callback = AbsorptionCallback('absorption', data_module.validation_datasets['absorption'].image_shape)
+        callbacks.append(absorption_callback)
+
 
     for k in data_module.validation_dataset_mapping.values():
         if k == 'absorption':

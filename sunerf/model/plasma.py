@@ -13,11 +13,10 @@ from sunerf.train.scaling import ImageAsinhScaling, ImageLinearScaling, ImageLog
 
 class PlasmaSuNeRFModule(BaseSuNeRFModule):
     def __init__(self, Rs_per_ds, seconds_per_dt, instruments_config,
-                 lambda_image=1.0, lambda_regularization=1.0e-4, lambda_absorption=1.0e-4,
-                 sampling_config=None, hierarchical_sampling_config=None, absorption_config=None,
+                 lambda_config=None, sampling_config=None, hierarchical_sampling_config=None, absorption_config=None,
                  model_config=None, shuffle_config=None, **kwargs):
         # Temperature range
-        log_T_range = np.arange(4, 8.001, 0.05).astype(np.float32)
+        log_T_range = np.arange(4, 8.001, 0.01).astype(np.float32)
         self.log_T_range = log_T_range
 
         # absorption model
@@ -59,21 +58,16 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
 
         super().__init__(Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt,
                          rendering=rendering, **kwargs)
-        self.lambda_image = lambda_image
-        self.lambda_regularization = lambda_regularization
-        self.lambda_absorption = lambda_absorption
+
+        lambda_config = lambda_config if lambda_config is not None else {}
+        self.lambda_image = lambda_config.get('image', 1.0)
+        self.lambda_regularization = lambda_config.get('regularization', 1.0e-4)
+        self.lambda_absorption = lambda_config.get('absorption', 1.0e-4)
 
         self.absorption_model = absorption_model
         self.image_scaling = nn.ModuleDict(scaling_modules)
         self.mse_loss = nn.MSELoss()
         self.temperature_response_normalization = {k: v.normalization for k, v in rendering_modules.items()}
-
-    def configure_optimizers(self):
-        params = list(self.rendering.parameters())
-        self.optimizer = torch.optim.Adam(params, lr=self.lr_config['start'])
-        self.scheduler = ExponentialLR(self.optimizer, gamma=(self.lr_config['end'] / self.lr_config['start']) ** (
-                1 / self.lr_config['iterations']))
-        return [self.optimizer], [self.scheduler]
 
     def training_step(self, batch, batch_nb):
         instrument_batch = {k: v for k, v in batch.items() if k != 'random'}
@@ -190,17 +184,14 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
             image = torch.nan_to_num(image, nan=0.0)
 
             target_image = image_scaling(image)
-            fine_image = image_scaling(model_out[ds_key]['image'])
-            coarse_image = image_scaling(model_out[ds_key]['image'])
+            pred_image = image_scaling(model_out[ds_key]['image'])
 
             # set nans to zero
             target_image = torch.nan_to_num(target_image, nan=0.0)
-            fine_image = torch.nan_to_num(fine_image, nan=0.0)
-            coarse_image = torch.nan_to_num(coarse_image, nan=0.0)
+            pred_image = torch.nan_to_num(pred_image, nan=0.0)
 
             return {'target_image': target_image,
-                    'fine_image': fine_image,
-                    'coarse_image': coarse_image,
+                    'pred_image': pred_image,
                     'mean_T': model_out[ds_key]['mean_T'], 'total_ne': model_out[ds_key]['total_ne'],
                     'height_map': model_out[ds_key]['height_map'],
                     'mean_absorption': model_out[ds_key]['mean_absorption'],

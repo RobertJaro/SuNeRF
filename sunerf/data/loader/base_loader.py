@@ -42,8 +42,9 @@ class BaseDataModule(LightningDataModule):
         [ds.clear() for ds in self.datasets.values() if isinstance(ds, MmapDataset)]
 
     def train_dataloader(self):
-        datasets = self.training_datasets
+        print('reloading training datasets')
 
+        datasets = self.training_datasets
         # data loader with iterations based on the largest dataset
         ref_idx = np.argmax([len(ds) for ds in datasets.values()])
         ref_dataset_name, ref_dataset = list(datasets.items())[ref_idx]
@@ -113,10 +114,13 @@ def _load_map_data(data):
         raise ValueError('reference_frame must be "heliographic" or "carrington"')
 
     image = s_map.data.astype(np.float32)
-    img_coords = get_azimuthal_equidistant_coordinates(s_map)
 
-    x = img_coords[..., 0]
-    y = img_coords[..., 1]
+    # img_coords = get_azimuthal_equidistant_coordinates(s_map)
+    # x = img_coords[..., 0]
+    # y = img_coords[..., 1]
+    coords = all_coordinates_from_map(s_map).transform_to(frames.Helioprojective)
+    x = coords.Tx
+    y = coords.Ty
 
     all_rays = np.stack(get_rays(x, y, pose), -2)
 

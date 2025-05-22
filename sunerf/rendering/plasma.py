@@ -16,9 +16,10 @@ class PlasmaRadiativeTransfer(nn.Module):
 
         # load temperature response function
         normalization = temperature_response_config.get('normalization', None)
+        channels = temperature_response_config.get('channels', None)
         temperature, response, normalization = convert_response_function(temperature_response_config['file'],
                                                                          log_T_range=log_T_range,
-                                                                         normalization=normalization)
+                                                                         normalization=normalization, channels=channels)
 
         log_T = np.log10(temperature)
         log_response = np.log10(response)
@@ -125,7 +126,7 @@ def init_absorption_model(absorption_config):
     if absorption_type == 'constant':
         return ConstantAbsorptionModel(**absorption_config)
     elif absorption_type == 'learned':
-        return AbsorptionModel()
+        return AbsorptionModel(**absorption_config)
     elif absorption_type is None:
         return None
     else:

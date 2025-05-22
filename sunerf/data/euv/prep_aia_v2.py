@@ -5,6 +5,9 @@ import os
 from itertools import repeat
 
 import numpy as np
+from aiapy.calibrate import correct_degradation
+from aiapy.calibrate import register
+from aiapy.calibrate.util import get_correction_table
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 from sunpy.coordinates import frames
@@ -22,12 +25,21 @@ if __name__ == '__main__':
 
 
     def _convert_map(d):
-        map_path, out_path, resolution = d
+        map_path, out_path, resolution, correction_table = d
 
         s_map = Map(map_path)
+        exposure_time = s_map.meta['EXPTIME']
 
         # north up
-        s_map = s_map.rotate(recenter=True)
+        s_map = register(s_map)
+
+        # photometric correction
+        s_map = correct_degradation(s_map, correction_table=correction_table)
+        # normalize by exposure time
+        s_map.data[:] /= exposure_time
+
+        # remove negative values
+        s_map.data[s_map.data <= 0] = 0
 
         target_radius = 1.3 * s_map.rsun_obs
         bottom_left = SkyCoord(-target_radius, -target_radius, observer=s_map.observer_coordinate, frame=frames.Helioprojective)
@@ -36,9 +48,6 @@ if __name__ == '__main__':
 
         # exposure_time = s_map.meta['EXPTIME']
         s_map = s_map.resample((resolution, resolution) * u.pixel)
-
-        # mask missing blocks
-        s_map.data[s_map.data <= 0] = np.nan
 
         coords = all_coordinates_from_map(s_map)
         radius = np.sqrt(coords.Tx ** 2 + coords.Ty ** 2)
@@ -51,7 +60,8 @@ if __name__ == '__main__':
 
     files = glob.glob(args.data_path)
     out_paths = [os.path.join(args.out_path, os.path.basename(f)) for f in files]
+    correction_table = get_correction_table()
 
     with multiprocessing.Pool(os.cpu_count()) as p:
-        zip_in = zip(files, out_paths, repeat(args.resolution))
+        zip_in = zip(files, out_paths, repeat(args.resolution), repeat(correction_table))
         [_ for _ in tqdm(p.imap_unordered(_convert_map, zip_in), total=len(files))]

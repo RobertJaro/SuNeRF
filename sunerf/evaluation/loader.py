@@ -25,7 +25,7 @@ class SuNeRFLoader:
 
         state = torch.load(state_path)
         data_config = state['data_config']
-        self.instrument_keys = list(data_config.keys())
+        self.ds_keys = list(data_config.keys())
         self.config = data_config
         self.observers = [o for k in data_config.keys() if 'observers' in data_config[k] for o in data_config[k]['observers']]
 
@@ -33,37 +33,39 @@ class SuNeRFLoader:
         self.rendering = rendering.to(device)
         model = rendering.fine_model if isinstance(rendering, MultiResolutionRenderingModule) else rendering.model
         self.model = model.to(device)
+        self.instrument_keys = list(self.rendering.rendering_modules.keys())
 
         self.seconds_per_dt = state['seconds_per_dt']
         self.Rs_per_ds = state['Rs_per_ds']
         self.Mm_per_ds = self.Rs_per_ds * (1 * u.R_sun).to_value(u.Mm)
         self.ref_date = state['ref_date']
 
-        self.ref_maps = {k: Map(np.zeros(self.resolution(k)), self.wcs(k)) for k in self.instrument_keys}
+        self.ref_maps = {k: Map(np.zeros(self.resolution(k)), self.wcs(k)) for k in self.ds_keys}
+        self.log_T_range = state['log_T_range']
 
-    def start_time(self, instrument_key=None):
-        instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
-        return np.min(self.config[instrument_key]['times'])
+    def start_time(self, ds_key=None):
+        ds_key = ds_key if ds_key is not None else self.ds_keys[0]
+        return np.min(self.config[ds_key]['times'])
 
-    def end_time(self, instrument_key=None):
-        instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
-        return np.max(self.config[instrument_key]['times'])
+    def end_time(self, ds_key=None):
+        ds_key = ds_key if ds_key is not None else self.ds_keys[0]
+        return np.max(self.config[ds_key]['times'])
 
-    def times(self, instrument_key=None):
-        instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
-        return self.config[instrument_key]['times']
+    def times(self, ds_key=None):
+        ds_key = ds_key if ds_key is not None else self.ds_keys[0]
+        return self.config[ds_key]['times']
 
-    def wcs(self, instrument_key=None):
-        instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
-        return self.config[instrument_key]['wcs']
+    def wcs(self, ds_key=None):
+        ds_key = ds_key if ds_key is not None else self.ds_keys[0]
+        return self.config[ds_key]['wcs']
 
-    def resolution(self, instrument_key=None):
-        instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
-        return self.config[instrument_key]['image_shape']
+    def resolution(self, ds_key=None):
+        ds_key = ds_key if ds_key is not None else self.ds_keys[0]
+        return self.config[ds_key]['image_shape']
 
-    def ref_map(self, instrument_key=None):
-        instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
-        return self.ref_maps[instrument_key]
+    def ref_map(self, ds_key=None):
+        ds_key = ds_key if ds_key is not None else self.ds_keys[0]
+        return self.ref_maps[ds_key]
 
     @torch.no_grad()
     def load_observer_image(self, lat: u, lon: u, time: datetime,
@@ -102,8 +104,7 @@ class SuNeRFLoader:
                    distance=(1 * u.AU).to(u.solRad),
                    hpc_lat: u = 0 * u.arcsec, hpc_lon: u = 0 * u.arcsec,
                    resolution=(256, 256) * u.pix, scale=[2400 / 256, 2400 / 256] * u.arcsec / u.pix,
-                   instrument_key=None,
-                   **kwargs):
+                   instrument_key=None, **kwargs):
         instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
 
         obs = SkyCoord(0 * u.deg, 0 * u.deg, distance, frame=frames.HeliographicStonyhurst, obstime=time)
@@ -122,7 +123,8 @@ class SuNeRFLoader:
         pose_out['maps'] = self.get_maps(pose_out['image'], reference_coord, scale, instrument_key)
         return pose_out
 
-    def load_pose(self, img_coords, target_pose, time, batch_size=int(2 ** 10), instrument_key=None, progress=True):
+    def load_pose(self, img_coords, target_pose, time, batch_size=int(2 ** 10), instrument_key=None, progress=True,
+                  model_outputs=['image', 'mean_T', 'total_ne', 'mean_absorption']):
         # load rays
         rays_o, rays_d = get_rays(img_coords[..., 0], img_coords[..., 1], target_pose)
         rays_o, rays_d = torch.from_numpy(rays_o), torch.from_numpy(rays_d)
@@ -138,17 +140,18 @@ class SuNeRFLoader:
             torch.split(flat_rays_d, batch_size), \
             torch.split(flat_time, batch_size)
         instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
-        outputs = {}
+        outputs = {k: [] for k in model_outputs} if model_outputs is not None else {}
         iter = tqdm(zip(rays_o, rays_d, time), total=len(rays_o)) if progress else zip(rays_o, rays_d, time)
         for b_rays_o, b_rays_d, b_time in iter:
             b_rays = torch.stack([b_rays_o, b_rays_d], 1)
             batch = {instrument_key: {'rays': b_rays, 'time': b_time, 'instrument': instrument_key}}
             rendering_out = self.rendering(batch)
             for k, v in rendering_out['model_out'][instrument_key].items():
-                if k not in outputs:
+                if k not in outputs and model_outputs is None:
                     outputs[k] = []
+                if k not in outputs:
+                    continue
                 outputs[k].append(v.detach().cpu())
-
         results = {k: torch.cat(v).view(*img_shape, *v[0].shape[1:]).numpy() for k, v in outputs.items()}
         return results
 
@@ -177,7 +180,6 @@ class SuNeRFLoader:
                 if k not in out_dict:
                     out_dict[k] = []
                 out_dict[k].append(v.detach().cpu())
-        print({k: torch.cat(v).shape for k, v in out_dict.items()})
         output = {k: torch.cat(v).reshape(*target_shape, *v[0].shape[1:]).numpy() for k, v in out_dict.items()}
 
         return output

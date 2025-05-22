@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf/all_2012_08_v05"
-work_directory: "/glade/derecho/scratch/rjarolim/sunerf/all_2012_08_v01"
+base_path: "/glade/work/rjarolim/sunerf/aia_euvi_2010_06_v01"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/aia_euvi_2010_06_v01"
 
 instruments:
   - type: 'plasma'
@@ -8,62 +8,53 @@ instruments:
     temperature_response:
       file: '/glade/work/rjarolim/sunerf/response_v02/aia_response_functions.npz'
       scaling: 0.0
-      learnable: True
+      learnable: False
       normalization: 1.0e-21
-      channels: ['A94', 'A131', 'A171', 'A193', 'A211', 'A335']
   - type: 'plasma'
     key: 'EUVI-A'
     scaling: { type: 'asinh' }
     temperature_response:
       file: '/glade/work/rjarolim/sunerf/response_v02/stereo_ahead_response.npz'
       scaling: 0.0
-      learnable: False
+      learnable: True
       normalization: 1.0e+6
-      channels: ['171', '195', '284']
   - type: 'plasma'
     key: 'EUVI-B'
     scaling: { type: 'asinh' }
     temperature_response:
       file: '/glade/work/rjarolim/sunerf/response_v02/stereo_behind_response.npz'
       scaling: 0.0
-      learnable: False
+      learnable: True
       normalization: 1.0e+6
-      channels: ['171', '195', '284']
 data:
   train_datasets:
     - type: 'AIA'
       key: 'AIA'
       instrument_key: 'AIA'
-      data_path: '/glade/work/rjarolim/data/sunerf/2012_08_prep/aia/*.fits'
-      wavelengths: [94, 131, 171, 193, 211, 335]
+      data_path: '/glade/work/rjarolim/data/sunerf/2010_06_prep/aia/*.fits'
     - type: 'EUVI'
       key: 'EUVI-A'
       instrument_key: 'EUVI-A'
-      data_path: '/glade/work/rjarolim/data/sunerf/2012_08_prep/euvi/*A.fts'
-      wavelengths: [171, 195, 284]
+      data_path: '/glade/work/rjarolim/data/sunerf/2010_06_prep/euvi/*A.fts'
     - type: 'EUVI'
       key: 'EUVI-B'
       instrument_key: 'EUVI-B'
-      data_path: '/glade/work/rjarolim/data/sunerf/2012_08_prep/euvi/*B.fts'
-      wavelengths: [171, 195, 284]
+      data_path: '/glade/work/rjarolim/data/sunerf/2010_06_prep/euvi/*B.fts'
   valid_datasets:
     - type: 'AIA'
       key: 'AIA'
       instrument_key: 'AIA'
-      data_path: '/glade/work/rjarolim/data/sunerf/2012_08_prep/aia/*.fits'
-      wavelengths: [94, 131, 171, 193, 211, 335]
+      data_path: '/glade/work/rjarolim/data/sunerf/2010_06_prep/aia/*.fits'
     - type: 'EUVI'
       key: 'EUVI-A'
       instrument_key: 'EUVI-A'
-      data_path: '/glade/work/rjarolim/data/sunerf/2012_08_prep/euvi/*A.fts'
-      wavelengths: [171, 195, 284]
+      data_path: '/glade/work/rjarolim/data/sunerf/2010_06_prep/euvi/*A.fts'
     - type: 'EUVI'
       key: 'EUVI-B'
       instrument_key: 'EUVI-B'
-      data_path: '/glade/work/rjarolim/data/sunerf/2012_08_prep/euvi/*B.fts'
-      wavelengths: [171, 195, 284]
+      data_path: '/glade/work/rjarolim/data/sunerf/2010_06_prep/euvi/*B.fts'
   debug: False
-  batch_size: 1024
+  batch_size: 512
   num_workers: 16
 
 logging:
@@ -75,15 +66,9 @@ sampling:
   n_samples: 64
   max_distance: 1.5
 
-absorption:
-  type: null
-
 shuffle:
   type: "normal_time"
-  iterations: 1.0e+5
-
-training:
-  log_every_n_steps: 2000
+  start: 10
 
 lambda:
   image: 1.0

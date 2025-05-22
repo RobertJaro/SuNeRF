@@ -7,9 +7,10 @@ from torch import nn
 class TimeShuffler(nn.Module):
     def __init__(self, probability=0.5, data_sets=None, iterations=1e5):
         super().__init__()
-        self.prob = nn.Parameter(torch.tensor(probability, dtype=torch.float32), requires_grad=False)
         self.data_sets = data_sets
-        self.gamma = probability / iterations
+
+        self.prob = nn.Parameter(torch.tensor(probability, dtype=torch.float32), requires_grad=False)
+        self.gamma = probability / iterations if iterations > 0 else 0
 
     def forward(self, batch):
         if self.prob <= 0:
@@ -38,7 +39,7 @@ class TimeShuffler(nn.Module):
 
 
 class NormalTimeShuffler(nn.Module):
-    def __init__(self, start=10, end=1e-3, iterations=1e5, instruments=None):
+    def __init__(self, start=1, end=1e-2, iterations=1e5, instruments=None):
         super().__init__()
         self.end = end
         self.scaling = nn.Parameter(torch.tensor(start, dtype=torch.float32), requires_grad=False)

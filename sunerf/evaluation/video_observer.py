@@ -31,13 +31,14 @@ os.makedirs(video_path, exist_ok=True)
 
 # init loader
 loader = SuNeRFLoader(chk_path)
-start_time = loader.start_time('AIA_FD')
-end_time = loader.end_time('AIA_FD')
+ds_key = 'EUVI-A'
+start_time = loader.start_time(ds_key)
+end_time = loader.end_time(ds_key)
 
 central_longitude = loader.ref_map().carrington_longitude.to_value(u.deg)
 central_latitude = loader.ref_map().carrington_latitude.to_value(u.deg)
 
-center_coord = loader.ref_map('AIA_FD').center.transform_to(frames.HeliographicCarrington)
+center_coord = loader.ref_map(ds_key).center.transform_to(frames.HeliographicCarrington)
 target_longitude = center_coord.lon.to_value(u.deg)
 target_latitude = center_coord.lat.to_value(u.deg)
 
@@ -81,7 +82,7 @@ for i, (lat, lon, time, d) in tqdm(list(enumerate(points)), total=len(points)):
     outputs = loader.load_observer_image(lat * u.deg, lon * u.deg, time, batch_size=batch_size,
                                          resolution=(resolution, resolution) * u.pix, distance=d * u.AU)
 
-    log_T = np.linspace(4, 9, 101)
+    log_T = loader.log_T_range
     dem = outputs['dem']
     em_bins = [dem[..., (log_T > T_min) & (log_T < T_max)].sum(-1) for T_min, T_max in T_bins]
 

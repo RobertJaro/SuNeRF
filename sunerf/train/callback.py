@@ -129,7 +129,7 @@ class TestImageCallback(BaseCallback):
 
         # select index
         y, x = z_vals_stratified.shape[0] // 4, z_vals_stratified.shape[1] // 4  # select point in first quadrant
-        plot_ray_sampling(z_vals_stratified[y, x] - distance, z_vals_hierach[y, x] - distance, ax[-1])
+        plot_ray_sampling(z_vals_stratified[y, x], z_vals_hierach[y, x], ax[-1])
 
         wandb.log({"Comparison": fig})
         plt.close('all')
@@ -151,15 +151,13 @@ class PlasmaImageCallback(BaseCallback):
         # reshape
         outputs = {k: v.view(*self.image_shape, *v.shape[1:]).cpu().numpy() for k, v in outputs.items()}
 
-        fine_image = outputs['fine_image']
+        pred_image = outputs['pred_image']
         target_image = outputs['target_image']
-        coarse_image = outputs['coarse_image']
 
         cmaps = self.cmaps
-        cmaps = ['gray'] * fine_image.shape[0] if cmaps is None else cmaps
+        cmaps = ['gray'] * pred_image.shape[0] if cmaps is None else cmaps
 
-        fig, axs = plt.subplots(3, len(cmaps), figsize=(3 * len(cmaps), 9))
-
+        fig, axs = plt.subplots(2, len(cmaps), figsize=(3 * len(cmaps), 6))
         for i, cmap in enumerate(cmaps):
             cmap = plt.get_cmap(cmap)
             col = axs[:, i]
@@ -171,17 +169,11 @@ class PlasmaImageCallback(BaseCallback):
             plt.colorbar(im, cax=cax)
             col[0].set_title(f'Target')
 
-            im = col[1].imshow(fine_image[..., i], cmap=cmap, vmin=0, vmax=v_max)
+            im = col[1].imshow(pred_image[..., i], cmap=cmap, vmin=0, vmax=v_max)
             divider = make_axes_locatable(col[1])
             cax = divider.append_axes("right", size="5%", pad=0.05)
             plt.colorbar(im, cax=cax)
-            col[1].set_title(f'Fine')
-
-            im = col[2].imshow(coarse_image[..., i], cmap=cmap, vmin=0, vmax=v_max)
-            divider = make_axes_locatable(col[2])
-            cax = divider.append_axes("right", size="5%", pad=0.05)
-            plt.colorbar(im, cax=cax)
-            col[2].set_title(f'Coarse')
+            col[1].set_title(f'Prediction')
 
         [ax.set_axis_off() for ax in axs.flatten()]
 
@@ -194,10 +186,10 @@ class PlasmaImageCallback(BaseCallback):
                                         outputs['z_vals_stratified'], outputs['z_vals_hierarchical'],
                                         outputs['distance'].mean())
 
-        val_loss = ((fine_image - target_image) ** 2).mean()
+        val_loss = ((pred_image - target_image) ** 2).mean()
         val_ssim = []
         for i in range(target_image.shape[-1]):
-            val_ssim += [structural_similarity(target_image[..., i], fine_image[..., i], data_range=1)]
+            val_ssim += [structural_similarity(target_image[..., i], pred_image[..., i], data_range=1)]
         val_ssim = np.mean(val_ssim)
         val_psnr = -10. * np.log10(val_loss)
 
@@ -239,7 +231,7 @@ class PlasmaImageCallback(BaseCallback):
 
         # select index
         y, x = z_vals_stratified.shape[0] // 4, z_vals_stratified.shape[1] // 4  # select point in first quadrant
-        plot_ray_sampling(z_vals_stratified[y, x] - distance, z_vals_hierach[y, x] - distance, axs[-1])
+        plot_ray_sampling(z_vals_stratified[y, x], z_vals_hierach[y, x], axs[-1])
 
         fig.tight_layout()
         wandb.log({f'integrated_quantities.{self.ds_key}': fig})

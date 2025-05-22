@@ -11,9 +11,7 @@ def convert_response_function(response_file, channels=None, log_T_range=None, no
     temperature = temperature_response_function['temperature']
     response = {k: value for k, value in temperature_response_function.items() if k != 'temperature'}
 
-    if channels is not None:
-        channels = args.channels
-    else:
+    if channels is None:
         channels = list(response.keys())
 
     response = np.stack([response[c] for c in channels], 0)

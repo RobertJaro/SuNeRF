@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf/2023_04_combined_v06"
-work_directory: "/glade/derecho/scratch/rjarolim/sunerf/2023_04_combined_v06"
+base_path: "/glade/work/rjarolim/sunerf/2023_04_combined_v07"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/2023_04_combined_v07"
 
 instruments:
   - type: 'plasma'
