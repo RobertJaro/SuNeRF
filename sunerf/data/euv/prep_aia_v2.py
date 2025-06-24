@@ -30,6 +30,10 @@ if __name__ == '__main__':
         s_map = Map(map_path)
         exposure_time = s_map.meta['EXPTIME']
 
+        if s_map.meta['QUALITY'] != 0 or exposure_time <= 0:
+            print(f"Map {map_path} has quality issues, skipping.")
+            return
+
         # north up
         s_map = register(s_map)
 

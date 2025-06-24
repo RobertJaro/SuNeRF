@@ -44,7 +44,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Process EUVI response function.')
     parser.add_argument('--response_file', type=str, required=True, help='Path to the response .geny file')
     parser.add_argument('--out_path', type=str, required=True, help='Path to save the output .npz file')
-    parser.add_argument('--mode', type=str, default='S1', help='Mode to select (e.g., S1, S2, etc.)')
+    parser.add_argument('--mode', type=str, default='OPEN', help='Mode to select (e.g., S1, S2, etc.)')
 
     args = parser.parse_args()
     main(args.response_file, args.out_path, args.mode.encode())

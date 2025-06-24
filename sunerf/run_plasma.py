@@ -31,13 +31,13 @@ if __name__ == '__main__':
     # setup default configs
     instruments_config = config['instruments']
     data_config = config['data']
-    model_config = config['model'] if 'model' in config else {}
+    model_config = config['model'] if 'model' in config else {'encoding': 'gaussian'}
     sampling_config = config['sampling'] if 'sampling' in config else {}
     training_config = config['training'] if 'training' in config else {}
     logging_config = config['logging'] if 'logging' in config else {'project': 'sunerf'}
     shuffle_config = config['shuffle'] if 'shuffle' in config else {}
     lambda_config = config['lambda'] if 'lambda' in config else {}
-    absorption_config = config['absorption'] if 'absorption' in config else {}
+    absorption_config = config['absorption'] if 'absorption' in config else {'type': 'learned'}
 
     # absorption config
     use_absorption = 'type' in absorption_config and absorption_config['type'] is not None
@@ -96,6 +96,7 @@ if __name__ == '__main__':
         callbacks.append(test_image_callback)
 
     N_GPUS = torch.cuda.device_count()
+    torch.set_float32_matmul_precision('medium')  # set precision for matmul
     trainer = Trainer(max_epochs=epochs,
                       logger=logger,
                       devices=N_GPUS,

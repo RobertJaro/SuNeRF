@@ -16,3 +16,6 @@ SECCHI_PREP, files, /write_fts, savepath = "/glade/work/rjarolim/data/sunerf/202
 
 files = FILE_SEARCH("/glade/work/rjarolim/data/sunerf/2010_06/euvi", "*.fts")
 SECCHI_PREP, files, /write_fts, savepath = "/glade/work/rjarolim/data/sunerf/2010_06/euvi_prep"
+
+files = FILE_SEARCH("/glade/work/rjarolim/data/sunerf/2012_01/euvi", "*.fts")
+SECCHI_PREP, files, /write_fts, savepath = "/glade/work/rjarolim/data/sunerf/2012_01/euvi_prep"

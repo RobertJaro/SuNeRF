@@ -32,8 +32,8 @@ def _load_HAO(file_path):
     header['DSUN_OBS'] = (header["OBS_R0"] * u.Rsun).to("m").value  # solar radii to m
     header['RSUN'] = np.rad2deg(header["RSUN"]) * 3600  # rad to arcsec
 
-    header["CTYPE1"] = "HPLN-TAN"
-    header["CTYPE2"] = "HPLT-TAN"
+    header["CTYPE1"] = "HPLN-ARC"
+    header["CTYPE2"] = "HPLT-ARC"
 
     header["CDELT1"] = np.rad2deg(header["CDELT1"]) * 3600  # rad -- arcsec
     header["CDELT2"] = np.rad2deg(header["CDELT2"]) * 3600  # rad -- arcsec

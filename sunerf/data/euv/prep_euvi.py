@@ -26,6 +26,9 @@ if __name__ == '__main__':
 
         s_map = Map(map_path)
 
+        # mask missing blocks
+        s_map.data[s_map.data <= 0] = np.nan
+
         # north up
         s_map = s_map.rotate(recenter=True)
 
@@ -37,15 +40,16 @@ if __name__ == '__main__':
         # exposure_time = s_map.meta['EXPTIME']
         s_map = s_map.resample((resolution, resolution) * u.pixel)
 
-        # mask missing blocks
-        s_map.data[s_map.data <= 0] = np.nan
-
         coords = all_coordinates_from_map(s_map)
         radius = np.sqrt(coords.Tx ** 2 + coords.Ty ** 2)
         mask = radius > s_map.rsun_obs * 1.3
         s_map.data[mask] = np.nan
 
-        # s_map.data[:] = s_map.data / 2000
+        # quality check
+        if np.isnan(s_map.data).sum() / np.prod(s_map.data.shape) > 0.50:
+            print(f"Map {map_path} has too many NaNs, skipping.")
+            return
+
         s_map.save(out_path, overwrite=True)
 
 

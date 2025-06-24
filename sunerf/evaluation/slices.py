@@ -29,11 +29,11 @@ os.makedirs(args.video_path, exist_ok=True)
 loader = SuNeRFLoader(args.chk_path)
 
 # Define ranges
-center_lon = loader.ref_map().carrington_longitude.to_value(u.deg)
-target_lon = loader.ref_map().carrington_longitude.to_value(u.deg)
+center_lon = 170 #loader.ref_map().carrington_longitude.to_value(u.deg)
+target_lon = 170 #loader.ref_map().carrington_longitude.to_value(u.deg)
 ref_time = loader.ref_date
 
-latitude_range = np.arange(-60, 60.5, 0.5) * u.deg
+latitude_range = np.arange(-90, 90.5, 0.5) * u.deg
 longitude_range = np.arange(center_lon - 60, center_lon + 60.5, 0.5) * u.deg
 # longitude_range = np.linspace(0, 360, 361) * u.deg
 radius = np.linspace(1, 1.4, 100) * u.solRad
@@ -131,8 +131,8 @@ plt.close(fig)
 
 
 def _prep_polar(ax):
-    ax.set_theta_zero_location('N')
-    ax.set_theta_direction(-1)
+    ax.set_theta_zero_location('S')
+    # ax.set_theta_direction(-1)
     # theta limits
     ax.set_thetamin(latitude_range[0].to_value(u.rad) + np.pi/2)
     ax.set_thetamax(latitude_range[-1].to_value(u.rad) + np.pi/2)
@@ -152,7 +152,7 @@ s_map.center.transform_to(frames.HeliographicCarrington)
 T_norm = LogNorm(vmin=10 ** 5.0, vmax=10 ** 6.5)
 ne_norm = LogNorm(vmin=1, vmax=500)
 
-theta, r = np.meshgrid(np.pi / 2 + latitude_range.to_value(u.rad), radius.to_value(u.solRad))
+theta, r = np.meshgrid(np.pi / 2 - latitude_range.to_value(u.rad), radius.to_value(u.solRad))
 
 lon_idx = np.argmin(np.abs(longitude_range - target_lon * u.deg))
 

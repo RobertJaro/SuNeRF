@@ -152,6 +152,9 @@ python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarol
 # angle comparison
 #python -i -m sunerf.evaluation.cme.angle_comparison
 
+# com comparison
+#python -i -m sunerf.evaluation.cme.com_comparison
+
 # data overview plot
 python -i -m sunerf.evaluation.visualize_cme_input
 

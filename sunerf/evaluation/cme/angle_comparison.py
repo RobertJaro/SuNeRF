@@ -37,7 +37,7 @@ if __name__ == '__main__':
 
     angles = [(a - 360) if a > 180 else a for a in angles ]
 
-    fig, axs = plt.subplots(1, 5, figsize=(6, 2))
+    fig, axs = plt.subplots(1, 5, figsize=(12, 2))
 
     ax = axs[0]
     l1 = ax.scatter(angles, velocity_com_diffs[:], label='side')
@@ -97,8 +97,8 @@ if __name__ == '__main__':
 
     central_indices = [0, 1, 2, 6, 7, 8]
     print('Mean diffs:')
-    print('Velocity CoM:', velocity_com_diffs[central_indices].mean(0))
-    print('Velocity FRT:', velocity_sf_diffs[central_indices].mean(0))
-    print('Mass:', mass_diffs[central_indices].mean(0))
-    print('Theta:', diffs[central_indices, 1].mean(0))
-    print('Phi:', diffs[central_indices, 2].mean(0))
+    print(f'Velocity CoM: {np.abs(velocity_com_diffs[central_indices]).mean(0):.2f} std: {np.abs(velocity_com_diffs[central_indices]).std(0):.2f}')
+    print(f'Velocity FRT: {np.abs(velocity_sf_diffs[central_indices]).mean(0):.2f} std: {np.abs(velocity_sf_diffs[central_indices]).std(0):.2f}')
+    print(f'Mass: {np.abs(mass_diffs[central_indices]).mean(0):.2f} std: {np.abs(mass_diffs[central_indices]).std(0):.2f}')
+    print(f'Theta: {diffs[central_indices, 1].mean(0):.2f} std: {diffs[central_indices, 1].std(0):.2f}')
+    print(f'Phi: {diffs[central_indices, 2].mean(0):.2f} std: {diffs[central_indices, 2].std(0):.2f}')

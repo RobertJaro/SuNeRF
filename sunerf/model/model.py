@@ -184,7 +184,7 @@ class RhoModel(SirenNet):
 class AbsorptionModel(GenericModel):
 
     def __init__(self, freeze=False, **kwargs):
-        super().__init__(in_dim=2, out_dim=1, n_layers=2, dim=16, w0_initial=1.0, **kwargs)
+        super().__init__(in_dim=2, out_dim=1, n_layers=2, dim=16, **kwargs)
         if freeze:
             for param in self.parameters():
                 param.requires_grad = False

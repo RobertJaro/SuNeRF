@@ -47,25 +47,20 @@ if __name__ == '__main__':
     target_longitude = center_coord.lon.to_value(u.deg)
     target_latitude = center_coord.lat.to_value(u.deg)
 
+    n_points = 20
+    points_1 = zip(np.linspace(0, -90, n_points),
+                   np.linspace(central_longitude, 0, n_points),
+                   pd.date_range(start=start_time, end=start_time, periods=n_points),
+                   np.linspace(1.0, 1.0, n_points))
+
     n_points = 100
-
-    # points_1 = zip(np.linspace(90, 90, n_points),
-    #                np.linspace(central_longitude, central_longitude, n_points),
-    #                pd.date_range(start=start_time, end=end_time, periods=n_points),
-    #                np.linspace(1.0, 1.0, n_points))
-    #
-    # points_2 = zip(np.linspace(90, -90, n_points),
-    #                np.linspace(central_longitude, central_longitude, n_points),
-    #                pd.date_range(start=end_time, end=start_time, periods=n_points),
-    #                np.linspace(1.0, 1.0, n_points))
-
-    points_3 = zip(np.linspace(-90, -90, n_points),
-                   np.linspace(central_longitude, central_longitude, n_points),
+    points_2 = zip(np.linspace(-90, -90, n_points),
+                   np.linspace(0, 0, n_points),
                    pd.date_range(start=start_time, end=end_time, periods=n_points),
                    np.linspace(1.0, 1.0, n_points))
 
     # combine coordinates
-    points = list(points_3)  # list(points_1) + list(points_2) + list(points_3)
+    points = list(points_1) + list(points_2)
 
     # cmaps = [cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia304]
     # cmaps = cm.sdoaia94, cm.sdoaia131, cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia304, cm.sdoaia335
@@ -78,10 +73,9 @@ if __name__ == '__main__':
     T_norm = ImageNormalize(vmin=4.5, vmax=7)
     em_norms = [LogNorm(vmin=10) for _ in T_bins]
 
+    em_norm = LogNorm(vmin=1000)
+
     for i, (lat, lon, time, d) in tqdm(list(enumerate(points)), total=len(points)):
-        frame_path = os.path.join(video_path, '%03d.jpg' % i)
-        # if os.path.exists(frame_path):
-        #     continue
         outputs = loader.load_observer_image(lat * u.deg, lon * u.deg, time, batch_size=batch_size,
                                              resolution=(resolution, resolution) * u.pix, distance=d * u.AU,
                                              model_outputs=['image', 'mean_T', 'mean_absorption', 'dem'])
@@ -89,47 +83,95 @@ if __name__ == '__main__':
         dem = outputs['dem']
         em_bins = [dem[..., (log_T > T_min) & (log_T < T_max)].sum(-1) for T_min, T_max in T_bins]
 
-        fig, axs = plt.subplots(2, len(cmaps), figsize=(len(cmaps) * 3, 5))
+        fig, axs = plt.subplots(1, 3, figsize=(10, 4))
 
-        for j, (cmap, img_norm) in enumerate(zip(cmaps, img_norms)):
-            im = axs[0, j].imshow(outputs['image'][..., j], cmap=cmap, norm=img_norm, origin='lower')
-            divider = make_axes_locatable(axs[0, j])
-            cax = divider.append_axes("right", size="5%", pad=0.05)
-            fig.colorbar(im, cax=cax)
-
-        im = axs[1, 0].imshow(outputs['mean_T'], cmap='plasma', origin='lower', norm=T_norm)
-        divider = make_axes_locatable(axs[1, 0])
+        ax = axs[0]
+        j = 3 # 193
+        im = ax.imshow(outputs['image'][..., j], cmap=cmaps[j], norm=img_norms[j], origin='lower')
+        divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
         fig.colorbar(im, cax=cax)
+        ax.set_title(r'193 Å render [DN]')
 
-        for j in range(len(T_bins)):
-            im = axs[1, j + 1].imshow(em_bins[j], cmap='jet', origin='lower', norm=em_norms[j])
-            divider = make_axes_locatable(axs[1, j + 1])
-            cax = divider.append_axes("right", size="5%", pad=0.05)
-            fig.colorbar(im, cax=cax)
-            axs[1, j + 1].set_title(f'EM {T_bins[j][0]}--{T_bins[j][1]} [cm$^{-5}$]')
-
-        # im = axs[1, 1].imshow(outputs['total_ne'], cmap='viridis', origin='lower', norm=ne_norm)
-        # divider = make_axes_locatable(axs[1, 1])
-        # cax = divider.append_axes("right", size="5%", pad=0.05)
-        # fig.colorbar(im, cax=cax)
-
-        im = axs[1, -1].imshow(outputs['mean_absorption'], cmap='cool', origin='lower', norm=absorption_norm)
-        divider = make_axes_locatable(axs[1, -1])
+        ax = axs[1]
+        em_bin = dem[..., (log_T > 6) & (log_T < 7)].sum(-1)
+        im = ax.imshow(em_bin, cmap='jet', origin='lower', norm=em_norm)
+        divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
         fig.colorbar(im, cax=cax)
+        ax.set_title('EM 10$^6$-10$^7$ K [cm$^{-5}$]')
 
-        # [ax.axis('off') for ax in axs[1, 2:]]
-
-        # axs[1].imshow(outputs['height_map'], cmap='plasma', vmin=1, vmax=1.2, origin='lower')
-        # axs[2].imshow(outputs['absorption_map'], cmap='viridis', origin='lower')
-
-        axs[1, 0].set_title('Mean T [log K]')
-        # axs[1, 1].set_title('Total N$_e$ [cm$^{-2}$]')
-        axs[1, -1].set_title('Integrated Absorption')
+        ax = axs[2]
+        im = ax.imshow(outputs['mean_T'], cmap='plasma', origin='lower', norm=T_norm)
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        fig.colorbar(im, cax=cax)
+        ax.set_title('Mean T [log K]')
 
         [ax.axis('off') for ax in axs.ravel()]
         plt.suptitle(f'Lat: {lat:.1f} Lon: {lon:.1f} Time: {time.strftime("%Y-%m-%d %H:%M:%S")} AU: {d:.2f}')
         plt.tight_layout()
+        frame_path = os.path.join(video_path, 'overview_%03d.jpg' % i)
         fig.savefig(frame_path, dpi=300)
         plt.close(fig)
+
+
+        fig, axs = plt.subplots(1, len(cmaps), figsize=(len(cmaps) * 3, 5))
+
+        for j, (cmap, img_norm) in enumerate(zip(cmaps, img_norms)):
+            ax = axs[j]
+            im = ax.imshow(outputs['image'][..., j], cmap=cmap, norm=img_norm, origin='lower')
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            fig.colorbar(im, cax=cax)
+
+        [ax.axis('off') for ax in axs.ravel()]
+        plt.tight_layout()
+        frame_path = os.path.join(video_path, 'channels_%03d.jpg' % i)
+        fig.savefig(frame_path, dpi=300)
+        plt.close(fig)
+
+        # fig, axs = plt.subplots(2, len(cmaps), figsize=(len(cmaps) * 3, 5))
+        #
+        # for j, (cmap, img_norm) in enumerate(zip(cmaps, img_norms)):
+        #     im = axs[0, j].imshow(outputs['image'][..., j], cmap=cmap, norm=img_norm, origin='lower')
+        #     divider = make_axes_locatable(axs[0, j])
+        #     cax = divider.append_axes("right", size="5%", pad=0.05)
+        #     fig.colorbar(im, cax=cax)
+        #
+        # im = axs[1, 0].imshow(outputs['mean_T'], cmap='plasma', origin='lower', norm=T_norm)
+        # divider = make_axes_locatable(axs[1, 0])
+        # cax = divider.append_axes("right", size="5%", pad=0.05)
+        # fig.colorbar(im, cax=cax)
+        #
+        # for j in range(len(T_bins)):
+        #     im = axs[1, j + 1].imshow(em_bins[j], cmap='jet', origin='lower', norm=em_norms[j])
+        #     divider = make_axes_locatable(axs[1, j + 1])
+        #     cax = divider.append_axes("right", size="5%", pad=0.05)
+        #     fig.colorbar(im, cax=cax)
+        #     axs[1, j + 1].set_title(f'EM {T_bins[j][0]}--{T_bins[j][1]} [cm$^{-5}$]')
+        #
+        # # im = axs[1, 1].imshow(outputs['total_ne'], cmap='viridis', origin='lower', norm=ne_norm)
+        # # divider = make_axes_locatable(axs[1, 1])
+        # # cax = divider.append_axes("right", size="5%", pad=0.05)
+        # # fig.colorbar(im, cax=cax)
+        #
+        # im = axs[1, -1].imshow(outputs['mean_absorption'], cmap='cool', origin='lower', norm=absorption_norm)
+        # divider = make_axes_locatable(axs[1, -1])
+        # cax = divider.append_axes("right", size="5%", pad=0.05)
+        # fig.colorbar(im, cax=cax)
+        #
+        # # [ax.axis('off') for ax in axs[1, 2:]]
+        #
+        # # axs[1].imshow(outputs['height_map'], cmap='plasma', vmin=1, vmax=1.2, origin='lower')
+        # # axs[2].imshow(outputs['absorption_map'], cmap='viridis', origin='lower')
+        #
+        # axs[1, 0].set_title('Mean T [log K]')
+        # # axs[1, 1].set_title('Total N$_e$ [cm$^{-2}$]')
+        # axs[1, -1].set_title('Integrated Absorption')
+        #
+        # [ax.axis('off') for ax in axs.ravel()]
+        # plt.suptitle(f'Lat: {lat:.1f} Lon: {lon:.1f} Time: {time.strftime("%Y-%m-%d %H:%M:%S")} AU: {d:.2f}')
+        # plt.tight_layout()
+        # fig.savefig(frame_path, dpi=300)
+        # plt.close(fig)

@@ -8,7 +8,7 @@ if __name__ == '__main__':
     
     times = physic['times']
     times = (times - times.min())
-    times = [t.total_seconds() / 60 for t in times]
+    times = [t.total_seconds() / 3600 for t in times]
     
     center_of_mass_true = physic['center_of_mass_true']
     center_of_mass_physics = physic['center_of_mass_pred']

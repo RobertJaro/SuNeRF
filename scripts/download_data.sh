@@ -27,7 +27,6 @@ python -m sunerf.data.download.download_euvi --download_dir '/glade/work/rjaroli
 python -m sunerf.data.download.download_euvi --download_dir '/glade/work/rjarolim/data/sunerf/2012_08/euvi' --t_start '2012-08-15T00:00:00' --t_end '2012-08-20T00:00:00'
 python -m sunerf.data.download.download_euvi --download_dir '/glade/work/rjarolim/data/sunerf/2012_08/euvi' --t_start '2012-08-20T00:00:00' --t_end '2012-08-25T00:00:00'
 
-
 #################### 2023-01 ####################
 python -m sunerf.data.download.download_aia --download_dir '/glade/work/rjarolim/data/sunerf/2023_01/aia' --email 'robert.jarolim@uni-graz.at' --t_start '2023-01-01T00:00:00' --t_end '2023-01-05T00:00:00'
 
@@ -65,4 +64,20 @@ python -m sunerf.data.download.download_eui --download_dir '/glade/work/rjarolim
 python -m sunerf.data.download.download_eui --download_dir '/glade/work/rjarolim/data/sunerf/2023_04/eui' --t_start '2023-04-15T00:00:00' --t_end '2023-04-20T00:00:00'
 python -m sunerf.data.download.download_eui --download_dir '/glade/work/rjarolim/data/sunerf/2023_04/eui' --t_start '2023-04-20T00:00:00' --t_end '2023-04-25T00:00:00'
 python -m sunerf.data.download.download_eui --download_dir '/glade/work/rjarolim/data/sunerf/2023_04/eui' --t_start '2023-04-25T00:00:00' --t_end '2023-04-30T00:00:00'
+
+
+#################### 2012-01 ####################
+python -m sunerf.data.download.download_aia --download_dir '/glade/work/rjarolim/data/sunerf/2012_01/aia' --email 'robert.jarolim@uni-graz.at' --t_start '2012-01-01T00:00:00' --t_end '2012-01-10T00:00:00' --cadence 6h
+python -m sunerf.data.download.download_aia --download_dir '/glade/work/rjarolim/data/sunerf/2012_01/aia' --email 'robert.jarolim@uni-graz.at' --t_start '2012-01-10T00:00:00' --t_end '2012-01-20T00:00:00' --cadence 6h
+python -m sunerf.data.download.download_aia --download_dir '/glade/work/rjarolim/data/sunerf/2012_01/aia' --email 'robert.jarolim@uni-graz.at' --t_start '2012-01-20T00:00:00' --t_end '2012-01-30T00:00:00' --cadence 6h
+python -m sunerf.data.download.download_aia --download_dir '/glade/work/rjarolim/data/sunerf/2012_01/aia' --email 'robert.jarolim@uni-graz.at' --t_start '2012-01-30T00:00:00' --t_end '2012-02-10T00:00:00' --cadence 6h
+python -m sunerf.data.download.download_aia --download_dir '/glade/work/rjarolim/data/sunerf/2012_01/aia' --email 'robert.jarolim@uni-graz.at' --t_start '2012-02-10T00:00:00' --t_end '2012-02-20T00:00:00' --cadence 6h
+python -m sunerf.data.download.download_aia --download_dir '/glade/work/rjarolim/data/sunerf/2012_01/aia' --email 'robert.jarolim@uni-graz.at' --t_start '2012-02-20T00:00:00' --t_end '2012-03-01T00:00:00' --cadence 6h
+
+python -m sunerf.data.download.download_euvi --download_dir '/glade/work/rjarolim/data/sunerf/2012_01/euvi' --t_start '2012-01-01T00:00:00' --t_end '2012-01-10T00:00:00' --cadence 6
+python -m sunerf.data.download.download_euvi --download_dir '/glade/work/rjarolim/data/sunerf/2012_01/euvi' --t_start '2012-01-10T00:00:00' --t_end '2012-01-20T00:00:00' --cadence 6
+python -m sunerf.data.download.download_euvi --download_dir '/glade/work/rjarolim/data/sunerf/2012_01/euvi' --t_start '2012-01-20T00:00:00' --t_end '2012-01-30T00:00:00' --cadence 6
+python -m sunerf.data.download.download_euvi --download_dir '/glade/work/rjarolim/data/sunerf/2012_01/euvi' --t_start '2012-01-30T00:00:00' --t_end '2012-02-10T00:00:00' --cadence 6
+python -m sunerf.data.download.download_euvi --download_dir '/glade/work/rjarolim/data/sunerf/2012_01/euvi' --t_start '2012-02-10T00:00:00' --t_end '2012-02-20T00:00:00' --cadence 6
+python -m sunerf.data.download.download_euvi --download_dir '/glade/work/rjarolim/data/sunerf/2012_01/euvi' --t_start '2012-02-20T00:00:00' --t_end '2012-03-01T00:00:00' --cadence 6
 

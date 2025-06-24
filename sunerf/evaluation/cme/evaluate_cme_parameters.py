@@ -324,13 +324,13 @@ velocity_pred, _, model_pred = compute_velocity(times, center_of_mass_pred[:, 0]
 
 # Plot velocity fits
 plt.figure(figsize=(8, 6))
-plt.plot(time_data, center_of_mass_true[init_frame:last_frame, 0], 'o', label='True CoM Radius')
-plt.plot(time_data, center_of_mass_pred[init_frame:last_frame, 0], 'o', label='Predicted CoM Radius')
-plt.plot(time_data, model_true.predict(time_data.reshape(-1, 1)),
+plt.plot(time_data / 3600, center_of_mass_true[init_frame:last_frame, 0], 'o', label='True CoM Radius')
+plt.plot(time_data / 3600, center_of_mass_pred[init_frame:last_frame, 0], 'o', label='Predicted CoM Radius')
+plt.plot(time_data / 3600, model_true.predict(time_data.reshape(-1, 1)),
          '-', label=f'True fit (v={velocity_true:.1f} km/s)')
-plt.plot(time_data, model_pred.predict(time_data.reshape(-1, 1)),
+plt.plot(time_data / 3600, model_pred.predict(time_data.reshape(-1, 1)),
          '-', label=f'Predicted fit (v={velocity_pred:.1f} km/s)')
-plt.xlabel('Time since start [s]')
+plt.xlabel('Time since start [h]')
 plt.ylabel('Radius [Rs]')
 plt.title('CME Velocity from Center of Mass')
 plt.legend()
