@@ -1,0 +1,43 @@
+base_path: "/glade/work/rjarolim/nearthfs/version01"
+work_directory: '/glade/derecho/scratch/rjarolim/nearthfs/version01'
+
+instruments:
+  - type: 'default'
+    key: 'QVAPOR'
+    scaling: {type: 'log', vmin: 4, vmax: 4.3} #{ type: 'linear', vmin: 1.0e+5, vmax: 6.0e+4,  }
+
+data:
+  train_datasets:
+    - type: 'QVAPOR'
+      key: 'QVAPOR'
+      instrument_key: 'QVAPOR'
+      data_path: "/glade/work/rjarolim/nearthfs/qvapor/observation.pickle"
+      batch_size: 2048
+  valid_datasets:
+    - type: 'QVAPOR'
+      key: 'QVAPOR'
+      instrument_key: 'QVAPOR'
+      data_path: "/glade/work/rjarolim/nearthfs/qvapor/observation.pickle"
+    - type: 'QVAPOR-slice'
+      key: 'QVAPOR-slice'
+      data_path: "/glade/work/rjarolim/data/qvapor_tomography"
+  debug: False
+  meters_per_ds: 1.0e+4
+  seconds_per_dt: 1
+  batch_size: 4096
+  validation_batch_size: 4096
+  num_workers: 16
+
+callbacks:
+  - type: 'image'
+    ds_key: 'QVAPOR'
+  - type: 'slice'
+    ds_key: 'QVAPOR-slice'
+
+logging:
+  entity: "robert_jarolim"
+  project: "NEarthFs"
+  name: "Version 01 QVAPOR"
+
+training:
+  check_val_every_n_epoch: 10

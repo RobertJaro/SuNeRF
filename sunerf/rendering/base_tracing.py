@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from sunerf.train.sampling import SphericalSampler, HierarchicalSampler, StratifiedSampler
+from sunerf.train.sampling import SphericalSampler, HierarchicalSampler, StratifiedSampler, FlatEarthSampler
 from sunerf.train.util import TimeShuffler, NormalTimeShuffler
 
 
@@ -115,10 +115,8 @@ class MultiResolutionRenderingModule(nn.Module):
 
 class BasicRenderingModule(nn.Module):
 
-    def __init__(self, model, rendering_modules, Rs_per_ds,
-                 sampling_config=None, hierarchical_sampling_config=None, shuffle_config=None):
+    def __init__(self, model, rendering_modules, sampling_config=None, hierarchical_sampling_config=None, shuffle_config=None):
         super().__init__()
-        self.Rs_per_ds = Rs_per_ds
 
         self.rendering_modules = nn.ModuleDict(rendering_modules)
 
@@ -129,9 +127,11 @@ class BasicRenderingModule(nn.Module):
         # setup sampling strategy
         sampling_type = sampling_config.pop('type', 'spherical')
         if sampling_type == 'spherical':
-            self.sampler = SphericalSampler(Rs_per_ds=Rs_per_ds, **sampling_config)
+            self.sampler = SphericalSampler(**sampling_config)
         elif sampling_type == 'stratified':
-            self.sampler = StratifiedSampler(Rs_per_ds=Rs_per_ds, **sampling_config)
+            self.sampler = StratifiedSampler(**sampling_config)
+        elif sampling_type == 'flat_earth':
+            self.sampler = FlatEarthSampler(**sampling_config)
         else:
             raise ValueError(f'Unknown sampling type {sampling_type}')
 
@@ -195,6 +195,7 @@ class BasicRenderingModule(nn.Module):
         # add time to query points = expand to dimensions of query points and slice one dimension
         exp_times = times[:, None].repeat(1, query_points.shape[1], 1)
         query_points_time = torch.cat([query_points, exp_times], -1)
+        query_points_time.requires_grad = True
 
         fine_raw = self.model(query_points_time)
         state = {**fine_raw, 'z_vals': z_vals_combined,
@@ -202,7 +203,7 @@ class BasicRenderingModule(nn.Module):
                  'query_points': query_points_time}
         model_out = self.render_instruments(dataset_n_rays, dataset_instrument, state)
 
-        return {'model_out': model_out, 'z_vals': z_vals_combined, 'z_vals_stratified': z_vals}
+        return {'model_out': model_out, 'z_vals': z_vals_combined, 'z_vals_stratified': z_vals, 'query_points': query_points_time, 'log10_rho': fine_raw['log10_rho']}
 
     def render_instruments(self, dataset_n_rays, dataset_instrument, state):
         ray_idx = 0

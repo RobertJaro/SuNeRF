@@ -360,6 +360,112 @@ class ThomsonImageCallback(BaseCallback):
         plt.close('all')
 
 
+class WaterImageCallback(BaseCallback):
+
+    def __init__(self, ds_key, image_shape):
+        super().__init__(ds_key)
+        self.image_shape = image_shape
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        outputs = self.get_validation_outputs(pl_module)
+        if outputs is None:
+            return
+
+        # reshape
+        outputs = {k: v.view(*self.image_shape, *v.shape[1:]).cpu().numpy() for k, v in outputs.items()}
+
+        model_image = outputs['model_image']
+        target_image = outputs['target_image']
+
+        model_image[np.isnan(target_image)] = np.nan
+
+        norm = Normalize()
+
+        fig, axs = plt.subplots(1, 2, figsize=(7, 9))
+
+        ax = axs[0]
+        im = ax.imshow(target_image, cmap='cividis', norm=norm, origin='lower')
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+        ax.set_title(f'Target')
+
+        ax = axs[1]
+        im = ax.imshow(model_image, cmap='cividis', norm=norm, origin='lower')
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+        ax.set_title(f'Prediction')
+
+        [ax.set_xticks([]) for ax in axs.flatten()]
+        [ax.set_yticks([]) for ax in axs.flatten()]
+
+        fig.tight_layout()
+        wandb.log({f'images.{self.ds_key}': fig})
+        plt.close('all')
+
+        val_loss = np.nanmean((model_image - target_image) ** 2)
+        val_ssim = []
+        for i in range(target_image.shape[-1]):
+            val_ssim += [structural_similarity(np.nan_to_num(target_image[..., i], nan=0),
+                                               np.nan_to_num(model_image[..., i], nan=0),
+                                               data_range=1)]
+        val_ssim = np.mean(val_ssim)
+        val_psnr = -10. * np.log10(val_loss)
+
+        wandb.log({f'validation.loss.{self.ds_key}': val_loss,
+                   f'validation.ssim.{self.ds_key}': val_ssim,
+                   f'validation.psnr.{self.ds_key}': val_psnr})
+
+class WaterSliceCallback(BaseCallback):
+
+    def __init__(self, ds_key, cube_shape, meters_per_ds=1.0):
+        super().__init__(ds_key)
+        self.cube_shape = cube_shape
+        self.meters_per_ds = meters_per_ds
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        outputs = self.get_validation_outputs(pl_module)
+        if outputs is None:
+            return
+
+        # reshape
+        outputs = {k: v.view(*self.cube_shape, *v.shape[1:]).cpu().numpy() for k, v in outputs.items()}
+
+        model_log_rho = outputs['model_log10_rho']
+        true_log_rho = outputs['true_log10_rho']
+
+        model_log_rho[np.isnan(true_log_rho)] = np.nan
+
+        norm = LogNorm()
+
+        fig, axs = plt.subplots(2, 1, figsize=(7, 9))
+
+        ax = axs[0]
+        im = ax.imshow((10 ** true_log_rho).T[0], cmap='jet', norm=norm, aspect='auto', origin='lower')
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+        ax.set_title(f'Target')
+
+        ax = axs[1]
+        im = ax.imshow((10 ** model_log_rho).T[0], cmap='jet', norm=norm, aspect='auto', origin='lower')
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+        ax.set_title(f'Prediction')
+
+        [ax.set_xticks([]) for ax in axs.flatten()]
+        [ax.set_yticks([]) for ax in axs.flatten()]
+
+        fig.tight_layout()
+        wandb.log({f'slice.{self.ds_key}': fig})
+        plt.close('all')
+
+        val_loss = np.nanmean((model_log_rho - true_log_rho) ** 2)
+
+        wandb.log({f'validation.mse.{self.ds_key}': val_loss})
+
 def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date, ds_key=None):
     dirs = np.stack([np.sum([0, 0, -1] * pose[:3, :3], axis=-1) for pose in poses])
     origins = poses[:, :3, -1] * Rs_per_ds

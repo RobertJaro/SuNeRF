@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from torch import nn
 
@@ -100,6 +101,42 @@ class StratifiedSampler(torch.nn.Module):
 
         return {'points': pts, 'z_vals': z_vals}
 
+
+class FlatEarthSampler(torch.nn.Module):
+
+    def __init__(self, n_samples=64, offset=0.5, perturb=False):
+        super().__init__()
+        self.perturb = perturb
+
+        t_vals = torch.linspace(0., 1., n_samples)[None]
+        self.register_buffer('t_vals', torch.tensor(t_vals, dtype=torch.float32))
+        self.register_buffer('offset', torch.tensor(offset, dtype=torch.float32))
+
+    def forward(self, rays_o: torch.Tensor, rays_d: torch.Tensor):
+        r"""
+        Sample from near to solar surface. If no points are on the solar surface this
+        """
+        z = rays_o[..., 2]  # z coordinate of the origin of the rays
+        unit_z = torch.zeros_like(rays_o)
+        unit_z[..., 2] = -1.0  # unit vector in z direction
+        cos_theta = (unit_z * rays_d).sum(-1) / (torch.norm(unit_z, dim=-1) * torch.norm(rays_d, dim=-1))
+        distance = z / (cos_theta + 1e-8)  # distance to the Earf surface
+
+        min_distance = self.offset
+        max_distance = distance
+        z_vals = min_distance * (1. - self.t_vals) + max_distance[:, None] * (self.t_vals)
+
+        # Draw uniform samples from bins along ray
+        if self.perturb:
+            mids = .5 * (z_vals[:, 1:] + z_vals[:, :-1])
+            upper = torch.concat([mids, z_vals[:, -1:]], dim=1)
+            lower = torch.concat([z_vals[:, :1], mids], dim=1)
+            t_rand = torch.rand(z_vals.shape, device=z_vals.device)
+            z_vals = lower + (upper - lower) * t_rand
+
+        pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
+
+        return {'points': pts, 'z_vals': z_vals}
 
 class HierarchicalSampler(torch.nn.Module):
 
