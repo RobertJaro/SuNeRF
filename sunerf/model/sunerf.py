@@ -1,11 +1,7 @@
-import os
-
 import torch
 from pytorch_lightning import LightningModule
 from torch import nn
 from torch.optim.lr_scheduler import ExponentialLR
-
-from sunerf.data.loader.base_loader import BaseDataModule
 
 
 class BaseSuNeRFModule(LightningModule):
@@ -58,19 +54,3 @@ class BaseSuNeRFModule(LightningModule):
         self.validation_outputs = {}  # reset validation outputs
 
 
-def save_state(sunerf: BaseSuNeRFModule, data_module: BaseDataModule, save_path):
-    output_path = '/'.join(save_path.split('/')[0:-1])
-    os.makedirs(output_path, exist_ok=True)
-    state = {
-        # sunerf  rendering module
-        'rendering': sunerf.rendering,
-        # data infor
-        'data_config': data_module.config,
-        # data scaling
-        'Rs_per_ds': data_module.Rs_per_ds,
-        'seconds_per_dt': data_module.seconds_per_dt,
-        'ref_date': data_module.ref_date,
-        'temperature_response_normalization': sunerf.temperature_response_normalization,
-        'log_T_range': sunerf.log_T_range,
-    }
-    torch.save(state, save_path)

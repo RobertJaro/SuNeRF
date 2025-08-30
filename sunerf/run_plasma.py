@@ -8,8 +8,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LambdaCallback
 from pytorch_lightning.loggers import WandbLogger
 
 from sunerf.data.loader.multi_instrument import MultiInstrumentDataModule
-from sunerf.model.plasma import PlasmaSuNeRFModule
-from sunerf.model.sunerf import save_state
+from sunerf.model.plasma import PlasmaSuNeRFModule, save_plasma_sunerf
 from sunerf.train.callback import PlasmaImageCallback, AbsorptionCallback
 from sunerf.train.util import load_yaml_config
 
@@ -80,7 +79,7 @@ if __name__ == '__main__':
                                           save_last=True,
                                           every_n_train_steps=log_every_n_steps)
     save_path = os.path.join(base_path, 'save_state.snf')
-    save_callback = LambdaCallback(on_validation_end=lambda *args: save_state(sunerf, data_module, save_path))
+    save_callback = LambdaCallback(on_validation_end=lambda *args: save_plasma_sunerf(sunerf, data_module, save_path))
 
     callbacks = [checkpoint_callback, save_callback]
     if use_absorption:

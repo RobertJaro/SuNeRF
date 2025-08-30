@@ -1,7 +1,10 @@
+import os
+
 import torch
 from astropy import units as u
 from torch import nn
 
+from sunerf.data.loader.base_loader import BaseDataModule
 from sunerf.model.model import RhoModel
 from sunerf.model.sunerf import BaseSuNeRFModule
 from sunerf.model.util import jacobian
@@ -313,3 +316,19 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                 pass # no change required, no logging
 
         super().on_train_batch_end(*args, **kwargs)
+
+
+def save_thomson_sunerf(sunerf: ThomsonSuNeRFModule, data_module: BaseDataModule, save_path):
+    output_path = '/'.join(save_path.split('/')[0:-1])
+    os.makedirs(output_path, exist_ok=True)
+    state = {
+        # sunerf  rendering module
+        'rendering': sunerf.rendering,
+        # data infor
+        'data_config': data_module.config,
+        # data scaling
+        'Rs_per_ds': data_module.Rs_per_ds,
+        'seconds_per_dt': data_module.seconds_per_dt,
+        'ref_date': data_module.ref_date,
+    }
+    torch.save(state, save_path)

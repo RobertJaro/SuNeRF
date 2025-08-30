@@ -8,7 +8,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LambdaCallback
 from pytorch_lightning.loggers import WandbLogger
 
 from sunerf.data.loader.single_channel import SingleChannelDataModule
-from sunerf.model.sunerf import save_state
+from sunerf.model.plasma import save_plasma_sunerf
 from sunerf.model.emission import EmissionSuNeRFModule
 from sunerf.train.callback import TestImageCallback
 
@@ -55,7 +55,7 @@ if __name__ == '__main__':
                                           save_last=True,
                                           every_n_train_steps=log_every_n_steps)
     save_path = os.path.join(path_to_save, 'save_state.snf')
-    save_callback = LambdaCallback(on_validation_end=lambda *args: save_state(sunerf, data_module, save_path))
+    save_callback = LambdaCallback(on_validation_end=lambda *args: save_plasma_sunerf(sunerf, data_module, save_path))
 
     for k, v in data_module.validation_dataset_mapping.items():
         test_image_callback = TestImageCallback(v, data_module.config[k]['resolution'],

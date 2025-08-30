@@ -2,8 +2,6 @@ import glob
 import multiprocessing
 import os
 import uuid
-import warnings
-from itertools import repeat
 
 import numpy as np
 from astropy import units as u
@@ -74,8 +72,9 @@ def get_data(data_path, Rs_per_ds, debug=False):
         files = files[::10]
 
     with multiprocessing.Pool(os.cpu_count()) as p:
+        loader = MapDataLoader(Rs_per_ds=Rs_per_ds)
         data = [v for v in
-                tqdm(p.imap(_load_map_data, zip(files, repeat(Rs_per_ds))), total=len(files), desc='Loading data')]
+                tqdm(p.imap(loader.load, files), total=len(files), desc='Loading data')]
     data_dict = {}
     for k in data[0].keys():
         data_dict[k] = np.stack([d[k] for d in data], axis=0)
@@ -88,50 +87,58 @@ def get_data(data_path, Rs_per_ds, debug=False):
     return data_dict
 
 
-def _load_map_data(data):
-    map_path, Rs_per_ds, reference_frame, max_radius = data
+class MapDataLoader:
 
-    s_map = Map(map_path)
-    time = s_map.date.datetime
+    def __init__(self, Rs_per_ds, reference_frame='carrington', max_radius=None, azimuthal_equidistant=False):
+        self.Rs_per_ds = Rs_per_ds
+        self.reference_frame = reference_frame
+        self.max_radius = max_radius
+        self.azimuthal_equidistant = azimuthal_equidistant
 
-    if reference_frame == 'carrington':
-        pose = pose_spherical(s_map.carrington_longitude.to(u.rad).value,
-                              s_map.carrington_latitude.to(u.rad).value,
-                              s_map.dsun.to_value(u.solRad) / Rs_per_ds).float().numpy()
-        observer = {'radius': s_map.dsun.to(u.solRad),
-                    'latitude': s_map.carrington_latitude.to(u.deg),
-                    'longitude': s_map.carrington_longitude.to(u.deg),
-                    'time': time}
-    elif reference_frame == 'heliographic':
-        pose = pose_spherical(s_map.heliographic_longitude.to(u.rad).value,
-                              s_map.heliographic_latitude.to(u.rad).value,
-                              s_map.dsun.to_value(u.solRad) / Rs_per_ds).float().numpy()
-        observer = {'radius': s_map.dsun.to(u.solRad),
-                    'latitude': s_map.heliographic_latitude.to(u.deg),
-                    'longitude': s_map.heliographic_longitude.to(u.deg),
-                    'time': time}
-    else:
-        raise ValueError('reference_frame must be "heliographic" or "carrington"')
+    def load(self, map_path):
+        s_map = Map(map_path)
+        time = s_map.date.datetime
 
-    image = s_map.data.astype(np.float32)
+        if self.reference_frame == 'carrington':
+            pose = pose_spherical(s_map.carrington_longitude.to(u.rad).value,
+                                  s_map.carrington_latitude.to(u.rad).value,
+                                  s_map.dsun.to_value(u.solRad) / self.Rs_per_ds).float().numpy()
+            observer = {'radius': s_map.dsun.to(u.solRad),
+                        'latitude': s_map.carrington_latitude.to(u.deg),
+                        'longitude': s_map.carrington_longitude.to(u.deg),
+                        'time': time}
+        elif self.reference_frame == 'heliographic':
+            pose = pose_spherical(s_map.heliographic_longitude.to(u.rad).value,
+                                  s_map.heliographic_latitude.to(u.rad).value,
+                                  s_map.dsun.to_value(u.solRad) / self.Rs_per_ds).float().numpy()
+            observer = {'radius': s_map.dsun.to(u.solRad),
+                        'latitude': s_map.heliographic_latitude.to(u.deg),
+                        'longitude': s_map.heliographic_longitude.to(u.deg),
+                        'time': time}
+        else:
+            raise ValueError('reference_frame must be "heliographic" or "carrington"')
 
-    # img_coords = get_azimuthal_equidistant_coordinates(s_map)
-    # x = img_coords[..., 0]
-    # y = img_coords[..., 1]
-    coords = all_coordinates_from_map(s_map).transform_to(frames.Helioprojective)
-    x = coords.Tx
-    y = coords.Ty
+        image = s_map.data.astype(np.float32)
 
-    all_rays = np.stack(get_rays(x, y, pose), -2)
+        if self.azimuthal_equidistant:
+            img_coords = get_azimuthal_equidistant_coordinates(s_map)
+            x = img_coords[..., 0]
+            y = img_coords[..., 1]
+        else:
+            coords = all_coordinates_from_map(s_map).transform_to(frames.Helioprojective)
+            x = coords.Tx
+            y = coords.Ty
 
-    if max_radius is not None:
-        radius = np.sqrt(x ** 2 + y ** 2) / s_map.rsun_obs.to(u.arcsec) * u.Rsun
-        mask = radius > (max_radius * u.Rsun)
-        # apply mask
-        all_rays[mask] = np.nan
-        image[mask] = np.nan
+        all_rays = np.stack(get_rays(x, y, pose), -2)
 
-    return {'image': image, 'pose': pose, 'rays': all_rays, 'time': time, 'observer': observer}
+        if self.max_radius is not None:
+            radius = np.sqrt(x ** 2 + y ** 2) / s_map.rsun_obs.to(u.arcsec) * u.Rsun
+            mask = radius > (self.max_radius * u.Rsun)
+            # apply mask
+            all_rays[mask] = np.nan
+            image[mask] = np.nan
+
+        return {'image': image, 'pose': pose, 'rays': all_rays, 'time': time, 'observer': observer}
 
 
 class BatchesDataset(Dataset):

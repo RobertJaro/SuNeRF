@@ -16,7 +16,7 @@ from sunpy.visualization.colormaps import cm
 from tqdm import tqdm
 
 from sunerf.data.date_util import normalize_datetime
-from sunerf.data.loader.base_loader import BaseDataModule, TensorsDataset, _load_map_data
+from sunerf.data.loader.base_loader import BaseDataModule, TensorsDataset, MapDataLoader
 from sunerf.data.loader.volume_sampling import RandomSphericalCoordinateDataset
 from sunerf.train.callback import log_overview
 from sunerf.train.coordinate_transformation import spherical_to_cartesian
@@ -130,9 +130,9 @@ class GenericThomsonDataset(TensorsDataset):
         # load rays
         data_dict = {}
         with multiprocessing.Pool(os.cpu_count()) as p:
+            loader = MapDataLoader(Rs_per_ds, 'heliographic', azimuthal_equidistant=True)
             data = [v for v in
-                    tqdm(p.imap(_load_map_data, zip(tB_files, repeat(Rs_per_ds), repeat('heliographic'))), total=len(tB_files),
-                         desc=f'Loading tB + rays')]
+                    tqdm(p.imap(loader.load, tB_files), total=len(tB_files), desc=f'Loading tB + rays')]
         observers = [d.pop('observer') for d in data]
         for k in data[0].keys():
             data_dict[k] = np.stack([d[k] for d in data], axis=0)

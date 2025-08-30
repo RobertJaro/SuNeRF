@@ -16,7 +16,7 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from sunerf.data.date_util import normalize_datetime
-from sunerf.data.loader.base_loader import BaseDataModule, TensorsDataset, _load_map_data
+from sunerf.data.loader.base_loader import BaseDataModule, TensorsDataset, MapDataLoader
 from sunerf.data.loader.volume_sampling import RandomSphericalCoordinateDataset
 from sunerf.train.callback import log_overview
 
@@ -147,9 +147,9 @@ class GenericEUVDataset(TensorsDataset):
         data_dict = {}
         with multiprocessing.Pool(os.cpu_count()) as p:
             f = file_dict[wavelengths[0]]
+            loader = MapDataLoader(Rs_per_ds=Rs_per_ds, max_radius=max_radius, reference_frame='carrington')
             data = [v for v in
-                    tqdm(p.imap(_load_map_data, zip(f, repeat(Rs_per_ds), repeat('carrington'), repeat(max_radius))), total=len(f),
-                         desc=f'Loading {wavelengths[0]} + rays')]
+                    tqdm(p.imap(loader.load, f), total=len(f), desc=f'Loading {wavelengths[0]} + rays')]
         for k in data[0].keys():
             data_dict[k] = np.stack([d[k] for d in data], axis=0)
 
