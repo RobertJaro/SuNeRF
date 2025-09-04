@@ -6,14 +6,14 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from sunpy.map import Map
 
-# out_path = '/glade/work/rjarolim/data/sunerf/2012_01_prep/imgs_AIA'
-# files = sorted(glob.glob('/glade/work/rjarolim/data/sunerf/2012_01_prep/aia/*.fits'))
+out_path = '/glade/work/rjarolim/data/sunerf/2023_04/prep/imgs_aia_fd'
+files = sorted(glob.glob('/glade/work/rjarolim/data/sunerf/2023_04/prep/aia_fd/*.fits'))
 
 # out_path = '/glade/work/rjarolim/data/sunerf/2012_01_prep/imgs_EUVI_A'
 # files = sorted(glob.glob('/glade/work/rjarolim/data/sunerf/2012_01_prep/euvi/*A.fts'))
 
-out_path = '/glade/work/rjarolim/data/sunerf/2012_01_prep/imgs_EUVI_B'
-files = sorted(glob.glob('/glade/work/rjarolim/data/sunerf/2012_01_prep/euvi/*B.fts'))
+# out_path = '/glade/work/rjarolim/data/sunerf/2012_01_prep/imgs_EUVI_B'
+# files = sorted(glob.glob('/glade/work/rjarolim/data/sunerf/2012_01_prep/euvi/*B.fts'))
 
 os.makedirs(out_path, exist_ok=True)
 

@@ -29,11 +29,11 @@ os.makedirs(args.video_path, exist_ok=True)
 loader = SuNeRFLoader(args.chk_path)
 
 # Define ranges
-center_lon = 170 #loader.ref_map().carrington_longitude.to_value(u.deg)
-target_lon = 170 #loader.ref_map().carrington_longitude.to_value(u.deg)
+center_lon = 132 #loader.ref_map().carrington_longitude.to_value(u.deg)
+target_lon = 132 #loader.ref_map().carrington_longitude.to_value(u.deg)
 ref_time = loader.ref_date
 
-latitude_range = np.arange(-90, 90.5, 0.5) * u.deg
+latitude_range = np.arange(-60, 60.5, 0.5) * u.deg
 longitude_range = np.arange(center_lon - 60, center_lon + 60.5, 0.5) * u.deg
 # longitude_range = np.linspace(0, 360, 361) * u.deg
 radius = np.linspace(1, 1.4, 100) * u.solRad
@@ -48,7 +48,7 @@ log_T = loader.log_T_range
 mean_log_T = out['mean_log_T']
 
 # Load observer image
-img_out = loader.load_observer_image(lat=0 * u.deg, lon=center_lon * u.deg, time=ref_time, instrument_key='AIA',
+img_out = loader.load_observer_image(lat=0 * u.deg, lon=center_lon * u.deg, time=ref_time, instrument_key='AIA_FD',
                                      resolution=(256, 256) * u.pix)
 total_ne = out['total_ne'][..., 0, 0]
 

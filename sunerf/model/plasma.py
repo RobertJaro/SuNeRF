@@ -18,7 +18,7 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
                  lambda_config=None, sampling_config=None, hierarchical_sampling_config=None, absorption_config=None,
                  model_config=None, shuffle_config=None, **kwargs):
         # Temperature range
-        log_T_range = np.arange(4, 8.001, 0.01).astype(np.float32)
+        log_T_range = np.arange(4, 8.001, 0.1).astype(np.float32)
         self.log_T_range = log_T_range
 
         # absorption model
@@ -202,7 +202,8 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
                     'distance': model_out[ds_key]['distance']}
 
     def validation_epoch_end(self, *args, **kwargs):
-        scaling = {k: float(m.instrument_scaling.detach().cpu().numpy())
+        # TODO
+        scaling = {k: float(m.instrument_scaling.detach().cpu().numpy().mean())
                    for k, m in self.rendering.rendering_modules.items()}
         self.log(f'instrument_scaling', scaling)
         super().validation_epoch_end(*args, **kwargs)

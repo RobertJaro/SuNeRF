@@ -39,7 +39,7 @@ class TimeShuffler(nn.Module):
 
 
 class NormalTimeShuffler(nn.Module):
-    def __init__(self, start=1, end=1e-2, iterations=1e5, instruments=None):
+    def __init__(self, start=50, end=1e-2, iterations=1e5, instruments=None):
         super().__init__()
         self.end = end
         self.scaling = nn.Parameter(torch.tensor(start, dtype=torch.float32), requires_grad=False)
@@ -64,7 +64,7 @@ class NormalTimeShuffler(nn.Module):
         else:
             new_gamma = torch.zeros_like(self.scaling)
             self.scaling.copy_(new_gamma)
-        wandb.log({'time_random': self.scaling.detach().cpu().numpy()})
+        wandb.log({'time_random': self.scaling.detach().cpu().numpy()}, commit=False)
 
 
 def load_yaml_config(yaml_config_file, overwrite_args=None):

@@ -29,12 +29,17 @@ class PlasmaRadiativeTransfer(nn.Module):
 
         log_response = nn.Parameter(torch.tensor(log_response.T, dtype=torch.float32), requires_grad=False)
 
-        instrument_scaling = nn.Parameter(torch.tensor(temperature_response_config['scaling'], dtype=torch.float32),
-                                          requires_grad=temperature_response_config['learnable'])
+        learnable = temperature_response_config.get('learnable', False)
+        scaling = temperature_response_config.get('scaling', 0.0)
+        calibration = temperature_response_config.get('calibration', False)
+        if calibration:
+            instrument_scaling = torch.ones(len(channels), dtype=torch.float32) * scaling
+        else:
+            instrument_scaling = torch.tensor([scaling], dtype=torch.float32)
 
         self.log_T = torch.from_numpy(log_T).float()
         self.temperature_response = log_response
-        self.instrument_scaling = instrument_scaling
+        self.instrument_scaling = nn.Parameter(instrument_scaling.reshape(1, 1, 1, instrument_scaling.shape[-1]), requires_grad=learnable)
         self.absorption_model = absorption_model
         self.normalization = normalization
 
@@ -86,7 +91,7 @@ class PlasmaRadiativeTransfer(nn.Module):
 
         # transmission per sampled point [n_rays, n_samples]
         absorption = torch.exp(-alpha * dists)
-        # [1, .9, 1, 0, 0, 1] --> less dense objects transmit light (1); dense objects absorbe light (0)
+        # [1, .9, 1, 0, 0, 1] --> less dense objects transmit light (1); dense objects absorb light (0)
 
         # compute total absorption for each light ray (intensity)
         # how much light is transmitted from each sampled point

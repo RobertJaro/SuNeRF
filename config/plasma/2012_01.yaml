@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf/2012_01_v01"
-work_directory: "/glade/derecho/scratch/rjarolim/sunerf/2012_01_v01"
+base_path: "/glade/work/rjarolim/sunerf/2012_01_v07"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/2012_01_v07"
 
 instruments:
   - type: 'plasma'
@@ -8,7 +8,7 @@ instruments:
     temperature_response:
       file: '/glade/work/rjarolim/sunerf/response_v02/aia_response_functions.npz'
       scaling: 0.0
-      learnable: True
+      learnable: False
       normalization: 1.0e-21
       channels: ['A94', 'A131', 'A171', 'A193', 'A211', 'A335']
   - type: 'plasma'
@@ -17,7 +17,8 @@ instruments:
     temperature_response:
       file: '/glade/work/rjarolim/sunerf/response_v02/stereo_ahead_response.npz'
       scaling: 0.0
-      learnable: False
+      learnable: True
+      calibration: True
       normalization: 1.0e+6
       channels: ['171', '195', '284']
   - type: 'plasma'
@@ -26,9 +27,12 @@ instruments:
     temperature_response:
       file: '/glade/work/rjarolim/sunerf/response_v02/stereo_behind_response.npz'
       scaling: 0.0
-      learnable: False
+      learnable: True
+      calibration: True
       normalization: 1.0e+6
       channels: ['171', '195', '284']
+
+
 data:
   train_datasets:
     - type: 'AIA'
@@ -63,7 +67,7 @@ data:
       data_path: '/glade/work/rjarolim/data/sunerf/2012_01_prep/euvi/*B.fts'
       wavelengths: [171, 195, 284]
   debug: False
-  batch_size: 4096
+  batch_size: 2048
   num_workers: 16
 
 logging:
@@ -77,12 +81,13 @@ sampling:
 
 shuffle:
   type: "normal_time"
-  iterations: 1.0e+5
+  iterations: 4.0e+5
+  start: 50
 
-training:
-  log_every_n_steps: 10000
+#training:
+#  log_every_n_steps: 10000
 
 lambda:
   image: 1.0
-  regularization: 1.0e-3
+  regularization: 1.0e-1
   absorption: 0.0

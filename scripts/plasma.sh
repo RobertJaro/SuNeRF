@@ -30,12 +30,12 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 #python -m sunerf.data.euv.prep_euvi --data_path "/glade/work/rjarolim/data/sunerf/2010_06/euvi_prep/*.fts" --out_path "/glade/work/rjarolim/data/sunerf/2010_06_prep/euvi" --resolution 512
 
 
-python -m sunerf.run_plasma --config "config/plasma/2012_01.yaml"
+#python -m sunerf.run_plasma --config "config/plasma/2012_01.yaml"
 #python -m sunerf.run_plasma --config "config/plasma/aia_2012_08.yaml"
 #python -m sunerf.run_plasma --config "config/plasma/all_2012_08.yaml"
 #python -m sunerf.run_plasma --config "config/plasma/304_2012_08.yaml"
 #python -m sunerf.run_plasma --config "config/plasma/all_2012_08_v02.yaml"
-#python -m sunerf.run_plasma --config "config/plasma/combined_2023_04.yaml"
+python -m sunerf.run_plasma --config "config/plasma/combined_2023_04.yaml"
 #python -m sunerf.run_plasma --config "config/plasma/aia_euvi_2010_06.yaml"
 #python -m sunerf.run_plasma --config "config/plasma/euvi_2010_06.yaml"
 
@@ -49,5 +49,8 @@ python -m sunerf.run_plasma --config "config/plasma/2012_01.yaml"
 #python -m  sunerf.evaluation.video_observer --chk_path "/glade/work/rjarolim/sunerf/all_2012_08_v01/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/all_2012_08_v01/evaluation/video_observer"
 #python -m  sunerf.evaluation.slices --chk_path "/glade/work/rjarolim/sunerf/all_2012_08_v08/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/all_2012_08_v08/evaluation/slices"
 #python -m  sunerf.evaluation.load_cube --chk_path "/glade/work/rjarolim/sunerf/aia_v01/save_state.snf" --out_path "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_3D_cube/sunerf_cube.npz"
-#python -m  sunerf.evaluation.video_poles --chk_path "/glade/work/rjarolim/sunerf/2012_01_v01/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2012_01_v01/evaluation/video_poles"
+#python -m  sunerf.evaluation.video_poles --chk_path "/glade/work/rjarolim/sunerf/2012_01_v05/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2012_01_v05/evaluation/video_poles"
+
+#python -m  sunerf.evaluation.slices --chk_path "/glade/work/rjarolim/sunerf/2023_04_combined_v10/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2023_04_combined_v10/evaluation/slices"
+
 

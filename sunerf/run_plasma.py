@@ -30,7 +30,7 @@ if __name__ == '__main__':
     # setup default configs
     instruments_config = config['instruments']
     data_config = config['data']
-    model_config = config['model'] if 'model' in config else {'encoding': 'gaussian'}
+    model_config = config['model'] if 'model' in config else {}
     sampling_config = config['sampling'] if 'sampling' in config else {}
     training_config = config['training'] if 'training' in config else {}
     logging_config = config['logging'] if 'logging' in config else {'project': 'sunerf'}
@@ -57,10 +57,12 @@ if __name__ == '__main__':
         print('Loaded data module from file. If you want to reload the data, use --reload')
         data_module = torch.load(data_module_save_path)
         # update batch size
-        default_batch_size = data_config['batch_size']
+        default_batch_size = data_config.pop('batch_size', None)
         train_ds_config = data_config['train_datasets']
         ds_batch_size = {config['key']: config.get('batch_size', default_batch_size) for config in train_ds_config}
         for ds_key, ds in data_module.training_datasets.items():
+           if ds_batch_size[ds_key] is None:
+                continue # keep original batch size
            ds.batch_size = ds_batch_size[ds_key]
     else:
         warnings.filterwarnings("ignore")  # ignore warnings from sunpy

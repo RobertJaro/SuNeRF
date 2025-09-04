@@ -94,11 +94,13 @@ class EmissionModel(GenericModel):
         alpha = nn.functional.relu(out[..., self.n_channels:])
         return {'emission': emission, 'alpha': alpha}
 
-class PlasmaModel(GenericModel):
+class PlasmaModel(SirenNet):
 
-    def __init__(self, log_T, decay_distance=1.3, **kwargs):
+    def __init__(self, log_T, decay_distance=1.0, **kwargs):
         super().__init__(in_dim=4, out_dim=3, **kwargs)
         self.log_T = nn.Parameter(torch.tensor(log_T, dtype=torch.float32), requires_grad=False)
+        dlogT = (log_T[1] - log_T[0])
+        self.dlogT = nn.Parameter(torch.tensor(dlogT, dtype=torch.float32), requires_grad=False)
         self.decay_distance = decay_distance
 
         self.T_range = nn.Parameter(torch.tensor([3.8, 8.0], dtype=torch.float32), requires_grad=False)
@@ -114,7 +116,7 @@ class PlasmaModel(GenericModel):
         # TODO: should we use fixed temperature range? filaments can be very cold 5e3 - 10e3 K?
         # maybe allow for very dense plasma in the cold temperature regime?
         center_log_T = torch.sigmoid(center_log_T) * (self.T_range[1] - self.T_range[0]) + self.T_range[0]
-        sigma = torch.sigmoid(sigma) + 1e-2
+        sigma = torch.sigmoid(sigma) + self.dlogT
 
         # scale density with radius ** -2
         scaling = scaling - 2 * torch.log10(radius)
