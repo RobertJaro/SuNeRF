@@ -4,7 +4,7 @@ work_directory: '/glade/derecho/scratch/rjarolim/nearthfs/version01'
 instruments:
   - type: 'default'
     key: 'QVAPOR'
-    scaling: {type: 'log', vmin: 4, vmax: 4.3} #{ type: 'linear', vmin: 1.0e+5, vmax: 6.0e+4,  }
+    scaling: {type: 'log', vmin: 0.62, vmax: 0.68} #{ type: 'linear', vmin: 1.0e+5, vmax: 6.0e+4,  }
 
 data:
   train_datasets:
@@ -40,4 +40,4 @@ logging:
   name: "Version 01 QVAPOR"
 
 training:
-  check_val_every_n_epoch: 10
+  check_val_every_n_epoch: 20

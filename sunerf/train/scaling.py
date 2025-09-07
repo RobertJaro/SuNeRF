@@ -10,7 +10,7 @@ class ImageLogScaling(nn.Module):
         self.vmax = nn.Parameter(torch.tensor(vmax, dtype=torch.float32), requires_grad=False)
 
     def forward(self, image):
-        image = (torch.log(image) - self.vmin) / (self.vmax - self.vmin)
+        image = (torch.log10(image) - self.vmin) / (self.vmax - self.vmin)
         return image
 
 

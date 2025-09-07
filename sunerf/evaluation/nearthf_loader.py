@@ -95,7 +95,7 @@ if __name__ == '__main__':
     loader = NEarthFLoader('/glade/work/rjarolim/nearthfs/qvapor/save_state.nef')
 
     time = datetime(2025, 1, 1)
-    z = 20e3 * u.m
+    z = 15e3 * u.m
     obs_angle = 45 * u.deg
     resolution = 1024
     x_buffer = z / np.cos(obs_angle.to_value(u.rad) / 2)

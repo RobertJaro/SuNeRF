@@ -104,7 +104,7 @@ class StratifiedSampler(torch.nn.Module):
 
 class FlatEarthSampler(torch.nn.Module):
 
-    def __init__(self, n_samples=64, offset=0.5, perturb=False):
+    def __init__(self, n_samples=256, offset=0.0, perturb=True):
         super().__init__()
         self.perturb = perturb
 

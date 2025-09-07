@@ -37,7 +37,7 @@ if __name__ == '__main__':
     logging_config = config['logging'] if 'logging' in config else {'project': 'sunerf'}
 
     # setup training config
-    epochs = training_config['epochs'] if 'epochs' in training_config else 1000
+    epochs = training_config['epochs'] if 'epochs' in training_config else int(1e4)
     log_every_n_steps = training_config['log_every_n_steps'] if 'log_every_n_steps' in training_config else None
     check_val_every_n_epoch = training_config[
         'check_val_every_n_epoch'] if 'check_val_every_n_epoch' in training_config else 1
@@ -97,6 +97,7 @@ if __name__ == '__main__':
                       num_sanity_val_steps=-1,  # validate all points to check the first image
                       val_check_interval=log_every_n_steps,
                       check_val_every_n_epoch=check_val_every_n_epoch,
+                      reload_dataloaders_every_n_epochs=check_val_every_n_epoch,
                       gradient_clip_val=0.5,
                       callbacks=callbacks)
 

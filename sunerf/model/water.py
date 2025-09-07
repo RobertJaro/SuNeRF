@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 from torch import nn
 
@@ -39,7 +38,7 @@ class NEarthFModule(BaseSuNeRFModule):
                 raise ValueError(f"Unknown scaling type: {scaling_type}")
 
         model_config = {} if model_config is None else model_config
-        model = WaterVaporModel(**model_config)
+        model = WaterVaporModel()
         rendering = BasicRenderingModule(model=model,
                                          rendering_modules=rendering_modules,
                                          sampling_config={'type': 'flat_earth'})
@@ -53,7 +52,6 @@ class NEarthFModule(BaseSuNeRFModule):
         self.scaling_modules = nn.ModuleDict(scaling_modules)
         self.mse_loss = nn.MSELoss()
 
-
     def training_step(self, batch, batch_nb):
         dataset_batch = {k: v for k, v in batch.items() if k != 'random'}
         rendering_out = self.rendering(dataset_batch)
@@ -63,7 +61,7 @@ class NEarthFModule(BaseSuNeRFModule):
         query_points = rendering_out['query_points'].reshape(-1, 4)  # flatten query points for jacobian computation
         query_points = query_points[:4096]
         query_points.require_grad = True  # enable gradient computation for query points
-        out  = self.rendering.model(query_points)
+        out = self.rendering.model(query_points)
         rho = 10 ** out['log10_rho']
         jac_matrix = jacobian(rho, query_points)
         dRho_dz = jac_matrix[..., 2:3]  # assuming z is the third dimension
@@ -98,7 +96,6 @@ class NEarthFModule(BaseSuNeRFModule):
 
         log_values = {'image': image_loss, 'psnr': psnr, 'gradient': gradient_loss}
 
-
         assert torch.isnan(loss).sum() == 0, 'Invalid loss detected: loss'
         # log results to WANDB
         self.log("loss", loss)
@@ -131,15 +128,16 @@ class NEarthFModule(BaseSuNeRFModule):
         else:
             query_points = batch['query_points']
             model_out = self.model(query_points)
-            return {'model_log10_rho': model_out['log10_rho'], 'true_log10_rho': batch['true_log10_rho'], 'query_points': query_points}
+            return {'model_log10_rho': model_out['log10_rho'], 'true_log10_rho': batch['true_log10_rho'],
+                    'query_points': query_points}
 
 
 class WaterVaporModel(SirenNet):
 
     def __init__(self):
-        super().__init__(4, 1, dim=256, w0_initial=30)
+        super().__init__(4, 1, dim=128, w0_initial=30)
 
     def forward(self, coords):
         x = super().forward(coords)
-        x = torch.sigmoid(x) * 4.7 - 2 # scale density to 10 ** -2 to 10 ** 3
+        x = torch.sigmoid(x) * (2.68 + 1.71) - 1.71  # scale density
         return {'log10_rho': x}

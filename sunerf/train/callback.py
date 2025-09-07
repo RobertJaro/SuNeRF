@@ -381,7 +381,7 @@ class WaterImageCallback(BaseCallback):
 
         norm = Normalize()
 
-        fig, axs = plt.subplots(1, 2, figsize=(7, 9))
+        fig, axs = plt.subplots(1, 3, figsize=(7, 9))
 
         ax = axs[0]
         im = ax.imshow(target_image, cmap='cividis', norm=norm, origin='lower')
@@ -396,6 +396,13 @@ class WaterImageCallback(BaseCallback):
         cax = divider.append_axes("right", size="5%", pad=0.05)
         plt.colorbar(im, cax=cax)
         ax.set_title(f'Prediction')
+
+        ax = axs[2]
+        im = ax.imshow(np.abs(target_image - model_image), cmap='Reds', norm=norm, origin='lower')
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+        ax.set_title(f'Absolute Error')
 
         [ax.set_xticks([]) for ax in axs.flatten()]
         [ax.set_yticks([]) for ax in axs.flatten()]
@@ -439,7 +446,9 @@ class WaterSliceCallback(BaseCallback):
 
         norm = LogNorm()
 
-        fig, axs = plt.subplots(2, 1, figsize=(7, 9))
+        fig, axs = plt.subplots(3, 1, figsize=(5, 5))
+
+        # print(f'MIN: {np.nanmin(true_log_rho)}, MAX: {np.nanmax(true_log_rho)}')
 
         ax = axs[0]
         im = ax.imshow((10 ** true_log_rho).T[0], cmap='jet', norm=norm, aspect='auto', origin='lower')
@@ -455,11 +464,49 @@ class WaterSliceCallback(BaseCallback):
         plt.colorbar(im, cax=cax)
         ax.set_title(f'Prediction')
 
+        ax = axs[2]
+        im = ax.imshow(np.abs((10 ** model_log_rho - 10 ** true_log_rho)).T[0], cmap='Reds', norm=norm, aspect='auto', origin='lower')
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+        ax.set_title(f'Absolute Error')
+
         [ax.set_xticks([]) for ax in axs.flatten()]
         [ax.set_yticks([]) for ax in axs.flatten()]
 
         fig.tight_layout()
         wandb.log({f'slice.{self.ds_key}': fig})
+        plt.close('all')
+
+        sum_true_rho = np.nansum(10 ** true_log_rho, 1)
+        sum_model_rho = np.nansum(10 ** model_log_rho, 1)
+        norm = LogNorm()
+
+        fig, axs = plt.subplots(1, 3, figsize=(7, 5))
+
+        ax = axs[0]
+        im = ax.imshow(sum_true_rho.T, cmap='jet', norm=norm, aspect='auto', origin='lower')
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+        ax.set_title(f'Target Column Density')
+
+        ax = axs[1]
+        im = ax.imshow(sum_model_rho.T, cmap='jet', norm=norm, aspect='auto', origin='lower')
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+        ax.set_title(f'Prediction Column Density')
+
+        ax = axs[2]
+        im = ax.imshow(np.abs(sum_model_rho - sum_true_rho).T, cmap='Reds', norm=norm, aspect='auto', origin='lower')
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+        ax.set_title(f'Absolute Error Column Density')
+
+        fig.tight_layout()
+        wandb.log({f'column_density.{self.ds_key}': fig})
         plt.close('all')
 
         val_loss = np.nanmean((model_log_rho - true_log_rho) ** 2)

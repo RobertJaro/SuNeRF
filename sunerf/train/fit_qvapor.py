@@ -214,7 +214,7 @@ if __name__ == '__main__':
             rays_d = np.stack([np.sin(angles), np.zeros_like(angles), -np.cos(angles)], axis=-1)  # (128, 3)
             rays_d = rays_d / np.linalg.norm(rays_d, axis=-1, keepdims=True)  # normalize directions
 
-            z_obs = 20e3 * u.m
+            z_obs = 15e3 * u.m
             x_buffer = z_obs / np.cos(obs_angle.to_value(u.rad) / 2)
             x_obs = np.linspace(x_buffer, 73785.75 * u.m - x_buffer, 256)
             images = []

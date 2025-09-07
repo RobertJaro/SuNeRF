@@ -45,6 +45,7 @@ class BaseDataModule(LightningDataModule):
         print('reloading training datasets')
 
         datasets = self.training_datasets
+        [ds.shuffle() for ds in datasets.values() if isinstance(ds, BatchesDataset)]
         # data loader with iterations based on the largest dataset
         ref_idx = np.argmax([len(ds) for ds in datasets.values()])
         ref_dataset_name, ref_dataset = list(datasets.items())[ref_idx]
@@ -159,6 +160,13 @@ class BatchesDataset(Dataset):
 
     def clear(self):
         [os.remove(f) for f in self.batches_file_paths.values()]
+
+    def shuffle(self):
+        data = np.load(list(self.batches_file_paths.values())[0], mmap_mode='r')
+        r = np.random.permutation(data.shape[0])
+        for k, bf in self.batches_file_paths.items():
+            data = np.load(bf, mmap_mode='r')
+            np.save(bf, data[r])
 
 
 class TensorsDataset(BatchesDataset):

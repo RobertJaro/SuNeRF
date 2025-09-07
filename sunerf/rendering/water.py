@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from torch import nn
 
@@ -28,9 +29,9 @@ class WaterRadiativeTransfer(nn.Module):
         dists = dists[:, :, None]
 
         rho = 10 ** log10_rho
-        intensity = (rho.pow(2) * dists)
+        intensity = (rho.pow(1/4) * dists)
 
-        alpha = rho * 1e-2
+        alpha = rho * 0
         absorption = torch.exp(-alpha * dists)
         integrated_absorption = cumprod_exclusive(absorption + 1e-10, dim=1)
 
@@ -38,7 +39,7 @@ class WaterRadiativeTransfer(nn.Module):
         integrated_intensity = emerging_intensity.sum(1)
 
         # set the weigths to the intensity contributions (sample primary contributing regions)
-        weights = rho[..., 0]
+        weights = torch.ones_like(rho[..., 0]) #rho[..., 0]
         weights = weights / (weights.sum(1, keepdim=True) + 1e-10)
 
         # visualization outputs
