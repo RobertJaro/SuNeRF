@@ -61,8 +61,8 @@ ne_norm = LogNorm(vmin=1)
 absorption_norm = LogNorm()#LogNorm(vmin=1, vmax=100)
 
 # cmaps = [cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia304]
-# cmaps = [cm.sdoaia94, cm.sdoaia131, cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia304, cm.sdoaia335]
-cmaps = [cm.sdoaia94, cm.sdoaia131, cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia335]
+cmaps = [cm.sdoaia94, cm.sdoaia131, cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia304, cm.sdoaia335]
+# cmaps = [cm.sdoaia94, cm.sdoaia131, cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia335]
 img_norms = [ImageNormalize(stretch=AsinhStretch(0.001)) for _ in cmaps]
 
 for i, (lat, lon, time, d) in tqdm(list(enumerate(points)), total=len(points)):

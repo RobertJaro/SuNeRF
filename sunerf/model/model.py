@@ -94,13 +94,11 @@ class EmissionModel(GenericModel):
         alpha = nn.functional.relu(out[..., self.n_channels:])
         return {'emission': emission, 'alpha': alpha}
 
-class PlasmaModel(SirenNet):
+class PlasmaModel(GenericModel):
 
-    def __init__(self, log_T, decay_distance=1.0, **kwargs):
-        super().__init__(in_dim=4, out_dim=3, **kwargs)
+    def __init__(self, log_T, decay_distance=2.0, encoding='positional', **kwargs):
+        super().__init__(in_dim=4, out_dim=3, encoding=encoding, **kwargs)
         self.log_T = nn.Parameter(torch.tensor(log_T, dtype=torch.float32), requires_grad=False)
-        dlogT = (log_T[1] - log_T[0])
-        self.dlogT = nn.Parameter(torch.tensor(dlogT, dtype=torch.float32), requires_grad=False)
         self.decay_distance = decay_distance
 
         self.T_range = nn.Parameter(torch.tensor([3.8, 8.0], dtype=torch.float32), requires_grad=False)
@@ -116,7 +114,7 @@ class PlasmaModel(SirenNet):
         # TODO: should we use fixed temperature range? filaments can be very cold 5e3 - 10e3 K?
         # maybe allow for very dense plasma in the cold temperature regime?
         center_log_T = torch.sigmoid(center_log_T) * (self.T_range[1] - self.T_range[0]) + self.T_range[0]
-        sigma = torch.sigmoid(sigma) + self.dlogT
+        sigma = torch.sigmoid(sigma) + 0.025
 
         # scale density with radius ** -2
         scaling = scaling - 2 * torch.log10(radius)
@@ -276,18 +274,16 @@ class Sine(nn.Module):
 
 class PositionalEncoding(nn.Module):
 
-    def __init__(self, in_features, num_freqs=10, max_freq=9):
+    def __init__(self, in_features, num_freqs=10, max_freq=10):
         super().__init__()
-        frequencies = 2 ** torch.linspace(-max_freq, max_freq, num_freqs)
+        frequencies = 2 ** torch.linspace(-1, max_freq - 2, num_freqs)
         self.frequencies = nn.Parameter(frequencies, requires_grad=False)
         self.d_output = in_features * (1 + num_freqs * 2)
 
     def forward(self, x):
         encoded = torch.einsum('...i,j->...ij', x, self.frequencies)
-        encoded = torch.cat([
-            torch.einsum('...j,j->...j', torch.sin(encoded), self.frequencies.pow(-1)).reshape(*x.shape[:-1], -1),
-            torch.einsum('...j,j->...j', torch.cos(encoded), self.frequencies.pow(-1)).reshape(*x.shape[:-1], -1),
-            x], -1)
+        encoded = encoded.reshape(*x.shape[:-1], -1)
+        encoded = torch.cat([torch.sin(encoded), torch.cos(encoded), x], -1)
         return encoded
 
 

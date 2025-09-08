@@ -16,7 +16,7 @@ class ImageLogScaling(nn.Module):
 
 class ImageAsinhScaling(nn.Module):
 
-    def __init__(self, vmax=1, a=0.001):
+    def __init__(self, vmax=1, a=0.005):
         super().__init__()
         self.normalization = nn.Parameter(torch.tensor(np.arcsinh(1 / a), dtype=torch.float32), requires_grad=False)
         self.a = nn.Parameter(torch.tensor(a, dtype=torch.float32), requires_grad=False)

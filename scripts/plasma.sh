@@ -22,7 +22,7 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 
 # prep 2012-01
 #python -m sunerf.data.euv.prep_aia_v2 --data_path "/glade/work/rjarolim/data/sunerf/2012_01/aia/*.fits" --out_path "/glade/work/rjarolim/data/sunerf/2012_01_prep/aia" --resolution 512
-#python -m sunerf.data.euv.prep_euvi --data_path "/glade/work/rjarolim/data/sunerf/2012_01/euvi_prep/*.fts" --out_path "/glade/work/rjarolim/data/sunerf/2012_01_prep/euvi" --resolution 512
+#python -m sunerf.data.euv.prep_euvi --data_path "//glade/work/rjarolim/data/sunerf/2012_01/euvi_prep/*.fts" --out_path "/glade/work/rjarolim/data/sunerf/2012_01_prep/euvi" --resolution 512
 
 
 # prep 2010-06
@@ -51,6 +51,7 @@ python -m sunerf.run_plasma --config "config/plasma/combined_2023_04.yaml"
 #python -m  sunerf.evaluation.load_cube --chk_path "/glade/work/rjarolim/sunerf/aia_v01/save_state.snf" --out_path "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_3D_cube/sunerf_cube.npz"
 #python -m  sunerf.evaluation.video_poles --chk_path "/glade/work/rjarolim/sunerf/2012_01_v05/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2012_01_v05/evaluation/video_poles"
 
-#python -m  sunerf.evaluation.slices --chk_path "/glade/work/rjarolim/sunerf/2023_04_combined_v10/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2023_04_combined_v10/evaluation/slices"
+#python -m  sunerf.evaluation.video --chk_path "/glade/work/rjarolim/sunerf/2023_04_combined_v16/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2023_04_combined_v16/evaluation/video"
+#python -m  sunerf.evaluation.slices --chk_path "/glade/work/rjarolim/sunerf/2023_04_combined_v16/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2023_04_combined_v16/evaluation/slices"
 
 

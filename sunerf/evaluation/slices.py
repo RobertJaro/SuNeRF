@@ -29,9 +29,9 @@ os.makedirs(args.video_path, exist_ok=True)
 loader = SuNeRFLoader(args.chk_path)
 
 # Define ranges
-center_lon = 132 #loader.ref_map().carrington_longitude.to_value(u.deg)
-target_lon = 132 #loader.ref_map().carrington_longitude.to_value(u.deg)
-ref_time = loader.ref_date
+center_lon = 132 + 90
+target_lon = 132 + 90
+ref_time = datetime(2023, 4, 11)
 
 latitude_range = np.arange(-60, 60.5, 0.5) * u.deg
 longitude_range = np.arange(center_lon - 60, center_lon + 60.5, 0.5) * u.deg

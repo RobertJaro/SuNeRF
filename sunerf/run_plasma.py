@@ -55,18 +55,24 @@ if __name__ == '__main__':
     data_module_save_path = os.path.join(work_directory, 'data_module.pkl')
     if os.path.exists(data_module_save_path) and not args.reload:
         print('Loaded data module from file. If you want to reload the data, use --reload')
+        n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
         data_module = torch.load(data_module_save_path)
         # update batch size
         default_batch_size = data_config.pop('batch_size', None)
         train_ds_config = data_config['train_datasets']
         ds_batch_size = {config['key']: config.get('batch_size', default_batch_size) for config in train_ds_config}
         for ds_key, ds in data_module.training_datasets.items():
-           if ds_batch_size[ds_key] is None:
-                continue # keep original batch size
-           ds.batch_size = ds_batch_size[ds_key]
+            if ds_key == 'random':
+                if 'random_config' in data_config and 'batch_size' in data_config['random_config']:
+                    ds.batch_size = data_config['random_config']['batch_size'] * n_gpus
+                continue
+            if ds_batch_size[ds_key] is None:
+                continue  # keep original batch size
+            ds.batch_size = ds_batch_size[ds_key] * n_gpus
     else:
         warnings.filterwarnings("ignore")  # ignore warnings from sunpy
-        data_module = MultiInstrumentDataModule(**data_config, work_directory=work_directory, use_absorption=use_absorption)
+        data_module = MultiInstrumentDataModule(**data_config, work_directory=work_directory,
+                                                use_absorption=use_absorption)
         torch.save(data_module, data_module_save_path)
 
     # initialize SuNeRF model
@@ -85,9 +91,9 @@ if __name__ == '__main__':
 
     callbacks = [checkpoint_callback, save_callback]
     if use_absorption:
-        absorption_callback = AbsorptionCallback('absorption', data_module.validation_datasets['absorption'].image_shape)
+        absorption_callback = AbsorptionCallback('absorption',
+                                                 data_module.validation_datasets['absorption'].image_shape)
         callbacks.append(absorption_callback)
-
 
     for k in data_module.validation_dataset_mapping.values():
         if k == 'absorption':
