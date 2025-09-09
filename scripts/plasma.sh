@@ -35,7 +35,8 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 #python -m sunerf.run_plasma --config "config/plasma/all_2012_08.yaml"
 #python -m sunerf.run_plasma --config "config/plasma/304_2012_08.yaml"
 #python -m sunerf.run_plasma --config "config/plasma/all_2012_08_v02.yaml"
-python -m sunerf.run_plasma --config "config/plasma/combined_2023_04.yaml"
+#python -m sunerf.run_plasma --config "config/plasma/combined_2023_04.yaml" --reload
+python -m sunerf.run_plasma --config "config/plasma/combined_2023_04_v2.yaml"
 #python -m sunerf.run_plasma --config "config/plasma/aia_euvi_2010_06.yaml"
 #python -m sunerf.run_plasma --config "config/plasma/euvi_2010_06.yaml"
 
@@ -51,7 +52,8 @@ python -m sunerf.run_plasma --config "config/plasma/combined_2023_04.yaml"
 #python -m  sunerf.evaluation.load_cube --chk_path "/glade/work/rjarolim/sunerf/aia_v01/save_state.snf" --out_path "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_3D_cube/sunerf_cube.npz"
 #python -m  sunerf.evaluation.video_poles --chk_path "/glade/work/rjarolim/sunerf/2012_01_v05/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2012_01_v05/evaluation/video_poles"
 
-#python -m  sunerf.evaluation.video --chk_path "/glade/work/rjarolim/sunerf/2023_04_combined_v16/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2023_04_combined_v16/evaluation/video"
-#python -m  sunerf.evaluation.slices --chk_path "/glade/work/rjarolim/sunerf/2023_04_combined_v16/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2023_04_combined_v16/evaluation/slices"
+#python -m  sunerf.evaluation.video --chk_path "/glade/work/rjarolim/sunerf/2023_04_siren_v01/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2023_04_siren_v01/evaluation/video"
+#python -m  sunerf.evaluation.video_observer --chk_path "/glade/work/rjarolim/sunerf/2023_04_siren_v01/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2023_04_siren_v01/evaluation/video_observer"
+#python -m  sunerf.evaluation.slices --chk_path "/glade/work/rjarolim/sunerf/2023_04_siren_v01/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2023_04_siren_v01/evaluation/slices"
 
 

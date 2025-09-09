@@ -15,9 +15,9 @@ rot_phi = lambda phi: torch.Tensor([
     [0, 0, 0, 1]]).float()
 
 rot_theta = lambda th: torch.Tensor([
-    [np.cos(th), 0, np.sin(th), 0],
+    [np.sin(th), 0, -np.cos(th), 0],
     [0, 1, 0, 0],
-    [-np.sin(th), 0, np.cos(th), 0],
+    [np.cos(th), 0, np.sin(th), 0],
     [0, 0, 0, 1]]).float()
 
 trans_shift = lambda tx, ty, tz: torch.Tensor([

@@ -5,7 +5,7 @@ import torch
 from torch import nn
 
 from sunerf.data.loader.base_loader import BaseDataModule
-from sunerf.model.model import PlasmaModel
+from sunerf.model.model import PlasmaModel, SirenPlasmaModel
 from sunerf.model.sunerf import BaseSuNeRFModule
 from sunerf.model.util import jacobian
 from sunerf.rendering.base_tracing import BasicRenderingModule
@@ -50,7 +50,14 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
             else:
                 raise ValueError(f"Unknown scaling type: {scaling_type}")
 
-        model = PlasmaModel(log_T=log_T_range, **model_config)
+        model_config = model_config if model_config is not None else {}
+        model_type = model_config.pop('type', 'siren')
+        if model_type == 'generic':
+            model = PlasmaModel(log_T=log_T_range, **model_config)
+        elif model_type == 'siren':
+            model = SirenPlasmaModel(log_T=log_T_range, **model_config)
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
         rendering = BasicRenderingModule(model=model,
                                          rendering_modules=rendering_modules,
                                          Rs_per_ds=Rs_per_ds,

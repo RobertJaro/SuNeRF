@@ -4,6 +4,58 @@ from astropy import units as u
 from torch import nn
 from torch._C._nn import linear
 from torch.distributions import Normal
+from torch.nn import Identity
+
+
+class SirenModel(nn.Module):
+    def __init__(self, in_dim, out_dim, dim=512, n_layers=8,
+                 w0=1., w0_initial=30., encoding='time_split', **kwargs):
+        super().__init__()
+
+        if encoding == "positional":
+            self.posenc = PositionalEncoding(num_freqs=20, in_features=in_dim)
+            posenc_dim = self.posenc.d_output
+        elif encoding == "gaussian":
+            self.posenc = GaussianPositionalEncoding(d_input=in_dim)
+            posenc_dim = self.posenc.d_output
+        elif encoding == "identity":
+            self.posenc = Identity()
+            posenc_dim = in_dim
+        elif encoding == "default":
+            self.posenc = SirenLayer(in_dim, dim, w0=w0_initial, is_first=True)
+            posenc_dim = dim
+        elif encoding == "time_split":
+            self.posenc = TimeSplitEncoding(dim=dim // 2)
+            posenc_dim = self.posenc.d_output
+        else:
+            raise ValueError(f"Unknown encoding: {encoding}")
+
+        self.num_layers = n_layers
+        self.dim_hidden = dim
+
+        # initialize the input layer
+        self.in_layer = SirenLayer(posenc_dim, dim, w0=w0)
+
+        # initialize the hidden layers
+        layers = []
+        for i in range(n_layers - 2):
+            layer = SirenLayer(dim, dim, w0=w0)
+            layers.append(layer)
+        self.layers = nn.Sequential(*layers)
+
+        # initialize the output layer
+        self.out_layer = SirenLayer(dim, out_dim, w0=w0, activation=nn.Identity())
+
+    def forward(self, x):
+        x = self.posenc(x)  # apply positional encoding
+        x = self.in_layer(x)
+        x = self.layers(x)
+        x = self.out_layer(x)
+        return x
+
+    def step(self, global_step):
+        if hasattr(self.posenc, 'step'):
+            self.posenc.step(global_step)
 
 
 class SirenNet(nn.Module):
@@ -104,7 +156,6 @@ class PlasmaModel(GenericModel):
         self.T_range = nn.Parameter(torch.tensor([3.8, 8.0], dtype=torch.float32), requires_grad=False)
 
     def forward(self, x):
-        radius = torch.norm(x[..., :3], dim=-1, keepdim=True)
         raw = super().forward(x)
 
         center_log_T, scaling, sigma = raw[..., 0:1], raw[..., 1:2], raw[..., 2:3]
@@ -114,30 +165,21 @@ class PlasmaModel(GenericModel):
         # TODO: should we use fixed temperature range? filaments can be very cold 5e3 - 10e3 K?
         # maybe allow for very dense plasma in the cold temperature regime?
         center_log_T = torch.sigmoid(center_log_T) * (self.T_range[1] - self.T_range[0]) + self.T_range[0]
-        sigma = torch.sigmoid(sigma) + 0.025
-
-        # scale density with radius ** -2
-        scaling = scaling - 2 * torch.log10(radius)
+        sigma = torch.sigmoid(sigma) + 0.01
 
         log_T_range = self.log_T.reshape([1] * (len(center_log_T.shape) - 1) + [-1])
         # log10 --> 10 ** (scaling) * exp(N) * (2 * pi * sigma ** 2) ** -0.5
         log10_e = 0.4342944819032518  # log10(e)
-        log_ne = (scaling - (log_T_range - center_log_T) ** 2 / (2 * sigma ** 2) * log10_e -
-                  0.5 * torch.log10(2 * torch.pi * sigma ** 2))
+        log_ne = scaling - (log_T_range - center_log_T) ** 2 / (2 * sigma ** 2) * log10_e
 
         distance = torch.norm(x[..., :3], dim=-1)
         distance_threshold = torch.clip(distance - self.decay_distance, min=0, max=1) * 2
         log_ne = log_ne - distance_threshold[..., None]
-        # log_ne = torch.clamp(log_ne, min=-30)  # prevent negative infinity
 
         # compute total number density
         ne = 10 ** log_ne
         total_ne = torch.sum(ne, dim=-1, keepdim=True)
         total_log_ne = torch.log10(total_ne)
-
-        # assert not torch.isnan(log_ne).any(), 'NaN in log_ne'
-        # assert not torch.isnan(total_ne).any(), 'NaN in total_ne'
-        # assert not torch.isnan(total_log_ne).any(), 'NaN in total_log_ne'
 
         # compute mean Temperature
         temperatures = 10 ** log_T_range
@@ -153,6 +195,59 @@ class PlasmaModel(GenericModel):
                 'ne': ne, 'sigma': sigma
                 }
 
+class SirenPlasmaModel(SirenModel):
+
+    def __init__(self, log_T, decay_distance=2.0, **kwargs):
+        super().__init__(in_dim=4, out_dim=3, **kwargs)
+        self.log_T = nn.Parameter(torch.tensor(log_T, dtype=torch.float32), requires_grad=False)
+        self.decay_distance = decay_distance
+
+        self.T_range = nn.Parameter(torch.tensor([3.8, 8.0], dtype=torch.float32), requires_grad=False)
+
+    def forward(self, x):
+        radius = torch.norm(x[..., :3], dim=-1, keepdim=True)
+        raw = super().forward(x)
+
+        center_log_T, scaling, sigma = raw[..., 0:1], raw[..., 1:2], raw[..., 2:3]
+        # velocity = raw[..., 3:]
+
+        # assure that mean_log_T is in the range of the temperature bins
+        # TODO: should we use fixed temperature range? filaments can be very cold 5e3 - 10e3 K?
+        # maybe allow for very dense plasma in the cold temperature regime?
+        center_log_T = torch.sigmoid(center_log_T) * (self.T_range[1] - self.T_range[0]) + self.T_range[0]
+        sigma = torch.sigmoid(sigma) + 0.01
+
+        # scale density with radius ** -2
+        scaling = scaling - 2 * torch.log10(radius)
+
+        log_T_range = self.log_T.reshape([1] * (len(center_log_T.shape) - 1) + [-1])
+        # log10 --> 10 ** (scaling) * exp(N) * (2 * pi * sigma ** 2) ** -0.5
+        log10_e = 0.4342944819032518  # log10(e)
+        log_ne = scaling - (log_T_range - center_log_T) ** 2 / (2 * sigma ** 2) * log10_e
+
+        # distance = torch.norm(x[..., :3], dim=-1)
+        # distance_threshold = torch.clip(distance - self.decay_distance, min=0, max=1) * 2
+        # log_ne = log_ne - distance_threshold[..., None]
+        # log_ne = torch.clamp(log_ne, min=-30)  # prevent negative infinity
+
+        # compute total number density
+        ne = 10 ** log_ne
+        total_ne = torch.sum(ne, dim=-1, keepdim=True)
+        total_log_ne = torch.log10(total_ne)
+
+        # compute mean Temperature
+        temperatures = 10 ** log_T_range
+        mean_temperature = (temperatures * ne).sum(-1, keepdim=True) / total_ne
+        mean_log_T = torch.log10(mean_temperature)
+        # replace invalid values
+        mean_log_T[torch.isnan(mean_log_T)] = center_log_T[torch.isnan(mean_log_T)]
+
+        return {'log_ne': log_ne,
+                'mean_log_T': mean_log_T,
+                'total_ne': total_ne,
+                'total_log_ne': total_log_ne,
+                'ne': ne, 'sigma': sigma
+                }
 
 class RhoModel(SirenNet):
 
@@ -300,4 +395,19 @@ class GaussianPositionalEncoding(nn.Module):
         encoded = torch.einsum('...j,ij->...ij', x, self.frequencies)
         encoded = encoded.reshape(*x.shape[:-1], -1)
         encoded = torch.cat([x, torch.sin(encoded), torch.cos(encoded)], -1)
+        return encoded
+
+class TimeSplitEncoding(nn.Module):
+    def __init__(self, dim, w0_spatial=30.0, w0_time=1.0):
+        super().__init__()
+        self.spatial_layer = SirenLayer(3, dim, w0=w0_spatial, is_first=True)
+        self.time_layer = SirenLayer(1, dim, w0=w0_time, is_first=True)
+        self.d_output = 2 * dim
+
+    def forward(self, x):
+        time = x[..., 3:]
+        spatial = x[..., :3]
+        spatial_encoded = self.spatial_layer(spatial)
+        time_encoded = self.time_layer(time)
+        encoded = torch.cat([spatial_encoded, time_encoded], dim=-1)
         return encoded
