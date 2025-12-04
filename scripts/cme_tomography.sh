@@ -4,7 +4,6 @@
 #PBS -A P22100000
 #PBS -q main
 #PBS -l select=1:ncpus=32:ngpus=4:mem=32gb
-#PBS -l job_priority=economy
 #PBS -l walltime=12:00:00
 
 module load conda/latest
@@ -42,15 +41,23 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_320W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_3" --check_matching
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_080W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_3" --check_matching
 
+# Prep CME1
+#python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/cme1/*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/cme1_prep" --check_matching
+
+# Prep Polarization
+#python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_040W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_polarization_040" --check_matching
+#python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_100W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_polarization_100" --check_matching
+
+
 # Prep Heliosphere
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_020W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_helio" --check_matching
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_140W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_helio" --check_matching
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_260W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_helio" --check_matching
 
 # Prep Polar
-python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_020W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_polar" --check_matching
-python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_140W_bang_040W_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_polar" --check_matching
-python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_260W_bang_040S_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_polar" --check_matching
+#python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_020W_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_polar" --check_matching
+#python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_140W_bang_040W_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_polar" --check_matching
+#python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_260W_bang_040S_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_polar" --check_matching
 
 # Prep Ecliptic
 #python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work/rjarolim/data/sunerf-cme/hao/data_fits/dcmer_*_bang_0000_*/*.fits" --output_path "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_ecliptic" --check_matching
@@ -62,13 +69,24 @@ python -m sunerf.data.prep.prep_hao_cme --resolution 512 --hao_path "/glade/work
 # 3 viewpoints
 #python -m sunerf.run_thomson --config "config/cme/hao_helio.yaml"
 #python -m sunerf.run_thomson --config "config/cme/hao_3view.yaml"
-python -m sunerf.run_thomson --config "config/cme/hao_polar.yaml"
+#python -m sunerf.run_thomson --config "config/cme/hao_polar.yaml"
 # 2 viewpoints
 #python -m sunerf.run_thomson --config "config/cme/hao_2view.yaml"
 #python -m sunerf.run_thomson --config "config/cme_v02/hao_2view_no_physics.yaml"
 #python -m sunerf.run_thomson --config "config/cme/hao_2view_background.yaml"
 # 1 viewpoints
 #python -m sunerf.run_thomson --config "config/cme/hao_1view.yaml"
+# CME 1
+#python -m sunerf.run_thomson --config "config/cme/hao_cme1.yaml"
+# Polarization
+#python -m sunerf.run_thomson --config "config/cme/polarization/full_polarization.yaml"
+#python -m sunerf.run_thomson --config "config/cme/polarization/mixed_polarization.yaml"
+#python -m sunerf.run_thomson --config "config/cme/polarization/no_polarization.yaml"
+#python -m sunerf.run_thomson --config "config/cme/polarization/mixed_3view_polarization.yaml"
+#python -m sunerf.run_thomson --config "config/cme/polarization/no_3view_polarization.yaml"
+
+# check
+python -m sunerf.run_thomson --config "config/cme/hao_2view_check.yaml"
 
 #####################################################################
 # 2 viewpoints variations (60 deg separation)
@@ -135,19 +153,23 @@ python -m sunerf.run_thomson --config "config/cme/hao_polar.yaml"
 
 ####################################################################
 # center of mass
-python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_000_060_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav" --plot_ground_truth
-python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_040_100_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav" --plot_velocity
-python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_080_140_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
-python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_120_180_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
-python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_160_220_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
-python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_200_260_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
-python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_240_300_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
-python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_280_340_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
-python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_320_020_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
+#python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_000_060_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav" --plot_ground_truth
+#python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_040_100_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav" --plot_velocity
+#python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_080_140_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
+#python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_120_180_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
+#python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_160_220_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
+#python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_200_260_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
+#python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_240_300_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
+#python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_280_340_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
+#python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_320_020_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
 # 3 viewpoints
-python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/3view_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav" --plot_ground_truth
+#python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/3view_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav" --plot_ground_truth
 # no physics
-python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/2view_no_physics_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
+#python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/2view_no_physics_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
+
+# GT example
+#python -m sunerf.evaluation.cme.gt_example --out_path "/glade/work/rjarolim/sunerf-cme-v2/gt" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
+
 
 # angle comparison
 #python -i -m sunerf.evaluation.cme.angle_comparison
@@ -156,7 +178,7 @@ python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarol
 #python -i -m sunerf.evaluation.cme.com_comparison
 
 # data overview plot
-python -i -m sunerf.evaluation.visualize_cme_input
+#python -i -m sunerf.evaluation.visualize_cme_input
 
 
 #############################################################################
@@ -173,9 +195,8 @@ python -i -m sunerf.evaluation.visualize_cme_input
 #############################################################################
 # Tomography
 #python -m sunerf.evaluation.cme.cme_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/ecliptic_v02/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav" --plot_ground_truth
-python -m sunerf.evaluation.cme.cme_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/3view_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
-python -m sunerf.evaluation.cme.cme_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_040_100_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
-
+#python -m sunerf.evaluation.cme.cme_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/3view_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
+#python -m sunerf.evaluation.cme.cme_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_040_100_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
 
 #######################################################################
 # VTK

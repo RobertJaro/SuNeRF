@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_{id}_v02"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-v2/2view_{id}_v02'
+base_path: "/glade/work/rjarolim/sunerf-cme-v2/noise/3view_{noise}_v01"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-v2/3view_{noise}_v01'
 
 instruments:
   - type: 'default'
@@ -14,9 +14,10 @@ data:
     - type: 'HAO'
       key: 'HAO'
       instrument_key: 'HAO'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_{id}/*pB*.fits"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_{id}/*tB*.fits"
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_helio/*pB*.fits"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_helio/*tB*.fits"
       batch_size: 2048
+      noise_level: {noise}
     - type: 'random'
       name: 'continuity'
       radius_range: [ 20, 140 ]
@@ -26,8 +27,8 @@ data:
     - type: 'HAO'
       key: 'HAO_sample'
       instrument_key: 'HAO'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_2/dcmer_020W_bang_0000_pB_stepnum_030.fits"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_2/dcmer_020W_bang_0000_tB_stepnum_030.fits"
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_helio/dcmer_020W_bang_0000_pB_stepnum_030.fits"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_helio/dcmer_020W_bang_0000_tB_stepnum_030.fits"
     - type: 'reference_cube'
       key: 'cube'
       data_path: "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/dens_stepnum_030.sav"
@@ -62,8 +63,8 @@ callbacks:
 
 logging:
   entity: "robert_jarolim"
-  project: "sunerf-cme-variations"
-  name: "2 Viewpoint - {id}"
+  project: "sunerf-cme-noise"
+  name: "Noise {noise} - 3 Viewpoints v01"
 
 sampling:
   type: "spherical"
@@ -76,6 +77,3 @@ lambda:
   radial: 1.0e-2
   continuity: 1.0e-2
   velocity: 1.0e-2
-
-training:
-  log_every_n_steps: null

@@ -6,6 +6,8 @@ import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, LambdaCallback
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.strategies import DDPStrategy
+from pytorch_lightning.utilities import rank_zero_only
 
 from sunerf.data.loader.thomson_instrument import ThomsonDataModule
 from sunerf.model.thomson import ThomsonSuNeRFModule, save_thomson_sunerf
@@ -39,7 +41,7 @@ if __name__ == '__main__':
     logging_config = config['logging'] if 'logging' in config else {'project': 'sunerf'}
 
     # setup training config
-    epochs = training_config['epochs'] if 'epochs' in training_config else 50
+    epochs = training_config['epochs'] if 'epochs' in training_config else 200
     log_every_n_steps = training_config['log_every_n_steps'] if 'log_every_n_steps' in training_config else None
     check_val_every_n_epoch = training_config[
         'check_val_every_n_epoch'] if 'check_val_every_n_epoch' in training_config else 1
@@ -47,17 +49,28 @@ if __name__ == '__main__':
 
     # initialize logger
     logger = WandbLogger(**logging_config, save_dir=work_directory)
-    logger.experiment.config.update(config, allow_val_change=True)
+
+    @rank_zero_only
+    def _log_hparams(cfg):
+        logger.log_hyperparams(cfg)
+
+
+    _log_hparams(config)
 
     # initialize data module and model
     data_module_save_path = os.path.join(work_directory, 'data_module.pkl')
-    if os.path.exists(data_module_save_path) and not args.reload:
-        print('Loaded data module from file. If you want to reload the data, use --reload')
-        data_module = torch.load(data_module_save_path)
-    else:
+
+    @rank_zero_only
+    def _load_data_module():
+        if os.path.exists(data_module_save_path) and not args.reload:
+            print('Loaded data module from file. If you want to reload the data, use --reload')
+            return True
         warnings.filterwarnings("ignore")  # ignore warnings from sunpy
         data_module = ThomsonDataModule(**data_config, work_directory=work_directory)
         torch.save(data_module, data_module_save_path)
+
+    _load_data_module() # ensure only rank 0 loads/saves the data module
+    data_module = torch.load(data_module_save_path) # all ranks load the data module
 
     image_scaling = list(data_module.config.values())[0]['image_scaling']
     rho_normalization = image_scaling / (8.69 * 1e-7)
@@ -118,11 +131,12 @@ if __name__ == '__main__':
     N_GPUS = torch.cuda.device_count()
     torch.set_float32_matmul_precision('high')
 
+    n_gpus = torch.cuda.device_count()
     trainer = Trainer(max_epochs=epochs,
                       logger=logger,
                       devices=N_GPUS,
                       accelerator='gpu' if N_GPUS >= 1 else None,
-                      strategy='dp' if N_GPUS > 1 else None,  # ddp breaks memory and wandb
+                      strategy=DDPStrategy(find_unused_parameters=False) if n_gpus > 1 else 'auto',
                       num_sanity_val_steps=-1,  # validate all points to check the first image
                       val_check_interval=log_every_n_steps,
                       check_val_every_n_epoch=check_val_every_n_epoch,

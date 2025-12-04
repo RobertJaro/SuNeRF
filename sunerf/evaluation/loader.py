@@ -41,7 +41,6 @@ class SuNeRFLoader:
         self.ref_date = state['ref_date']
 
         self.ref_maps = {k: Map(np.zeros(self.resolution(k)), self.wcs(k)) for k in self.ds_keys}
-        self.log_T_range = state['log_T_range']
 
     def start_time(self, ds_key=None):
         ds_key = ds_key if ds_key is not None else self.ds_keys[0]
@@ -263,3 +262,11 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
         v_cube[mask] = v
 
         return {'rho': rho_cube, 'v': v_cube, 'cartesian_coords': cartesian_coords}
+
+
+class PlasmaSuNeRFLoader(SuNeRFLoader):
+
+    def __init__(self, state_path, *args, **kwargs):
+        state = torch.load(state_path)
+        self.log_T_range = state['log_T_range']
+        super().__init__(state_path, *args, **kwargs)

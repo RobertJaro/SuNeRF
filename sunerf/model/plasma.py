@@ -9,6 +9,7 @@ from sunerf.model.model import PlasmaModel, SirenPlasmaModel
 from sunerf.model.sunerf import BaseSuNeRFModule
 from sunerf.model.util import jacobian
 from sunerf.rendering.base_tracing import BasicRenderingModule
+from sunerf.rendering.emission import EmissionRadiativeTransfer
 from sunerf.rendering.plasma import PlasmaRadiativeTransfer, init_absorption_model
 from sunerf.train.scaling import ImageAsinhScaling, ImageLinearScaling, ImageLogScaling
 
@@ -36,6 +37,8 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
                 rendering_modules[instrument_key] = PlasmaRadiativeTransfer(
                     temperature_response_config=instrument['temperature_response'],
                     log_T_range=log_T_range, absorption_model=absorption_model)
+            elif instrument_type == 'emission':
+                rendering_modules[instrument_key] = EmissionRadiativeTransfer()
             else:
                 raise ValueError(f"Unknown instrument type: {instrument_type}")
             # image scaling

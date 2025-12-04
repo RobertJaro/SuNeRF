@@ -50,10 +50,11 @@ python -m sunerf.run_plasma --config "config/plasma/combined_2023_04_v2.yaml"
 #python -m  sunerf.evaluation.video_observer --chk_path "/glade/work/rjarolim/sunerf/all_2012_08_v01/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/all_2012_08_v01/evaluation/video_observer"
 #python -m  sunerf.evaluation.slices --chk_path "/glade/work/rjarolim/sunerf/all_2012_08_v08/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/all_2012_08_v08/evaluation/slices"
 #python -m  sunerf.evaluation.load_cube --chk_path "/glade/work/rjarolim/sunerf/aia_v01/save_state.snf" --out_path "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_3D_cube/sunerf_cube.npz"
-#python -m  sunerf.evaluation.video_poles --chk_path "/glade/work/rjarolim/sunerf/2012_01_v05/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2012_01_v05/evaluation/video_poles"
+#python -m  sunerf.evaluation.video_poles --chk_path "/glade/work/rjarolim/sunerf/2012_01_v08/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2012_01_v08/evaluation/video_poles"
 
 #python -m  sunerf.evaluation.video --chk_path "/glade/work/rjarolim/sunerf/2023_04_siren_v01/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2023_04_siren_v01/evaluation/video"
 #python -m  sunerf.evaluation.video_observer --chk_path "/glade/work/rjarolim/sunerf/2023_04_siren_v01/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2023_04_siren_v01/evaluation/video_observer"
 #python -m  sunerf.evaluation.slices --chk_path "/glade/work/rjarolim/sunerf/2023_04_siren_v01/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2023_04_siren_v01/evaluation/slices"
+python -m  sunerf.evaluation.image_eui --chk_path "/glade/work/rjarolim/sunerf/2023_04_siren_v01/save_state.snf" --video_path "/glade/work/rjarolim/sunerf/2023_04_siren_v01/evaluation"
 
 

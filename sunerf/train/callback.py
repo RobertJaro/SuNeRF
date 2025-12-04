@@ -16,7 +16,7 @@ from sklearn.linear_model import LinearRegression
 
 from sunerf.data.date_util import unnormalize_datetime
 from sunerf.data.utils import sdo_img_norm
-
+from pytorch_lightning.utilities import rank_zero_only
 
 class BaseCallback(Callback):
 
@@ -38,7 +38,8 @@ class AbsorptionCallback(BaseCallback):
         super().__init__(ds_key)
         self.image_shape = image_shape
 
-    def on_validation_epoch_end(self, trainer, pl_module):
+    @rank_zero_only
+    def on_validation_end(self, trainer, pl_module):
         outputs = self.get_validation_outputs(pl_module)
         if outputs is None:
             return
@@ -87,7 +88,8 @@ class TestImageCallback(BaseCallback):
         self.cmap = plt.get_cmap(cmap)
         self.normalize = ImageNormalize(vmin=0, vmax=1, stretch=AsinhStretch(0.005), clip=True)
 
-    def on_validation_epoch_end(self, trainer, pl_module):
+    @rank_zero_only
+    def on_validation_end(self, trainer, pl_module):
         outputs = self.get_validation_outputs(pl_module)
         if outputs is None:
             return
@@ -143,7 +145,8 @@ class PlasmaImageCallback(BaseCallback):
         self.cmaps = cmaps
         self.normalize = ImageNormalize(vmin=0, vmax=1, clip=True)
 
-    def on_validation_epoch_end(self, trainer, pl_module):
+    @rank_zero_only
+    def on_validation_end(self, trainer, pl_module):
         outputs = self.get_validation_outputs(pl_module)
         if outputs is None:
             return
@@ -245,7 +248,8 @@ class ThomsonImageCallback(BaseCallback):
         self.image_shape = image_shape
         self.normalize = ImageNormalize(vmin=0, vmax=1, clip=True)
 
-    def on_validation_epoch_end(self, trainer, pl_module):
+    @rank_zero_only
+    def on_validation_end(self, trainer, pl_module):
         outputs = self.get_validation_outputs(pl_module)
         if outputs is None:
             return
@@ -360,6 +364,7 @@ class ThomsonImageCallback(BaseCallback):
         plt.close('all')
 
 
+@rank_zero_only
 def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date, ds_key=None):
     dirs = np.stack([np.sum([0, 0, -1] * pose[:3, :3], axis=-1) for pose in poses])
     origins = poses[:, :3, -1] * Rs_per_ds
@@ -444,7 +449,8 @@ class CubeCallback(BaseCallback):
         super().__init__(**kwargs)
         self.cube_shape = cube_shape
 
-    def on_validation_epoch_end(self, trainer, pl_module):
+    @rank_zero_only
+    def on_validation_end(self, trainer, pl_module):
         outputs = self.get_validation_outputs(pl_module)
         if outputs is None:
             return
@@ -492,7 +498,8 @@ class LatitudeSliceCallback(BaseCallback):
         self.rho_normalization = 1.12e6  # TODO: rho_normalization
         self.velocity_normalization = (Rs_per_ds / seconds_per_dt) * (1 * u.solRad / u.s).to_value(u.km / u.s)
 
-    def on_validation_epoch_end(self, trainer, pl_module):
+    @rank_zero_only
+    def on_validation_end(self, trainer, pl_module):
         outputs = self.get_validation_outputs(pl_module)
         if outputs is None:
             return
@@ -538,7 +545,8 @@ class VelocitySliceCallback(BaseCallback):
         self.Rs_per_ds = Rs_per_ds
         self.plot_velocities = plot_velocities
 
-    def on_validation_epoch_end(self, trainer, pl_module):
+    @rank_zero_only
+    def on_validation_end(self, trainer, pl_module):
         outputs = self.get_validation_outputs(pl_module)
         if outputs is None:
             return
@@ -599,7 +607,8 @@ class LongitudeSliceCallback(BaseCallback):
         self.rho_normalization = 1.12e6  # TODO: rho_normalization
         self.velocity_normalization = (Rs_per_ds / seconds_per_dt) * (1 * u.solRad / u.s).to_value(u.km / u.s)
 
-    def on_validation_epoch_end(self, trainer, pl_module):
+    @rank_zero_only
+    def on_validation_end(self, trainer, pl_module):
         outputs = self.get_validation_outputs(pl_module)
         if outputs is None:
             return

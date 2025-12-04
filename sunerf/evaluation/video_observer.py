@@ -43,30 +43,30 @@ target_longitude = center_coord.lon.to_value(u.deg)
 target_latitude = center_coord.lat.to_value(u.deg)
 
 n_points = 20
-# points_1 = zip(np.ones(n_points) * central_latitude,
-#                np.linspace(central_longitude, central_longitude - shift, n_points),
-#                [start_time] * n_points,
-#                np.ones(n_points))
+points_1 = zip(np.linspace(central_latitude, central_latitude + 60, n_points),
+               np.linspace(central_longitude, central_longitude, n_points),
+               [start_time] * n_points,
+               np.ones(n_points))
 
 # points_1 = zip(np.linspace(central_latitude - 20, central_latitude + 20, n_points),
 #                np.linspace(central_longitude, central_longitude - 180, n_points),
 #                pd.date_range(start=start_time, end=end_time, periods=n_points),
 #                np.linspace(1.0, 0.7, n_points))
 
-points_1 = zip(np.linspace(central_latitude - 10, target_latitude, n_points),
-               np.linspace(central_longitude - 30, target_longitude, n_points),
-               pd.date_range(start=start_time + timedelta(days=1), end=start_time + timedelta(days=1),
-                             periods=n_points),
-               np.linspace(1.0, 0.3, n_points))
-
-points_2 = zip(np.ones(n_points) * target_latitude,
-               np.ones(n_points) * target_longitude,
-               pd.date_range(start=start_time + timedelta(days=1), end=start_time + timedelta(days=2),
-                             periods=n_points),
-               np.ones(n_points) * 0.3)
+# points_1 = zip(np.linspace(central_latitude - 10, target_latitude, n_points),
+#                np.linspace(central_longitude - 30, target_longitude, n_points),
+#                pd.date_range(start=start_time + timedelta(days=1), end=start_time + timedelta(days=1),
+#                              periods=n_points),
+#                np.linspace(1.0, 0.3, n_points))
+#
+# points_2 = zip(np.ones(n_points) * target_latitude,
+#                np.ones(n_points) * target_longitude,
+#                pd.date_range(start=start_time + timedelta(days=1), end=start_time + timedelta(days=2),
+#                              periods=n_points),
+#                np.ones(n_points) * 0.3)
 
 # combine coordinates
-points = list(points_1) + list(points_2)
+points = list(points_1) #+ list(points_2)
 
 # cmaps = [cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia304]
 cmaps = cm.sdoaia94, cm.sdoaia131, cm.sdoaia171, cm.sdoaia193, cm.sdoaia211, cm.sdoaia304, cm.sdoaia335

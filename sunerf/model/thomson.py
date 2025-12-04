@@ -113,7 +113,8 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
         model_out = rendering_out['model_out']
 
-        instrument_image_diff = []
+        instrument_tB_image_diff = []
+        instrument_pB_image_diff = []
         instrument_ratio_diff = []
 
         for k in dataset_batch.keys():
@@ -123,9 +124,11 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             model_image = model_out[k]['image']
             target_image = dataset_batch[k]['image']
 
+            pB_nan_mask = ~torch.isnan(target_image[..., 1])
+
             # compute polarization ratios
-            ratio_target_image = target_image[..., 1] / (target_image[..., 0] + 1e-8)
-            ratio_model_image = model_image[..., 1] / (model_image[..., 0] + 1e-8)
+            ratio_target_image = target_image[pB_nan_mask, 1] / (target_image[pB_nan_mask, 0] + 1e-8)
+            ratio_model_image = model_image[pB_nan_mask, 1] / (model_image[pB_nan_mask, 0] + 1e-8)
 
             # scale images
             scaled_model_image = image_scaling(model_image)
@@ -133,13 +136,21 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
             # backpropagation
             # optimize model
-            image_diff = (scaled_model_image - scaled_target_image).pow(2).sum(-1)
+            tB_image_diff = (scaled_model_image[..., 0] - scaled_target_image[..., 0]).pow(2)
+            pB_image_diff = (scaled_model_image[pB_nan_mask, 1] - scaled_target_image[pB_nan_mask, 1]).pow(2)
             ratio_diff = (ratio_model_image - ratio_target_image).pow(2)
-            instrument_image_diff.append(image_diff)
+            instrument_tB_image_diff.append(tB_image_diff)
+            instrument_pB_image_diff.append(pB_image_diff)
             instrument_ratio_diff.append(ratio_diff)
 
-        image_loss = torch.cat(instrument_image_diff).mean()
-        ratio_loss = torch.cat(instrument_ratio_diff).mean()
+        tB_image_loss = torch.cat(instrument_tB_image_diff).mean()
+        #
+        pB_image_loss = torch.cat(instrument_pB_image_diff)
+        pB_image_loss = torch.zeros_like(tB_image_loss) if pB_image_loss.shape[0] == 0 else pB_image_loss.mean()
+        image_loss = (tB_image_loss + pB_image_loss)
+        #
+        ratio_loss = torch.cat(instrument_ratio_diff)
+        ratio_loss = torch.zeros_like(tB_image_loss) if ratio_loss.shape[0] == 0 else ratio_loss.mean()
 
         assert torch.isnan(image_loss).sum() == 0, 'Invalid loss detected: image_loss'
         assert torch.isnan(ratio_loss).sum() == 0, 'Invalid loss detected: ratio_loss'
@@ -194,7 +205,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         assert torch.isnan(loss).sum() == 0, 'Invalid loss detected: loss'
         # log results to WANDB
         self.log("loss", loss)
-        self.log("train", log_values)
+        self.log_dict({f'train.{k}': v for k, v in log_values.items()})
 
         return loss
 
@@ -291,11 +302,11 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             model_out = self.model(query_points)
             return {'rho_pred': model_out['rho'], 'v_pred': model_out['v'], 'query_points': query_points}
 
-    def validation_epoch_end(self, *args, **kwargs):
-        scaling = {k: float(m.scaling.detach().cpu().numpy())
+    def on_validation_epoch_end(self):
+        scaling = {f'instrument_scaling.{k}': float(m.scaling.detach().cpu().numpy())
                    for k, m in self.rendering_modules.items()}
-        self.log(f'instrument_scaling', scaling)
-        super().validation_epoch_end(*args, **kwargs)
+        self.log_dict(scaling, sync_dist=True)
+        super().on_validation_epoch_end()
 
     def on_train_batch_end(self, *args, **kwargs):
         # update lambda values

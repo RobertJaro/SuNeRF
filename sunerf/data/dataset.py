@@ -1,6 +1,7 @@
 import os
 
 import numpy as np
+import torch
 from torch.utils.data import Dataset
 
 
@@ -47,4 +48,23 @@ class ArrayDataset(Dataset):
     def __getitem__(self, idx):
         data = {k: np.copy(v[idx * self.batch_size: (idx + 1) * self.batch_size])
                 for k, v in self.array_dict.items()}
+        return data
+
+class IndexedDataset(Dataset):
+
+    def __init__(self, dataset, key='dataset_idx'):
+        """Data set wrapper to add an index to each data sample.
+
+        :param dataset: base dataset.
+        :param key: key to use for the index.
+        """
+        self.dataset = dataset
+        self.key = key
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        data = self.dataset[idx]
+        data[self.key] = torch.tensor([idx], dtype=torch.long)
         return data

@@ -1,14 +1,20 @@
 import argparse
 import multiprocessing
 import os
+import warnings
 from glob import glob
 from itertools import repeat
+from pathlib import Path
+from urllib import request
 
+import astropy
 import numpy as np
+import pandas as pd
+from aiapy.calibrate import correct_degradation
+from aiapy.calibrate.util import get_correction_table
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 from astropy.io.fits import getheader
-from itipy.data.editor import AIAPrepEditor
 from sunpy.coordinates import frames
 from sunpy.map import Map
 
@@ -64,6 +70,84 @@ def _loadMLprepMap(file_path, out_path, target_scale, center_crop, subframe):
     s_map.save(save_path)
     return save_path
 
+class Editor():
+    """
+    Editor class for data processing
+    """
+    def convert(self, data, **kwargs):
+        result = self.call(data, **kwargs)
+        if isinstance(result, tuple):
+            data, add_kwargs = result
+            kwargs.update(add_kwargs)
+        else:
+            data = result
+        return data, kwargs
+
+
+    def call(self, data, **kwargs):
+        raise NotImplementedError()
+
+class AIAPrepEditor(Editor):
+    """
+    AIA data preparation editor for instrument degradation correction
+
+    Args:
+        calibration (str): calibration
+        s_map (sunpy.map.Map): SunPy Map object
+        correction_table (pd.DataFrame): correction table
+
+    Returns:
+        s_map (sunpy.map.Map): SunPy Map object
+    """
+    def __init__(self, calibration='auto'):
+        super().__init__()
+        assert calibration in ['aiapy', 'auto', 'none',
+                               None], "Calibration must be one of: ['aiapy', 'auto', 'none', None]"
+        self.calibration = calibration
+        self.table = get_auto_calibration_table() if calibration == 'auto' else get_local_correction_table()
+
+    def call(self, s_map, **kwargs):
+        warnings.simplefilter("ignore")  # ignore warnings
+        if self.calibration == 'auto':
+            s_map = self.correct_degradation(s_map, correction_table=self.table)
+        elif self.calibration == 'aiapy':
+            s_map = correct_degradation(s_map, correction_table=self.table)
+        data = np.nan_to_num(s_map.data)
+        data = data / s_map.meta["exptime"]
+        return Map(data.astype(np.float32), s_map.meta)
+
+    def correct_degradation(self, s_map, correction_table):
+        index = correction_table["DATE"].sub(s_map.date.datetime).abs().idxmin()
+        num = s_map.meta["wavelnth"]
+        return Map(s_map.data / correction_table.iloc[index][f"{int(num):04}"], s_map.meta)
+
+def get_auto_calibration_table():
+    """
+    Get auto calibration table for AIA data
+
+    Returns:
+        correction_table (pd.DataFrame): correction table
+    """
+    table_path = os.path.join(Path.home(), '.iti', 'sdo_autocal_table.csv')
+    os.makedirs(os.path.join(Path.home(), '.iti'), exist_ok=True)
+    if not os.path.exists(table_path):
+        request.urlretrieve('http://kanzelhohe.uni-graz.at/iti/sdo_autocal_table.csv', filename=table_path)
+    return pd.read_csv(table_path, parse_dates=['DATE'], index_col=0)
+
+def get_local_correction_table():
+    """
+    Get local correction table for AIA data
+
+    Returns:
+        correction_table (pd.DataFrame): correction table
+    """
+    path = os.path.join(Path.home(), 'aiapy', 'correction_table.dat')
+    if os.path.exists(path):
+        return get_correction_table(path)
+    os.makedirs(os.path.join(Path.home(), 'aiapy'), exist_ok=True)
+    correction_table = get_correction_table()
+    astropy.io.ascii.write(correction_table, path)
+    return correction_table
 
 if __name__ == '__main__':
     # fix write delay bug
@@ -110,3 +194,4 @@ if __name__ == '__main__':
         p.starmap(_loadMLprepMap,
                   zip(sdo_paths, repeat(args.output_path), repeat(args.scale),
                       repeat(args.center_crop), repeat(subframe)))
+

@@ -51,7 +51,6 @@ if __name__ == '__main__':
     logger.experiment.config.update(config, allow_val_change=True)
 
     # initialize data module and model
-    # initialize data module and model
     data_module_save_path = os.path.join(work_directory, 'data_module.pkl')
     if os.path.exists(data_module_save_path) and not args.reload:
         print('Loaded data module from file. If you want to reload the data, use --reload')

@@ -30,9 +30,8 @@ class ThomsonDataModule(BaseDataModule):
         os.makedirs(work_directory, exist_ok=True)
 
         ref_date = parse(ref_date) if ref_date is not None else None  # parse ref time if specified
-        N_GPUS = torch.cuda.device_count() # adjust batch size for multi-gpu
         base_config = {'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt, 'ref_date': ref_date,
-                       'debug': debug, 'work_directory': work_directory, 'batch_size': batch_size * N_GPUS}
+                       'debug': debug, 'work_directory': work_directory, 'batch_size': batch_size}
 
         train_dict, ref_date = self._load_dataset(train_datasets, base_config)
 
@@ -111,21 +110,21 @@ class ThomsonDataModule(BaseDataModule):
 class GenericThomsonDataset(TensorsDataset):
     def __init__(self, data_path_pB, data_path_tB, scaling, ds_key, instrument_key,
                  Rs_per_ds, seconds_per_dt, ref_date=None,
-                 batch_size=int(2 ** 10), debug=False, test=False, **kwargs):
+                 batch_size=int(2 ** 10), debug=False, test=False, noise_level=False, **kwargs):
         self.scaling = scaling
         # select files with min diff in dates
-        pB_files = sorted(glob.glob(data_path_pB))
         tB_files = sorted(glob.glob(data_path_tB))
+        pB_files = sorted(glob.glob(data_path_pB)) if data_path_pB is not None else None
 
         if debug:
-            sampling = len(pB_files) // 20
-            pB_files = pB_files[::sampling]
+            sampling = len(tB_files) // 20
             tB_files = tB_files[::sampling]
+            pB_files = pB_files[::sampling] if pB_files is not None else None
         if test:
             # select file at center of the list
             idx = len(pB_files) // 2
-            pB_files = pB_files[idx:idx + 1]
             tB_files = tB_files[idx:idx + 1]
+            pB_files = pB_files[idx:idx + 1] if pB_files is not None else None
 
         # load rays
         data_dict = {}
@@ -138,14 +137,26 @@ class GenericThomsonDataset(TensorsDataset):
             data_dict[k] = np.stack([d[k] for d in data], axis=0)
 
         # load remaining images
-        with multiprocessing.Pool(os.cpu_count()) as p:
-            pB_image_stack = [v for v in tqdm(p.imap(fits.getdata, pB_files), total=len(pB_files), desc=f'Loading pB')]
-            pB_image_stack = np.stack(pB_image_stack, axis=0)
+        if pB_files is None:
+            pB_image_stack = np.ones_like(data_dict['image']) * np.nan
+        else:
+            with multiprocessing.Pool(os.cpu_count()) as p:
+                pB_image_stack = [v for v in tqdm(p.imap(fits.getdata, pB_files), total=len(pB_files), desc=f'Loading pB')]
+                pB_image_stack = np.stack(pB_image_stack, axis=0)
 
         image_stack = np.stack([data_dict['image'], pB_image_stack], axis=-1)
-        image_stack[image_stack < 0] = np.nan  # remove negative values
+        image_stack = image_stack / scaling
 
-        data_dict['image'] = image_stack / scaling
+        if noise_level:
+            mean_B = np.nanmean(image_stack)
+            noise = np.random.normal(0, 1, size=image_stack.shape).astype(np.float32)
+            noise = noise * noise_level * mean_B
+            image_stack += noise
+
+        mask = np.any(image_stack < 1e-8, axis=-1)
+        image_stack[mask] = np.nan  # set both tB and pB to NaN if either is negative
+        data_dict['image'] = image_stack
+
 
         # expand and normalize times
         times = data_dict['time']
@@ -167,14 +178,22 @@ class GenericThomsonDataset(TensorsDataset):
             print(f'Time shape: {times_arr.shape}; MIN: {np.nanmin(times_arr)}; MAX: {np.nanmax(times_arr)}')
 
         tensors = {k: v.reshape((-1, *v.shape[3:])) for k, v in data_dict.items() if k in ['image', 'rays', 'time']}
+        # set all values where image (pB + tB) is NaN to NaN --> skip for training
+        nan_mask = np.all(np.isnan(tensors['image']), -1)
+        for k, v in tensors.items():
+            tensors[k][nan_mask] = np.nan
 
         # info for plotting
         self.image_shape = image_stack.shape[1:3]
 
+        # add observable information
+        for observer in observers:
+            observer['observables'] = ['tB', 'pB'] if pB_files is not None else ['tB']
+
         # data config for model checkpoint
         data_config = {}
         # load reference info
-        ref_map = Map(pB_files[0])
+        ref_map = Map(tB_files[0])
         data_config['image_shape'] = ref_map.data.shape
         data_config['wcs'] = ref_map.wcs
         data_config['wavelength'] = ref_map.wavelength

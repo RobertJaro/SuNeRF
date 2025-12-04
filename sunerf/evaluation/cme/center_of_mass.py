@@ -160,9 +160,10 @@ def plot_latitude_slice(rho, spherical_coords, title, img_path, target_latitude=
             r_end = arrow_mid_radius - arrow_length
             dx = -arrow_length * np.cos(obs_lon)
             dy = -arrow_length * np.sin(obs_lon)
+            arrow_color = 'cyan' if 'tB' in observer['observables'] and 'pB' in observer['observables'] else 'red'
             arrowprops = dict(
                 arrowstyle='->',
-                color='cyan',
+                color=arrow_color,
                 linewidth=2,
             )
             ax.annotate(f'',
@@ -172,7 +173,7 @@ def plot_latitude_slice(rho, spherical_coords, title, img_path, target_latitude=
             ax.annotate(f'{np.rad2deg(obs_lon):.0f}°',
                         xy=(obs_lon, arrow_mid_radius),
                         xytext=(text_lon, arrow_mid_radius - 4),
-                        color='cyan', ha='center', va='center',
+                        color=arrow_color, ha='center', va='center',
                         annotation_clip=False)
     fig.tight_layout()
     fig.savefig(img_path, dpi=300, transparent=True)
@@ -221,9 +222,10 @@ def plot_latitude_velocity_slice(velocity, spherical_coords, title, img_path, ta
             r_end = arrow_mid_radius - arrow_length
             dx = -arrow_length * np.cos(obs_lon)
             dy = -arrow_length * np.sin(obs_lon)
+            arrow_color = 'cyan' if 'tB' in observer['observables'] and 'pB' in observer['observables'] else 'red'
             arrowprops = dict(
                 arrowstyle='->',
-                color='cyan',
+                color=arrow_color,
                 linewidth=2,
             )
             ax.annotate(f'',
@@ -233,7 +235,7 @@ def plot_latitude_velocity_slice(velocity, spherical_coords, title, img_path, ta
             ax.annotate(f'{np.rad2deg(obs_lon):.0f}°',
                         xy=(obs_lon, arrow_mid_radius),
                         xytext=(text_lon, arrow_mid_radius - 4),
-                        color='cyan', ha='center', va='center',
+                        color=arrow_color, ha='center', va='center',
                         annotation_clip=False)
 
     quiver_vel = velocity[::8, ::3]
@@ -274,9 +276,10 @@ def plot_longitude_slice(rho, spherical_coords, title, img_path, target_latitude
             r_end = arrow_mid_radius - arrow_length
             dx = -arrow_length * np.cos(obs_lat)
             dy = -arrow_length * np.sin(obs_lat)
+            arrow_color = 'cyan' if 'tB' in observer['observables'] and 'pB' in observer['observables'] else 'red'
             arrowprops = dict(
                 arrowstyle='->',
-                color='cyan',
+                color=arrow_color,
                 linewidth=2,
             )
             ax.annotate(f'',
@@ -286,7 +289,7 @@ def plot_longitude_slice(rho, spherical_coords, title, img_path, target_latitude
             ax.annotate(f'{np.rad2deg(obs_lat):.0f}°',
                         xy=(obs_lat, arrow_mid_radius),
                         xytext=(obs_lat + 0.15, arrow_mid_radius - 5),
-                        color='cyan', ha='center', va='center',
+                        color=arrow_color, ha='center', va='center',
                         annotation_clip=False)
 
     if min_latitude is not None:
@@ -328,9 +331,10 @@ def plot_longitude_velocity_slice(velocity, spherical_coords, title, img_path, t
             r_end = arrow_mid_radius - arrow_length
             dx = -arrow_length * np.cos(obs_lat)
             dy = -arrow_length * np.sin(obs_lat)
+            arrow_color = 'cyan' if 'tB' in observer['observables'] and 'pB' in observer['observables'] else 'red'
             arrowprops = dict(
                 arrowstyle='->',
-                color='cyan',
+                color=arrow_color,
                 linewidth=2,
             )
             ax.annotate(f'',
@@ -340,7 +344,7 @@ def plot_longitude_velocity_slice(velocity, spherical_coords, title, img_path, t
             ax.annotate(f'{np.rad2deg(obs_lat):.0f}°',
                         xy=(obs_lat, arrow_mid_radius),
                         xytext=(obs_lat + 0.15, arrow_mid_radius - 5),
-                        color='cyan', ha='center', va='center',
+                        color=arrow_color, ha='center', va='center',
                         annotation_clip=False)
 
     if min_latitude is not None:

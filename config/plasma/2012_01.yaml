@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf/2012_01_v07"
-work_directory: "/glade/derecho/scratch/rjarolim/sunerf/2012_01_v07"
+base_path: "/glade/work/rjarolim/sunerf/2012_01_v09"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/2012_01_v08"
 
 instruments:
   - type: 'plasma'
@@ -10,7 +10,7 @@ instruments:
       scaling: 0.0
       learnable: False
       normalization: 1.0e-21
-      channels: ['A94', 'A131', 'A171', 'A193', 'A211', 'A335']
+      channels: ['A94', 'A131', 'A171', 'A193', 'A211', 'A304', 'A335']
   - type: 'plasma'
     key: 'EUVI-A'
     scaling: { type: 'asinh' }
@@ -20,7 +20,7 @@ instruments:
       learnable: True
       calibration: True
       normalization: 1.0e+6
-      channels: ['171', '195', '284']
+      channels: ['171', '195', '284', '304']
   - type: 'plasma'
     key: 'EUVI-B'
     scaling: { type: 'asinh' }
@@ -30,7 +30,7 @@ instruments:
       learnable: True
       calibration: True
       normalization: 1.0e+6
-      channels: ['171', '195', '284']
+      channels: ['171', '195', '284', '304']
 
 
 data:
@@ -39,33 +39,33 @@ data:
       key: 'AIA'
       instrument_key: 'AIA'
       data_path: '/glade/work/rjarolim/data/sunerf/2012_01_prep/aia/*.fits'
-      wavelengths: [94, 131, 171, 193, 211, 335]
+      wavelengths: [94, 131, 171, 193, 211, 304, 335]
     - type: 'EUVI'
       key: 'EUVI-A'
       instrument_key: 'EUVI-A'
       data_path: '/glade/work/rjarolim/data/sunerf/2012_01_prep/euvi/*A.fts'
-      wavelengths: [171, 195, 284]
+      wavelengths: [171, 195, 284, 304]
     - type: 'EUVI'
       key: 'EUVI-B'
       instrument_key: 'EUVI-B'
       data_path: '/glade/work/rjarolim/data/sunerf/2012_01_prep/euvi/*B.fts'
-      wavelengths: [171, 195, 284]
+      wavelengths: [171, 195, 284, 304]
   valid_datasets:
     - type: 'AIA'
       key: 'AIA'
       instrument_key: 'AIA'
       data_path: '/glade/work/rjarolim/data/sunerf/2012_01_prep/aia/*.fits'
-      wavelengths: [94, 131, 171, 193, 211, 335]
+      wavelengths: [94, 131, 171, 193, 211, 304, 335]
     - type: 'EUVI'
       key: 'EUVI-A'
       instrument_key: 'EUVI-A'
       data_path: '/glade/work/rjarolim/data/sunerf/2012_01_prep/euvi/*A.fts'
-      wavelengths: [171, 195, 284]
+      wavelengths: [171, 195, 304, 284]
     - type: 'EUVI'
       key: 'EUVI-B'
       instrument_key: 'EUVI-B'
       data_path: '/glade/work/rjarolim/data/sunerf/2012_01_prep/euvi/*B.fts'
-      wavelengths: [171, 195, 284]
+      wavelengths: [171, 195, 304, 284]
   debug: False
   batch_size: 2048
   num_workers: 16
@@ -74,20 +74,23 @@ logging:
   project: "sunerf"
   name: "2012-01 -AIA + EUVI-A + EUVI-B"
 
+training:
+  log_every_n_steps: 10000
+
+model:
+  type: siren
+
 sampling:
   type: "spherical"
   n_samples: 64
   max_distance: 1.5
 
 shuffle:
-  type: "normal_time"
-  iterations: 4.0e+5
-  start: 50
+  type: "time"
+  iterations: 1.0e+5
 
-#training:
-#  log_every_n_steps: 10000
 
 lambda:
-  image: 1.0
-  regularization: 1.0e-1
+  image: 2.0
+  regularization: 1.0e-3
   absorption: 0.0

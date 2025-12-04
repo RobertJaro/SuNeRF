@@ -2,7 +2,7 @@ import torch
 from pytorch_lightning import LightningModule
 from torch import nn
 from torch.optim.lr_scheduler import ExponentialLR
-
+import torch.distributed as dist
 
 class BaseSuNeRFModule(LightningModule):
 
@@ -16,6 +16,7 @@ class BaseSuNeRFModule(LightningModule):
 
         self.validation_dataset_mapping = validation_dataset_mapping
         self.validation_outputs = {}
+        self.validation_batches = {}
 
         self.lr_config = {'start': 1e-4, 'end': 1e-5, 'iterations': 1e6} if lr_config is None else lr_config
 
@@ -34,19 +35,60 @@ class BaseSuNeRFModule(LightningModule):
         if self.rendering.shuffler is not None:
             self.rendering.shuffler.on_train_batch_end()
 
-    def validation_epoch_end(self, outputs_list):
-        if len(outputs_list) == 0:
-            return  # skip invalid validation steps
-        self.validation_outputs = {}  # reset validation outputs
-        if isinstance(outputs_list[0], dict):
-            outputs_list = [outputs_list]  # make list if only one validation dataset is used
-        if len(outputs_list) == 0 or any([len(o) == 0 for o in outputs_list]):
-            return  # skip invalid validation steps
+    def on_validation_epoch_start(self):
+        self.validation_outputs = {}
+        self.validation_batches = {}
 
-        for i, outputs in enumerate(outputs_list):
+    def on_validation_batch_end(self, outputs, batch, batch_idx, dataloader_idx: int = 0) -> None:
+        # Only rank-0 needs to keep outputs if you're running val on rank-0 only.
+        if outputs is not None:
+            # ensure CPU to keep GPU mem low
+            cpu_out = {k: v.detach().cpu() for k, v in outputs.items()}
+            cpu_out['dataset_idx'] = batch['dataset_idx'].detach().cpu()
+            if dataloader_idx not in self.validation_batches:
+                self.validation_batches[dataloader_idx] = []
+            self.validation_batches[dataloader_idx].append(cpu_out)
+
+    def on_validation_epoch_end(self):
+        outputs_list = self.validation_batches
+        if not outputs_list or len(outputs_list) == 0:
+            return
+
+        rank = dist.get_rank()
+        world = dist.get_world_size()
+        if rank == 0:
+            obj_gather_list = [None] * world
+            dist.gather_object(self.validation_batches, obj_gather_list, dst=0)
+            # Merge dicts from all ranks
+            merged_outputs = {}
+            for rank_dict in obj_gather_list:
+                for dataloader_idx, batch_list in rank_dict.items():
+                    if dataloader_idx not in merged_outputs:
+                        merged_outputs[dataloader_idx] = []
+                    merged_outputs[dataloader_idx].extend(batch_list)
+            outputs_list = merged_outputs
+        else:
+            dist.gather_object(self.validation_batches, None, dst=0)
+            return
+
+        for dataloader_idx, outputs in outputs_list.items():
+            # ---- reorder the list itself ----
+            # get a single scalar lin_idx for each batch element
+            # (use mean or first value if it's a vector)
+            idxs = []
+            for i, out in enumerate(outputs):
+                lin_idx = out.pop('dataset_idx') # for sorting; discard for later steps
+                if any([lin_idx == li for li, _ in idxs]):
+                    continue # duplicated by DDP
+                if lin_idx.ndim > 0:
+                    lin_idx = lin_idx.view(-1)[0]  # take first sample in that batch
+                idxs.append((int(lin_idx), i))
+            # sort by the scalar lin_idx
+            outputs = [outputs[i] for _, i in sorted(idxs, key=lambda x: x[0])]
+            # ---- concatenate outputs ----
             out_keys = outputs[0].keys()
             outputs = {k: torch.cat([o[k] for o in outputs]) for k in out_keys}
-            self.validation_outputs[self.validation_dataset_mapping[i]] = outputs
+            self.validation_outputs[self.validation_dataset_mapping[dataloader_idx]] = outputs
 
     def on_load_checkpoint(self, checkpoint):
         state_dict = checkpoint['state_dict']

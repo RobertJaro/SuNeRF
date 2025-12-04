@@ -75,7 +75,7 @@ lambda:
   ratio: 1.0
   radial: 1.0e-2
   continuity: 1.0e-2
-  velocity: 1.0
+  velocity: 1.0e-2
 
 training:
   log_every_n_steps: 5000

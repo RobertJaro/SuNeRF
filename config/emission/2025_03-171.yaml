@@ -1,0 +1,14 @@
+path_to_save: "/glade/work/rjarolim/sunerf/2025_03_v01"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf/aia_v05'
+
+data:
+  data_path: "/glade/work/rjarolim/data/sunerf/2025_03/**/*"
+  debug: True
+  cmap: "sdoaia171"
+
+logging:
+  project: "sunerf"
+  name: "171"
+
+training:
+  log_every_n_steps: 1000

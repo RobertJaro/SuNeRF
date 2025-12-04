@@ -1,5 +1,6 @@
 import argparse
 import os
+import warnings
 
 import torch
 import yaml
@@ -8,8 +9,8 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LambdaCallback
 from pytorch_lightning.loggers import WandbLogger
 
 from sunerf.data.loader.single_channel import SingleChannelDataModule
-from sunerf.model.plasma import save_plasma_sunerf
 from sunerf.model.emission import EmissionSuNeRFModule
+from sunerf.model.plasma import save_plasma_sunerf
 from sunerf.train.callback import TestImageCallback
 
 if __name__ == '__main__':
@@ -42,7 +43,14 @@ if __name__ == '__main__':
     logger = WandbLogger(**logging_config, save_dir=work_directory)
 
     # initialize data module and model
-    data_module = SingleChannelDataModule(**data_config, work_directory=work_directory)
+    data_module_save_path = os.path.join(work_directory, 'data_module.pkl')
+    if os.path.exists(data_module_save_path) and not args.reload:
+        print('Loaded data module from file. If you want to reload the data, use --reload')
+        data_module = torch.load(data_module_save_path)
+    else:
+        warnings.filterwarnings("ignore")  # ignore warnings from sunpy
+        data_module = SingleChannelDataModule(**data_config, work_directory=work_directory)
+        torch.save(data_module, data_module_save_path)
 
     # initialize SuNeRF model
     sunerf = EmissionSuNeRFModule(Rs_per_ds=data_module.Rs_per_ds, seconds_per_dt=data_module.seconds_per_dt,

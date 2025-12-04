@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_{id}_v02"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-v2/2view_{id}_v02'
+base_path: "/glade/work/rjarolim/sunerf-cme-v2/polarization/no_polarization_v01"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-v2/no_polarization_v01'
 
 instruments:
   - type: 'default'
@@ -12,11 +12,17 @@ model:
 data:
   train_datasets:
     - type: 'HAO'
-      key: 'HAO'
+      key: 'HAO-020'
       instrument_key: 'HAO'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_{id}/*pB*.fits"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_{id}/*tB*.fits"
-      batch_size: 2048
+      data_path_pB: null
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_polarization_020/*tB*.fits"
+      batch_size: 1024
+    - type: 'HAO'
+      key: 'HAO-080'
+      instrument_key: 'HAO'
+      data_path_pB: null
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_polarization_080/*tB*.fits"
+      batch_size: 1024
     - type: 'random'
       name: 'continuity'
       radius_range: [ 20, 140 ]
@@ -62,8 +68,8 @@ callbacks:
 
 logging:
   entity: "robert_jarolim"
-  project: "sunerf-cme-variations"
-  name: "2 Viewpoint - {id}"
+  project: "sunerf-cme"
+  name: "2 Viewpoint - No Polarization"
 
 sampling:
   type: "spherical"
@@ -76,6 +82,3 @@ lambda:
   radial: 1.0e-2
   continuity: 1.0e-2
   velocity: 1.0e-2
-
-training:
-  log_every_n_steps: null

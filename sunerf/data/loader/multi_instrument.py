@@ -23,7 +23,7 @@ from sunerf.train.callback import log_overview
 
 class MultiInstrumentDataModule(BaseDataModule):
 
-    def __init__(self, train_datasets, valid_datasets, work_directory, Rs_per_ds=1, seconds_per_dt=86400, ref_date=None,
+    def __init__(self, train_datasets, valid_datasets, work_directory, Rs_per_ds=1, seconds_per_dt=864000, ref_date=None,
                  batch_size=int(2 ** 10), validation_batch_size=int(2 ** 11), debug=False, random_config=None, use_absorption=False,
                  **kwargs):
         os.makedirs(work_directory, exist_ok=True)

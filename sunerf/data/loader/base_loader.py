@@ -4,14 +4,16 @@ import os
 import uuid
 
 import numpy as np
+import torch
 from astropy import units as u
 from pytorch_lightning import LightningDataModule
+from pytorch_lightning.utilities import CombinedLoader
 from sunpy.coordinates import frames
 from sunpy.map import Map, all_coordinates_from_map
 from torch.utils.data import DataLoader, RandomSampler, Dataset
 from tqdm import tqdm
 
-from sunerf.data.dataset import MmapDataset
+from sunerf.data.dataset import MmapDataset, IndexedDataset
 from sunerf.data.ray_sampling import get_rays
 from sunerf.data.utils import get_azimuthal_equidistant_coordinates
 from sunerf.train.coordinate_transformation import pose_spherical
@@ -40,26 +42,16 @@ class BaseDataModule(LightningDataModule):
         [ds.clear() for ds in self.datasets.values() if isinstance(ds, MmapDataset)]
 
     def train_dataloader(self):
-        print('reloading training datasets')
-
-        datasets = self.training_datasets
-        # data loader with iterations based on the largest dataset
-        ref_idx = np.argmax([len(ds) for ds in datasets.values()])
-        ref_dataset_name, ref_dataset = list(datasets.items())[ref_idx]
-        loaders = {ref_dataset_name: DataLoader(ref_dataset, batch_size=None, num_workers=self.num_workers,
-                                                pin_memory=True, shuffle=True)}
-        for i, (name, dataset) in enumerate(datasets.items()):
-            if i == ref_idx:
-                continue  # reference dataset already added
-            sampler = RandomSampler(dataset, replacement=True, num_samples=len(ref_dataset))
-            loaders[name] = DataLoader(dataset, batch_size=None, num_workers=self.num_workers,
-                                       pin_memory=True, sampler=sampler)
-        return loaders
+        loaders = {name: DataLoader(ds, batch_size=None, num_workers=self.num_workers,
+                                    pin_memory=True, shuffle=True, persistent_workers=True, prefetch_factor=5)
+                   for name, ds in self.training_datasets.items()}
+        return CombinedLoader(loaders, 'max_size_cycle')
 
     def val_dataloader(self):
         datasets = self.validation_datasets
         loaders = []
         for dataset in datasets.values():
+            dataset = IndexedDataset(dataset)
             loader = DataLoader(dataset, batch_size=None, num_workers=self.num_workers, pin_memory=True,
                                 shuffle=False)
             loaders.append(loader)
@@ -159,7 +151,7 @@ class BatchesDataset(Dataset):
 
     def __getitem__(self, idx):
         # lazy load data
-        data = {k: np.copy(np.load(bf, mmap_mode='r')[idx * self.batch_size: (idx + 1) * self.batch_size])
+        data = {k: torch.tensor(np.load(bf, mmap_mode='r')[idx * self.batch_size: (idx + 1) * self.batch_size], dtype=torch.float32)
                 for k, bf in self.batches_file_paths.items()}
         data.update(self.addition_kwargs)
         return data
@@ -173,7 +165,7 @@ class TensorsDataset(BatchesDataset):
     def __init__(self, tensors, work_directory, filter_nans=True, shuffle=True, ds_name=None, **kwargs):
         os.makedirs(work_directory, exist_ok=True)
         # filter nan entries
-        nan_mask = np.any([np.any(np.isnan(t), axis=tuple(range(1, t.ndim))) for t in tensors.values()], axis=0)
+        nan_mask = np.all([np.any(np.isnan(t), axis=tuple(range(1, t.ndim))) for t in tensors.values()], axis=0)
         if nan_mask.sum() > 0 and filter_nans:
             print(f'Filtering {nan_mask.sum()} nan entries')
             tensors = {k: v[~nan_mask] for k, v in tensors.items()}

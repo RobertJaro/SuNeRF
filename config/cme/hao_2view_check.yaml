@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-v2/variations/2view_{id}_v02"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-v2/2view_{id}_v02'
+base_path: "/glade/work/rjarolim/sunerf-cme-v2/2view_check_v01"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-v2/2view_check_v01'
 
 instruments:
   - type: 'default'
@@ -14,14 +14,14 @@ data:
     - type: 'HAO'
       key: 'HAO'
       instrument_key: 'HAO'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_{id}/*pB*.fits"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_{id}/*tB*.fits"
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_040_100/*pB*.fits"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_040_100/*tB*.fits"
       batch_size: 2048
     - type: 'random'
       name: 'continuity'
       radius_range: [ 20, 140 ]
       unit: 'solRad'
-      batch_size: 4096
+      batch_size: 1024
   valid_datasets:
     - type: 'HAO'
       key: 'HAO_sample'
@@ -63,7 +63,7 @@ callbacks:
 logging:
   entity: "robert_jarolim"
   project: "sunerf-cme-variations"
-  name: "2 Viewpoint - {id}"
+  name: "2 Viewpoint - 040_100 - check"
 
 sampling:
   type: "spherical"
@@ -78,4 +78,4 @@ lambda:
   velocity: 1.0e-2
 
 training:
-  log_every_n_steps: null
+  check_val_every_n_epoch: 10
