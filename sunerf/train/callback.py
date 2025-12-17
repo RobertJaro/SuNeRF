@@ -11,12 +11,13 @@ from matplotlib.cm import get_cmap
 from matplotlib.colors import Normalize, LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from pytorch_lightning import Callback
+from pytorch_lightning.utilities import rank_zero_only
 from skimage.metrics import structural_similarity
 from sklearn.linear_model import LinearRegression
 
 from sunerf.data.date_util import unnormalize_datetime
 from sunerf.data.utils import sdo_img_norm
-from pytorch_lightning.utilities import rank_zero_only
+
 
 class BaseCallback(Callback):
 
@@ -573,7 +574,7 @@ class VelocitySliceCallback(BaseCallback):
             if self.plot_velocities:
                 # overlay velocity vectors
                 quiver_pos = query_points[::8, ::8, 0, i,
-                             :2]  # block_reduce(query_points_npy, (8, 8, 1, 1, 1), np.mean)
+                :2]  # block_reduce(query_points_npy, (8, 8, 1, 1, 1), np.mean)
                 quiver_vel = velocity[::8, ::8, 0, i]  # block_reduce(velocity, (8, 8, 1), np.mean)
                 ax.quiver(quiver_pos[:, :, 0], quiver_pos[:, :, 1],
                           quiver_vel[:, :, 0], quiver_vel[:, :, 1],
@@ -640,4 +641,63 @@ class LongitudeSliceCallback(BaseCallback):
         fig.tight_layout()
         wandb.log(
             {f"{self.name} - Longitude={np.rad2deg(self.longitude).astype(int):03d} deg - Slice": wandb.Image(fig)})
+        plt.close('all')
+
+
+class ConditionedImageCallback(BaseCallback):
+
+    def __init__(self, ds_key, image_shape, cmap='gray'):
+        super().__init__(ds_key)
+        self.image_shape = image_shape
+        self.cmap = plt.get_cmap(cmap)
+
+    @rank_zero_only
+    def on_validation_end(self, trainer, pl_module):
+        outputs = self.get_validation_outputs(pl_module)
+        if outputs is None:
+            return
+
+        # reshape
+        outputs = {k: v.view(*self.image_shape, *v.shape[1:]).cpu().numpy() for k, v in outputs.items()}
+
+        predicted_image = outputs['predicted_image']
+        target_image = outputs['target_image']
+
+        self.plot_samples(predicted_image, outputs['height_map'], outputs['absorption_map'],
+                          target_image, outputs['z_vals'], outputs['distance'].mean(), self.cmap)
+
+        # handle NaNs
+        predicted_image = np.nan_to_num(predicted_image, nan=0.0)
+        target_image = np.nan_to_num(target_image, nan=0.0)
+
+        val_loss = ((predicted_image - target_image) ** 2).mean()
+        val_ssim = structural_similarity(target_image[..., 0], predicted_image[..., 0], data_range=1)
+        val_psnr = -10. * np.log10(val_loss)
+
+        wandb.log({'validation.loss': val_loss, 'validation.ssim': val_ssim, 'validation.psnr': val_psnr})
+
+    def plot_samples(self, predicted_image, height_map, absorption_map, target_image, z_vals, distance, cmap):
+        # Log example images on wandb
+        # # Plot example outputs
+
+        fig, ax = plt.subplots(1, 5, figsize=(30, 4))
+
+        im = ax[0].imshow(target_image[..., 0], cmap=cmap)#, norm=sdo_img_norm)
+        plt.colorbar(im, ax=ax[0])
+        ax[0].set_title(f'Target')
+        im = ax[1].imshow(predicted_image[..., 0], cmap=cmap)#, norm=sdo_img_norm)
+        plt.colorbar(im, ax=ax[1])
+        ax[1].set_title(f'Predicted')
+        im = ax[2].imshow(height_map, cmap='plasma')#, vmin=1, vmax=1.3)
+        plt.colorbar(im, ax=ax[2])
+        ax[2].set_title(f'Emission Height')
+        im = ax[3].imshow(absorption_map, cmap='viridis')#, vmin=0)
+        plt.colorbar(im, ax=ax[3])
+        ax[3].set_title(f'Absorption')
+
+        # select index
+        y, x = z_vals.shape[0] // 4, z_vals.shape[1] // 4  # select point in first quadrant
+        plot_ray_sampling(z_vals[y, x], None, ax[-1])
+
+        wandb.log({"Comparison": fig})
         plt.close('all')

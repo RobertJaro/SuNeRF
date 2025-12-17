@@ -2,6 +2,7 @@ from typing import Iterable
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from astropy import units as u
 from torch import nn
 from torch._C._nn import linear
@@ -162,6 +163,90 @@ class EmissionModel(GenericModel):
         return {'emission': emission, 'alpha': alpha}
 
 
+class ConditionedNeRF(nn.Module):
+
+    def __init__(self, n_channels=1, z_dim=128, **kwargs):
+        super().__init__()
+        self.posenc = GaussianPositionalEncoding(3, scales=4)
+        dim_encoding = self.posenc.d_output
+        self.nerf = SirenModel(in_dim=dim_encoding + z_dim, out_dim=n_channels * 2, dim=256, n_layers=8, **kwargs)
+        self.n_channels = n_channels
+
+    def forward(self, x, z):
+        # x = (batch, 3)
+        # z = (batch, dim_z)
+        encoded = self.posenc(x)
+        nerf_input = torch.cat([encoded, z], dim=-1)
+        out = self.nerf(nerf_input)
+        emission = torch.exp(out[..., :self.n_channels])
+        alpha = nn.functional.relu(out[..., self.n_channels:])
+        return {'emission': emission, 'alpha': alpha}
+
+
+class ResidualBlock(nn.Module):
+    """Simple residual block (same channels in/out)."""
+
+    def __init__(self, channels: int, gn_groups: int = 8):
+        super().__init__()
+        g = min(gn_groups, channels)
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.gn1 = nn.GroupNorm(num_groups=g, num_channels=channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.gn2 = nn.GroupNorm(num_groups=g, num_channels=channels)
+
+    def forward(self, x):
+        h = self.conv1(x)
+        h = self.gn1(h)
+        h = F.relu(h, inplace=True)
+        h = self.conv2(h)
+        h = self.gn2(h)
+        return F.relu(x + h, inplace=True)
+
+
+class ImageToLatentCNN(nn.Module):
+    def __init__(
+            self,
+            in_channels=3,
+            z_dim=128,
+            base_channels=32,
+            n_blocks=4,
+            n_res_blocks=2,
+            gn_groups=8,
+    ):
+        super().__init__()
+
+        layers = []
+        ch = in_channels
+
+        # Original downsampling stack
+        for i in range(n_blocks):
+            out_ch = base_channels * (2 ** i)
+            g = min(gn_groups, out_ch)
+
+            layers += [
+                nn.Conv2d(ch, out_ch, kernel_size=3, stride=2, padding=1),
+                nn.GroupNorm(num_groups=g, num_channels=out_ch),
+                nn.ReLU(inplace=True),
+            ]
+            ch = out_ch
+
+        # add residual blocks at the end (same spatial resolution)
+        for _ in range(n_res_blocks):
+            layers.append(ResidualBlock(ch, gn_groups=gn_groups))
+
+        self.conv = nn.Sequential(*layers)
+
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Linear(ch, z_dim)
+        self.scale = nn.Parameter(torch.tensor(1.0))
+
+    def forward(self, img):
+        h = self.conv(img)
+        h = self.pool(h).flatten(1)
+        z = self.fc(h)
+        return self.scale * z
+
+
 class PlasmaModel(GenericModel):
 
     def __init__(self, log_T, decay_distance=2.0, encoding='positional', **kwargs):
@@ -265,6 +350,7 @@ class SirenPlasmaModel(SirenModel):
                 'total_log_ne': total_log_ne,
                 'ne': ne, 'sigma': sigma
                 }
+
 
 class RhoModel(SirenNet):
 
@@ -416,20 +502,39 @@ class PositionalEncoding(nn.Module):
         encoded = torch.cat(encoded_coordinates, -1)
         return encoded
 
+
 class GaussianPositionalEncoding(nn.Module):
 
-    def __init__(self, d_input, num_freqs=32, scale=4):
+    def __init__(self, d_input, num_frequencies=32, scales=64):
         super().__init__()
-        dist = Normal(loc=0, scale=scale)
-        frequencies = dist.sample([num_freqs, d_input])
-        self.frequencies = nn.Parameter(2 * torch.pi * frequencies, requires_grad=False)
-        self.d_output = d_input * (num_freqs * 2 + 1)
+        num_frequencies = [num_frequencies] * d_input if not isinstance(num_frequencies, Iterable) else num_frequencies
+        scales = [scales] * d_input if not isinstance(scales, Iterable) else scales
+
+        assert len(num_frequencies) == d_input, 'num_frequencies length must match input dimension (in_dim)'
+        assert len(scales) == d_input, 'scales length must match input dimension (in_dim)'
+
+        frequencies = []
+        for num_freq, scale in zip(num_frequencies, scales):
+            dist = Normal(loc=0, scale=scale)
+            f = dist.sample([num_freq])
+            param = nn.Parameter(f, requires_grad=False)
+            frequencies.append(param)
+        self.frequencies = nn.ParameterList(frequencies)
+
+        self.d_output = int(sum([n * 2 for n in num_frequencies])) + d_input
+
+        self.num_frequencies = num_frequencies
 
     def forward(self, x):
-        encoded = torch.einsum('...j,ij->...ij', x, self.frequencies)
-        encoded = encoded.reshape(*x.shape[:-1], -1)
-        encoded = torch.cat([x, torch.sin(encoded), torch.cos(encoded)], -1)
+        encoded_coordinates = []
+        for i, frequencies in enumerate(self.frequencies):
+            encoded = torch.einsum('i,...j->...ij', torch.pi * frequencies, x[..., i:i + 1])
+            encoded = encoded.reshape(*x.shape[:-1], -1)
+            encoded = torch.cat([torch.sin(encoded), torch.cos(encoded)], -1)
+            encoded_coordinates.append(encoded)
+        encoded = torch.cat(encoded_coordinates + [x], -1)  # append original coordinates
         return encoded
+
 
 class TimeSplitEncoding(nn.Module):
     def __init__(self, dim, w0_spatial=30.0, w0_time=1.0):
@@ -445,6 +550,7 @@ class TimeSplitEncoding(nn.Module):
         time_encoded = self.time_layer(time)
         encoded = torch.cat([spatial_encoded, time_encoded], dim=-1)
         return encoded
+
 
 class MultispectralEncoding(nn.Module):
 

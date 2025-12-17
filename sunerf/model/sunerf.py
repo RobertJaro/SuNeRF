@@ -4,36 +4,14 @@ from torch import nn
 from torch.optim.lr_scheduler import ExponentialLR
 import torch.distributed as dist
 
-class BaseSuNeRFModule(LightningModule):
+class BaseModule(LightningModule):
 
-    def __init__(self, Rs_per_ds, seconds_per_dt, rendering: nn.Module,
-                 validation_dataset_mapping, lr_config=None):
+    def __init__(self, validation_dataset_mapping):
         super().__init__()
-
-        self.Rs_per_ds = Rs_per_ds
-        self.seconds_per_dt = seconds_per_dt
-        self.rendering = rendering
 
         self.validation_dataset_mapping = validation_dataset_mapping
         self.validation_outputs = {}
         self.validation_batches = {}
-
-        self.lr_config = {'start': 1e-4, 'end': 1e-5, 'iterations': 1e6} if lr_config is None else lr_config
-
-    def configure_optimizers(self):
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr_config['start'])
-        self.scheduler = ExponentialLR(self.optimizer, gamma=(self.lr_config['end'] / self.lr_config['start']) ** (
-                1 / self.lr_config['iterations']))
-        return [self.optimizer], [self.scheduler]
-
-    def on_train_batch_end(self, *args, **kwargs):
-        # update learning rate and log
-        if self.scheduler.get_last_lr()[0] > 5e-5:
-            self.scheduler.step()
-        self.log('Learning Rate', self.scheduler.get_last_lr()[0])
-
-        if self.rendering.shuffler is not None:
-            self.rendering.shuffler.on_train_batch_end()
 
     def on_validation_epoch_start(self):
         self.validation_outputs = {}
@@ -95,4 +73,31 @@ class BaseSuNeRFModule(LightningModule):
         self.load_state_dict(state_dict, strict=False)
         self.validation_outputs = {}  # reset validation outputs
 
+
+class BaseSuNeRFModule(BaseModule):
+
+    def __init__(self, Rs_per_ds, seconds_per_dt, rendering: nn.Module,
+                 validation_dataset_mapping, lr_config=None):
+        super().__init__(validation_dataset_mapping=validation_dataset_mapping)
+
+        self.Rs_per_ds = Rs_per_ds
+        self.seconds_per_dt = seconds_per_dt
+        self.rendering = rendering
+
+        self.lr_config = {'start': 1e-4, 'end': 1e-5, 'iterations': 1e6} if lr_config is None else lr_config
+
+    def configure_optimizers(self):
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr_config['start'])
+        self.scheduler = ExponentialLR(self.optimizer, gamma=(self.lr_config['end'] / self.lr_config['start']) ** (
+                1 / self.lr_config['iterations']))
+        return [self.optimizer], [self.scheduler]
+
+    def on_train_batch_end(self, *args, **kwargs):
+        # update learning rate and log
+        if self.scheduler.get_last_lr()[0] > 5e-5:
+            self.scheduler.step()
+        self.log('Learning Rate', self.scheduler.get_last_lr()[0])
+
+        if self.rendering.shuffler is not None:
+            self.rendering.shuffler.on_train_batch_end()
 

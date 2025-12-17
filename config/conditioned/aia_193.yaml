@@ -1,0 +1,23 @@
+base_path: "/glade/work/rjarolim/sunerf-conditioned/aia_193_v05"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf-conditioned/aia_193_v01"
+
+data:
+  data_path: '/glade/work/rjarolim/data/sunerf-conditioned/aia_193_npz/*.npz'
+  batch_size: 4
+  num_workers: 16
+  cmap: 'sdoaia193'
+
+logging:
+  project: "sunerf-conditioned"
+  name: "AIA - 193 A"
+
+sampling:
+  type: "spherical"
+  n_samples: 128
+  max_distance: 3.0
+
+lambda:
+  image: 1.0
+
+training:
+  check_val_every_n_epoch: 50

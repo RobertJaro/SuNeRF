@@ -81,11 +81,12 @@ def get_data(data_path, Rs_per_ds, debug=False):
 
 class MapDataLoader:
 
-    def __init__(self, Rs_per_ds, reference_frame='carrington', max_radius=None, azimuthal_equidistant=False):
+    def __init__(self, Rs_per_ds, reference_frame='carrington', max_radius=None, azimuthal_equidistant=False, add_hpc=False):
         self.Rs_per_ds = Rs_per_ds
         self.reference_frame = reference_frame
         self.max_radius = max_radius
         self.azimuthal_equidistant = azimuthal_equidistant
+        self.add_hpc = add_hpc
 
     def load(self, map_path):
         s_map = Map(map_path)
@@ -106,6 +107,12 @@ class MapDataLoader:
             observer = {'radius': s_map.dsun.to(u.solRad),
                         'latitude': s_map.heliographic_latitude.to(u.deg),
                         'longitude': s_map.heliographic_longitude.to(u.deg),
+                        'time': time}
+        elif self.reference_frame == 'helioprojective':
+            pose = pose_spherical(0.0, 0.0, s_map.dsun.to_value(u.solRad) / self.Rs_per_ds).float().numpy()
+            observer = {'radius': s_map.dsun.to(u.solRad),
+                        'latitude': s_map.observer_coordinate.lat.to(u.deg),
+                        'longitude': s_map.observer_coordinate.lon.to(u.deg),
                         'time': time}
         else:
             raise ValueError('reference_frame must be "heliographic" or "carrington"')
@@ -130,7 +137,15 @@ class MapDataLoader:
             all_rays[mask] = np.nan
             image[mask] = np.nan
 
-        return {'image': image, 'pose': pose, 'rays': all_rays, 'time': time, 'observer': observer}
+        out = {'image': image, 'pose': pose, 'rays': all_rays, 'time': time, 'observer': observer}
+
+        if self.add_hpc:
+            hpc_coords = all_coordinates_from_map(s_map).transform_to(frames.Helioprojective)
+            hpc = np.stack([hpc_coords.Tx.to_value(u.arcsec).astype(np.float32),
+                            hpc_coords.Ty.to_value(u.arcsec).astype(np.float32)], axis=-1)
+            out['hpc'] = hpc
+
+        return out
 
 
 class BatchesDataset(Dataset):
