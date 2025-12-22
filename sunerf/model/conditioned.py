@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.optim.lr_scheduler import ExponentialLR
 
-from sunerf.model.model import ImageToLatentCNN
+from sunerf.model.model import ImageToLatentCNN, CoordinateToLatentModel
 from sunerf.model.sunerf import BaseModule
 from sunerf.rendering.conditioned_emission import ConditionedRadiativeTransfer
 from sunerf.train.scaling import ImageAsinhScaling
@@ -10,19 +10,22 @@ from sunerf.train.scaling import ImageAsinhScaling
 
 class ConditionedSuNeRFModule(BaseModule):
     def __init__(self, Rs_per_ds, image_scaling_config, in_channels,
-                 lambda_image=1.0,
+                 lambda_config=None,
                  sampling_config=None,
-                 model_config=None, lr_config=None, **kwargs):
+                 model_config=None, lr_config=None, use_absorption=True,
+                 **kwargs):
         super().__init__(**kwargs)
-        self.lambda_image = lambda_image
+        lambda_config = {'image': 1.0} if lambda_config is None else lambda_config
+        self.lambda_image = lambda_config.get('image', 1.0)
 
         # setup rendering
-        z_dim = 128
-        self.rendering = ConditionedRadiativeTransfer(z_dim=z_dim,
+        z_dim = model_config.pop('latent_z', 1024)
+        self.rendering = ConditionedRadiativeTransfer(z_dim=z_dim + 32,
                                                       Rs_per_ds=Rs_per_ds,
                                                       sampling_config=sampling_config,
-                                                      model_config=model_config)
+                                                      model_config=model_config, use_absorption=use_absorption)
         self.encoder = ImageToLatentCNN(in_channels, z_dim=z_dim)
+        self.coordinate_encoder = CoordinateToLatentModel(z_dim=32)
 
         self.image_scaling = ImageAsinhScaling(**image_scaling_config)
         self.mse_loss = nn.MSELoss()
@@ -44,12 +47,17 @@ class ConditionedSuNeRFModule(BaseModule):
     def training_step(self, batch, batch_nb):
         rays, target_image, input_image = batch['rays'], batch['target_image'], batch['input_image']
         rays_o, rays_d = rays[..., 0, :], rays[..., 1, :] # [batch, n_rays, 3]
+        latitude, longitude = batch['latitude'], batch['longitude']
+        observer_coords = torch.stack([torch.sin(latitude), torch.cos(latitude),
+                                       torch.sin(longitude), torch.cos(longitude)], dim=-1)
 
         # scale target image
         input_image = self.image_scaling(input_image) # [batch, C, H, W]
 
         # get feature vector from encoding network
-        latent_z = self.encoder(input_image)
+        latent_img_z = self.encoder(input_image)
+        latent_coord_z = self.coordinate_encoder(observer_coords)  # [batch, 4]
+        latent_z = torch.cat([latent_img_z, latent_coord_z], dim=-1)  # [batch, z_dim + 32]
 
         # flatten and repeat latent vector for all rays in the batch
         latent_z = latent_z[:, None, :].repeat(1, rays_o.shape[1], 1)  # [batch, n_rays, z_dim]
@@ -85,12 +93,17 @@ class ConditionedSuNeRFModule(BaseModule):
         if dataloader_idx == 0:
             rays, target_image, input_image = batch['rays'], batch['target_image'], batch['input_image']
             rays_o, rays_d = rays[..., 0, :], rays[..., 1, :] # [batch, n_rays, 3]
+            latitude, longitude = batch['latitude'], batch['longitude']
+            observer_coords = torch.stack([torch.sin(latitude), torch.cos(latitude),
+                                           torch.sin(longitude), torch.cos(longitude)], dim=-1)
 
             # scale target image
             input_image = self.image_scaling(input_image)  # [batch, C, H, W]
 
             # get feature vector from encoding network
-            latent_z = self.encoder(input_image)
+            latent_img_z = self.encoder(input_image)
+            latent_coord_z = self.coordinate_encoder(observer_coords)
+            latent_z = torch.cat([latent_img_z, latent_coord_z], dim=-1)  # [batch, z_dim + 32]
 
             # flatten and repeat latent vector for all rays in the batch
             latent_z = latent_z[:, None, :].repeat(1, rays_o.shape[1], 1)  # [batch, n_rays, z_dim]

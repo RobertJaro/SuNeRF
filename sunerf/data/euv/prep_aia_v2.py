@@ -19,6 +19,7 @@ if __name__ == '__main__':
     parser.add_argument('--data_path', type=str, required=True)
     parser.add_argument('--out_path', type=str, required=True)
     parser.add_argument('--resolution', type=int, default=512)
+    parser.add_argument("--nproc", type=int, default=None, help="Number of parallel processes (default: 16)")
     args = parser.parse_args()
 
     os.makedirs(args.out_path, exist_ok=True)
@@ -66,6 +67,7 @@ if __name__ == '__main__':
     out_paths = [os.path.join(args.out_path, os.path.basename(f)) for f in files]
     correction_table = get_correction_table()
 
-    with multiprocessing.Pool(os.cpu_count()) as p:
+    nproc = os.cpu_count() if args.nproc is None else args.nproc
+    with multiprocessing.Pool(nproc) as p:
         zip_in = zip(files, out_paths, repeat(args.resolution), repeat(correction_table))
         [_ for _ in tqdm(p.imap_unordered(_convert_map, zip_in), total=len(files))]

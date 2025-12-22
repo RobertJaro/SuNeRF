@@ -688,7 +688,7 @@ class ConditionedImageCallback(BaseCallback):
         im = ax[1].imshow(predicted_image[..., 0], cmap=cmap)#, norm=sdo_img_norm)
         plt.colorbar(im, ax=ax[1])
         ax[1].set_title(f'Predicted')
-        im = ax[2].imshow(height_map, cmap='plasma')#, vmin=1, vmax=1.3)
+        im = ax[2].imshow(height_map, cmap='plasma', vmin=1, vmax=1.3)
         plt.colorbar(im, ax=ax[2])
         ax[2].set_title(f'Emission Height')
         im = ax[3].imshow(absorption_map, cmap='viridis')#, vmin=0)

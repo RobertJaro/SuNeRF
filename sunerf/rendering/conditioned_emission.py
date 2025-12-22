@@ -8,15 +8,16 @@ from sunerf.train.sampling import SphericalSampler, StratifiedSampler
 
 class ConditionedRadiativeTransfer(nn.Module):
 
-    def __init__(self, Rs_per_ds, z_dim, sampling_config=None, model_config=None, **kwargs):
+    def __init__(self, Rs_per_ds, z_dim, sampling_config=None, model_config=None, use_absorption=True, **kwargs):
         super().__init__()
         self.Rs_per_ds = Rs_per_ds
+        self.use_absorption = use_absorption
 
         # set default configurations
         sampling_config = {} if sampling_config is None else sampling_config
 
         # setup sampling strategy
-        sampling_type = sampling_config.pop('type', 'stratified')
+        sampling_type = sampling_config.pop('type', 'spherical')
         if sampling_type == 'spherical':
             self.sampler = SphericalSampler(Rs_per_ds=Rs_per_ds, **sampling_config)
         elif sampling_type == 'stratified':
@@ -87,7 +88,10 @@ class ConditionedRadiativeTransfer(nn.Module):
         total_absorption = cumprod_exclusive(absorption + 1e-10)
         # [(1), 1, .9, .9, 0, 0] --> total absorption for each point along the ray
         # apply absorption to intensities
-        emerging_intensity = intensity * total_absorption  # integrate total intensity [n_rays, n_samples - 1]
+        if self.use_absorption:
+            emerging_intensity = intensity * total_absorption  # integrate total intensity [n_rays, n_samples - 1]
+        else:
+            emerging_intensity = intensity  # integrate total intensity [n_rays, n_samples - 1]
         # sum all intensity contributions
         pixel_intensity = emerging_intensity.sum(1)[:, None]
 

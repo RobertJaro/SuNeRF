@@ -1,10 +1,12 @@
-base_path: "/glade/work/rjarolim/sunerf-conditioned/aia_193_v05"
+base_path: "/glade/work/rjarolim/sunerf-conditioned/aia_193_v03"
 work_directory: "/glade/derecho/scratch/rjarolim/sunerf-conditioned/aia_193_v01"
 
 data:
   data_path: '/glade/work/rjarolim/data/sunerf-conditioned/aia_193_npz/*.npz'
-  batch_size: 4
-  num_workers: 16
+  patch_size: null
+  batch_size: 16
+  n_rays: 512
+  num_workers: 32
   cmap: 'sdoaia193'
 
 logging:
@@ -13,8 +15,8 @@ logging:
 
 sampling:
   type: "spherical"
-  n_samples: 128
-  max_distance: 3.0
+  n_samples: 64
+  max_distance: 1.4
 
 lambda:
   image: 1.0

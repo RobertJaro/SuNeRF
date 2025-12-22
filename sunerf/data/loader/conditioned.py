@@ -11,7 +11,7 @@ from sunerf.data.dataset import IndexedDataset
 
 class ConditionedDataModule(LightningDataModule):
 
-    def __init__(self, data_path, work_directory, Rs_per_ds=1, batch_size=8, n_rays=256, cmap='gray', num_workers=None, **kwargs):
+    def __init__(self, data_path, work_directory, patch_size=(256, 256), Rs_per_ds=1, batch_size=8, n_rays=256, cmap='gray', num_workers=None, **kwargs):
         self.Rs_per_ds = Rs_per_ds
         self.cmap = cmap
         self.num_workers = os.cpu_count() if num_workers is None else num_workers
@@ -22,15 +22,15 @@ class ConditionedDataModule(LightningDataModule):
         assert len(data_files) > 0, f"No files found for input pattern: {data_path}"
 
         # select test image
-        test_idx = len(data_files) // 6
+        test_idx = len(data_files) // 2
         mask = np.ones(len(data_files), dtype=bool)
         mask[test_idx] = False
 
         train_files = np.array(data_files)[mask].tolist()
         valid_file = data_files[test_idx]
 
-        self.train_dataset = ConditionedDataset(train_files, patch_size=(256, 256), n_rays=n_rays)
-        self.valid_dataset = FullImageDataset(valid_file, patch_size=(256, 256), batch_size=batch_size * n_rays)
+        self.train_dataset = ConditionedDataset(train_files, patch_size=patch_size, n_rays=n_rays)
+        self.valid_dataset = FullImageDataset(valid_file, patch_size=patch_size, batch_size=batch_size * n_rays)
         self.validation_dataset_mapping = {0: 'image'}
 
         self.config = {'type': 'conditioned', 'Rs_per_ds': Rs_per_ds, 'cmap': cmap, 'resolution': (256, 256),
@@ -39,13 +39,15 @@ class ConditionedDataModule(LightningDataModule):
         super().__init__()
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
+        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True,
+                          num_workers=self.num_workers, pin_memory=True, persistent_workers=True,
+                          prefetch_factor=5)
 
     def val_dataloader(self):
         dataset = self.valid_dataset
         dataset = IndexedDataset(dataset)
         loader = DataLoader(dataset, batch_size=None, num_workers=self.num_workers, pin_memory=True,
-                            shuffle=False)
+                            shuffle=False, persistent_workers=True, prefetch_factor=5)
         return [loader,]
 
 
@@ -69,6 +71,8 @@ class ConditionedDataset(Dataset):
         image = data_dict['image']
         rays = data_dict['rays']
         hpc = data_dict['hpc']
+        longitude = np.deg2rad(data_dict['longitude'])
+        latitude = np.deg2rad(data_dict['latitude'])
 
         if self.patch_size is not None:
             # randomly sample a patch
@@ -89,7 +93,8 @@ class ConditionedDataset(Dataset):
         possible_indices = np.arange(h*w)
         flat_image = image.reshape(-1)
         possible_indices = possible_indices[~np.isnan(flat_image)]
-        indices = np.random.choice(possible_indices, size=self.n_rays, replace=False)
+        # replace True to avoid error when most pixels are NaN
+        indices = np.random.choice(possible_indices, size=self.n_rays, replace=True)
         target_image = flat_image[indices]
         rays = rays.reshape(-1, *rays.shape[-2:])[indices]
 
@@ -106,7 +111,9 @@ class ConditionedDataset(Dataset):
 
         return {'target_image': torch.tensor(target_image, dtype=torch.float32),
                 'rays': torch.tensor(rays, dtype=torch.float32),
-                'input_image': torch.tensor(input_image, dtype=torch.float32)}
+                'input_image': torch.tensor(input_image, dtype=torch.float32),
+                'longitude': torch.tensor(longitude, dtype=torch.float32),
+                'latitude': torch.tensor(latitude, dtype=torch.float32)}
 
 
 class FullImageDataset(Dataset):
@@ -118,10 +125,11 @@ class FullImageDataset(Dataset):
 
         # load full image and rays
         data_dict = np.load(data_file, mmap_mode='r')
-        print(data_dict.keys())
         image = data_dict['image'] / scaling
         rays = data_dict['rays']
         hpc = data_dict['hpc'] / arcsec_norm
+        self.longitude = np.deg2rad(data_dict['longitude'])
+        self.latitude = np.deg2rad(data_dict['latitude'])
 
         # extract patch
         if patch_size is not None:
@@ -169,4 +177,6 @@ class FullImageDataset(Dataset):
 
         return {'target_image': torch.tensor(target_image, dtype=torch.float32),
                 'rays': torch.tensor(rays, dtype=torch.float32),
-                'input_image': torch.tensor(input_image, dtype=torch.float32)}
+                'input_image': torch.tensor(input_image, dtype=torch.float32),
+                'longitude': torch.tensor(self.longitude, dtype=torch.float32).reshape(1,),
+                'latitude': torch.tensor(self.latitude, dtype=torch.float32).reshape(1,)}

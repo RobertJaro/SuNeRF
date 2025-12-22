@@ -52,12 +52,14 @@ if __name__ == '__main__':
     # setup default configs
     data_config = config['data']
     model_config = config['model'] if 'model' in config else {}
+    sampling_config = config['sampling'] if 'sampling' in config else {}
     training_config = config['training'] if 'training' in config else {}
     image_scaling_config = config['image_scaling'] if 'image_scaling' in config else {}
+    lambda_config = config['lambda'] if 'lambda' in config else {}
     logging_config = config['logging'] if 'logging' in config else {'project': 'sunerf'}
 
     # setup training config
-    epochs = training_config['epochs'] if 'epochs' in training_config else 10000
+    epochs = training_config['epochs'] if 'epochs' in training_config else int(1e8)
     log_every_n_steps = training_config['log_every_n_steps'] if 'log_every_n_steps' in training_config else None
     check_val_every_n_epoch = training_config['check_val_every_n_epoch'] if 'check_val_every_n_epoch' in training_config else None
     ckpt_path = training_config['meta_path'] if 'meta_path' in training_config else 'last'
@@ -83,8 +85,8 @@ if __name__ == '__main__':
     sunerf = ConditionedSuNeRFModule(Rs_per_ds=data_module.Rs_per_ds,
                                      image_scaling_config=image_scaling_config,
                                      validation_dataset_mapping=data_module.validation_dataset_mapping,
-                                     in_channels=data_module.config['channels'],
-                                     **model_config)
+                                     in_channels=data_module.config['channels'], sampling_config=sampling_config,
+                                     model_config=model_config, lambda_config=lambda_config,)
 
     # initialize callbacks
     checkpoint_callback = ModelCheckpoint(dirpath=base_path,

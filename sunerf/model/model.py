@@ -167,9 +167,10 @@ class ConditionedNeRF(nn.Module):
 
     def __init__(self, n_channels=1, z_dim=128, **kwargs):
         super().__init__()
-        self.posenc = GaussianPositionalEncoding(3, scales=4)
+        self.posenc = GaussianPositionalEncoding(3, scales=16, num_frequencies=16)
         dim_encoding = self.posenc.d_output
-        self.nerf = SirenModel(in_dim=dim_encoding + z_dim, out_dim=n_channels * 2, dim=256, n_layers=8, **kwargs)
+        encoding_config = {'type': 'identity'}
+        self.nerf = SirenModel(in_dim=dim_encoding + z_dim, out_dim=n_channels * 2, dim=512, n_layers=8, encoding_config=encoding_config, **kwargs)
         self.n_channels = n_channels
 
     def forward(self, x, z):
@@ -183,68 +184,72 @@ class ConditionedNeRF(nn.Module):
         return {'emission': emission, 'alpha': alpha}
 
 
-class ResidualBlock(nn.Module):
-    """Simple residual block (same channels in/out)."""
-
-    def __init__(self, channels: int, gn_groups: int = 8):
+class ResBlock(nn.Module):
+    def __init__(self, ch, norm=nn.GroupNorm, gn_groups=8):
         super().__init__()
-        g = min(gn_groups, channels)
-        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
-        self.gn1 = nn.GroupNorm(num_groups=g, num_channels=channels)
-        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
-        self.gn2 = nn.GroupNorm(num_groups=g, num_channels=channels)
+        g = min(gn_groups, ch)
+        self.block = nn.Sequential(
+            nn.Conv2d(ch, ch, 3, padding=1),
+            norm(g, ch),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(ch, ch, 3, padding=1),
+            norm(g, ch),
+        )
 
     def forward(self, x):
-        h = self.conv1(x)
-        h = self.gn1(h)
-        h = F.relu(h, inplace=True)
-        h = self.conv2(h)
-        h = self.gn2(h)
-        return F.relu(x + h, inplace=True)
+        return F.relu(x + self.block(x), inplace=True)
 
 
 class ImageToLatentCNN(nn.Module):
     def __init__(
-            self,
-            in_channels=3,
-            z_dim=128,
-            base_channels=32,
-            n_blocks=4,
-            n_res_blocks=2,
-            gn_groups=8,
+        self,
+        in_channels=3,
+        z_dim=2048,
+        base_channels=32,
+        max_channels=512,
+        gn_groups=8,
     ):
         super().__init__()
 
-        layers = []
-        ch = in_channels
+        self.stem = nn.Sequential(
+            nn.Conv2d(in_channels, base_channels, 7, stride=2, padding=3),
+            nn.GroupNorm(min(gn_groups, base_channels), base_channels),
+            nn.ReLU(inplace=True),
+        )
 
-        # Original downsampling stack
-        for i in range(n_blocks):
-            out_ch = base_channels * (2 ** i)
-            g = min(gn_groups, out_ch)
+        stages = []
+        ch = base_channels
 
-            layers += [
-                nn.Conv2d(ch, out_ch, kernel_size=3, stride=2, padding=1),
-                nn.GroupNorm(num_groups=g, num_channels=out_ch),
-                nn.ReLU(inplace=True),
+        for _ in range(4):  # 4 stages is usually enough
+            stages += [
+                ResBlock(ch, gn_groups=gn_groups),
+                nn.Conv2d(ch, min(ch * 2, max_channels), 3, stride=2, padding=1),
             ]
-            ch = out_ch
+            ch = min(ch * 2, max_channels)
 
-        # add residual blocks at the end (same spatial resolution)
-        for _ in range(n_res_blocks):
-            layers.append(ResidualBlock(ch, gn_groups=gn_groups))
-
-        self.conv = nn.Sequential(*layers)
+        self.encoder = nn.Sequential(*stages)
 
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Linear(ch, z_dim)
         self.scale = nn.Parameter(torch.tensor(1.0))
 
-    def forward(self, img):
-        h = self.conv(img)
-        h = self.pool(h).flatten(1)
-        z = self.fc(h)
-        return self.scale * z
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.encoder(x)
+        x = self.pool(x).flatten(1)
+        return self.scale * self.fc(x)
+
+class CoordinateToLatentModel(GenericModel):
+    def __init__(
+        self,
+        z_dim=32, **kwargs
+    ):
+        super().__init__(in_dim=4, out_dim=z_dim, dim=32, n_layers=4, **kwargs)
+        self.scale = nn.Parameter(torch.tensor(1.0))
+
+    def forward(self, x):
+        x = super().forward(x)
+        return self.scale * x
 
 
 class PlasmaModel(GenericModel):
