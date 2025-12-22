@@ -1,8 +1,8 @@
-base_path: "/glade/work/rjarolim/sunerf-conditioned/aia_193_v03"
+base_path: "/glade/work/rjarolim/sunerf-conditioned/aia_193_v04"
 work_directory: "/glade/derecho/scratch/rjarolim/sunerf-conditioned/aia_193_v01"
 
 data:
-  data_path: '/glade/work/rjarolim/data/sunerf-conditioned/aia_193_npz/*.npz'
+  data_path: '/glade/work/rjarolim/data/sunerf-conditioned/aia_193_prep/*.fits'
   patch_size: null
   batch_size: 16
   n_rays: 512

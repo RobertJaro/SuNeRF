@@ -7,6 +7,7 @@ from pytorch_lightning import LightningDataModule
 from torch.utils.data import Dataset, DataLoader
 
 from sunerf.data.dataset import IndexedDataset
+from sunerf.data.loader.base_loader import MapDataLoader
 
 
 class ConditionedDataModule(LightningDataModule):
@@ -29,7 +30,7 @@ class ConditionedDataModule(LightningDataModule):
         train_files = np.array(data_files)[mask].tolist()
         valid_file = data_files[test_idx]
 
-        self.train_dataset = ConditionedDataset(train_files, patch_size=patch_size, n_rays=n_rays)
+        self.train_dataset = ConditionedMapDataset(train_files, patch_size=patch_size, n_rays=n_rays)
         self.valid_dataset = FullImageDataset(valid_file, patch_size=patch_size, batch_size=batch_size * n_rays)
         self.validation_dataset_mapping = {0: 'image'}
 
@@ -50,8 +51,7 @@ class ConditionedDataModule(LightningDataModule):
                             shuffle=False, persistent_workers=True, prefetch_factor=5)
         return [loader,]
 
-
-class ConditionedDataset(Dataset):
+class ConditionedMapDataset(Dataset):
 
     def __init__(self, data_files, patch_size=None, n_rays=32, scaling=10000, arcsec_norm=1000, add_hpc=True):
         self.data_files = data_files
@@ -61,18 +61,19 @@ class ConditionedDataset(Dataset):
         self.arcsec_norm = arcsec_norm
         self.add_hpc = add_hpc
         self.channels = 3 if add_hpc else 1
+        self.loader = MapDataLoader(Rs_per_ds=1, reference_frame="carrington", add_hpc=True)
         super().__init__()
 
     def __len__(self):
         return len(self.data_files)
 
     def __getitem__(self, idx):
-        data_dict = np.load(self.data_files[idx], mmap_mode='r')
-        image = data_dict['image']
-        rays = data_dict['rays']
-        hpc = data_dict['hpc']
-        longitude = np.deg2rad(data_dict['longitude'])
-        latitude = np.deg2rad(data_dict['latitude'])
+        data = self.loader.load(self.data_files[idx])
+        image = data["image"]
+        rays = data["rays"]
+        hpc = data["hpc"]
+        latitude = np.deg2rad(data["observer"]['latitude'])
+        longitude = np.deg2rad(data["observer"]['longitude'])
 
         if self.patch_size is not None:
             # randomly sample a patch
@@ -123,13 +124,14 @@ class FullImageDataset(Dataset):
         self.add_hpc = add_hpc
         self.channels = 3 if add_hpc else 1
 
+        loader = MapDataLoader(Rs_per_ds=1, reference_frame="carrington", add_hpc=True)
         # load full image and rays
-        data_dict = np.load(data_file, mmap_mode='r')
+        data_dict = loader.load(data_file)
         image = data_dict['image'] / scaling
         rays = data_dict['rays']
         hpc = data_dict['hpc'] / arcsec_norm
-        self.longitude = np.deg2rad(data_dict['longitude'])
-        self.latitude = np.deg2rad(data_dict['latitude'])
+        self.longitude = np.deg2rad(data_dict['observer']['longitude'])
+        self.latitude = np.deg2rad(data_dict['observer']['latitude'])
 
         # extract patch
         if patch_size is not None:

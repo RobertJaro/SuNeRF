@@ -32,13 +32,7 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 
 #################################################
 # Data Preparation
-#python -m sunerf.data.euv.prep_aia_v2 --data_path "/glade/work/rjarolim/data/sunerf-conditioned/aia_193/*.fits" --out_path "/glade/work/rjarolim/data/sunerf-conditioned/aia_193_prep" --resolution 256
-
-#python -m sunerf.data.conditioned.convert_aia_data \
-#  --input "/glade/work/rjarolim/data/sunerf-conditioned/aia_193_prep/*.fits" \
-#  --output "/glade/work/rjarolim/data/sunerf-conditioned/aia_193_npz" \
-#  --nproc 32
-
+python -m sunerf.data.euv.prep_aia_v2 --data_path "/glade/work/rjarolim/data/sunerf-conditioned/aia_193/*.fits" --out_path "/glade/work/rjarolim/data/sunerf-conditioned/aia_193_prep" --resolution 256
 
 #################################################
 # Training
