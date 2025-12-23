@@ -31,6 +31,12 @@ def save_conditioned_sunerf(sunerf, data_module, save_path):
         'data_config': data_module.config,
         # data scaling
         'Rs_per_ds': data_module.Rs_per_ds,
+        # normalization factors
+        'image_norm': data_module.image_norm,
+        'arcsec_norm': data_module.arcsec_norm,
+        # latent encoder
+        'image_encoder': sunerf.image_encoder,
+        'coordinate_encoder': sunerf.coordinate_encoder,
     }
     torch.save(state, save_path)
 

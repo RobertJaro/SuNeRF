@@ -30,8 +30,12 @@ class ConditionedDataModule(LightningDataModule):
         train_files = np.array(data_files)[mask].tolist()
         valid_file = data_files[test_idx]
 
-        self.train_dataset = ConditionedMapDataset(train_files, patch_size=patch_size, n_rays=n_rays)
-        self.valid_dataset = FullImageDataset(valid_file, patch_size=patch_size, batch_size=batch_size * n_rays)
+        self.image_norm = 1e4
+        self.arcsec_norm = 1e3
+        self.train_dataset = ConditionedMapDataset(train_files, patch_size=patch_size, n_rays=n_rays,
+                                                   image_norm=self.image_norm, arcsec_norm=self.arcsec_norm)
+        self.valid_dataset = FullImageDataset(valid_file, patch_size=patch_size, batch_size=batch_size * n_rays,
+                                              image_norm=self.image_norm, arcsec_norm=self.arcsec_norm)
         self.validation_dataset_mapping = {0: 'image'}
 
         self.config = {'type': 'conditioned', 'Rs_per_ds': Rs_per_ds, 'cmap': cmap, 'resolution': (256, 256),
@@ -53,11 +57,11 @@ class ConditionedDataModule(LightningDataModule):
 
 class ConditionedMapDataset(Dataset):
 
-    def __init__(self, data_files, patch_size=None, n_rays=32, scaling=10000, arcsec_norm=1000, add_hpc=True):
+    def __init__(self, data_files, patch_size=None, n_rays=32, image_norm=10000., arcsec_norm=1000., add_hpc=True):
         self.data_files = data_files
         self.patch_size = patch_size
         self.n_rays = n_rays
-        self.scaling = scaling
+        self.scaling = image_norm
         self.arcsec_norm = arcsec_norm
         self.add_hpc = add_hpc
         self.channels = 3 if add_hpc else 1
@@ -119,7 +123,7 @@ class ConditionedMapDataset(Dataset):
 
 class FullImageDataset(Dataset):
 
-    def __init__(self, data_file, patch_size=None, batch_size=32, scaling=10000, arcsec_norm=1000, add_hpc=True):
+    def __init__(self, data_file, patch_size=None, batch_size=32, image_norm=10000., arcsec_norm=1000., add_hpc=True):
         self.batch_size = batch_size
         self.add_hpc = add_hpc
         self.channels = 3 if add_hpc else 1
@@ -127,7 +131,7 @@ class FullImageDataset(Dataset):
         loader = MapDataLoader(Rs_per_ds=1, reference_frame="carrington", add_hpc=True)
         # load full image and rays
         data_dict = loader.load(data_file)
-        image = data_dict['image'] / scaling
+        image = data_dict['image'] / image_norm
         rays = data_dict['rays']
         hpc = data_dict['hpc'] / arcsec_norm
         self.longitude = np.deg2rad(data_dict['observer']['longitude'])

@@ -24,7 +24,7 @@ class ConditionedSuNeRFModule(BaseModule):
                                                       Rs_per_ds=Rs_per_ds,
                                                       sampling_config=sampling_config,
                                                       model_config=model_config, use_absorption=use_absorption)
-        self.encoder = ImageToLatentCNN(in_channels, z_dim=z_dim)
+        self.image_encoder = ImageToLatentCNN(in_channels, z_dim=z_dim)
         self.coordinate_encoder = CoordinateToLatentModel(z_dim=32)
 
         self.image_scaling = ImageAsinhScaling(**image_scaling_config)
@@ -55,7 +55,7 @@ class ConditionedSuNeRFModule(BaseModule):
         input_image = self.image_scaling(input_image) # [batch, C, H, W]
 
         # get feature vector from encoding network
-        latent_img_z = self.encoder(input_image)
+        latent_img_z = self.image_encoder(input_image)
         latent_coord_z = self.coordinate_encoder(observer_coords)  # [batch, 4]
         latent_z = torch.cat([latent_img_z, latent_coord_z], dim=-1)  # [batch, z_dim + 32]
 
@@ -101,7 +101,7 @@ class ConditionedSuNeRFModule(BaseModule):
             input_image = self.image_scaling(input_image)  # [batch, C, H, W]
 
             # get feature vector from encoding network
-            latent_img_z = self.encoder(input_image)
+            latent_img_z = self.image_encoder(input_image)
             latent_coord_z = self.coordinate_encoder(observer_coords)
             latent_z = torch.cat([latent_img_z, latent_coord_z], dim=-1)  # [batch, z_dim + 32]
 
