@@ -1,0 +1,21 @@
+csh
+
+cd $HOME
+module load idl
+
+setenv SSW ssw
+setenv SSW_INSTR "SECCHI AIA"
+source ssw/gen/setup/setup.ssw
+sswidl
+
+files = FILE_SEARCH("/glade/work/rjarolim/data/sunerf/2012_08/euvi", "*.fts")
+SECCHI_PREP, files, /write_fts, savepath = "/glade/work/rjarolim/data/sunerf/2012_08/euvi_prep"
+
+files = FILE_SEARCH("/glade/work/rjarolim/data/sunerf/2023_01/euvi", "*.fts")
+SECCHI_PREP, files, /write_fts, savepath = "/glade/work/rjarolim/data/sunerf/2023_01/euvi_prep", /CALIMG_OFF
+
+files = FILE_SEARCH("/glade/work/rjarolim/data/sunerf/2010_06/euvi", "*.fts")
+SECCHI_PREP, files, /write_fts, savepath = "/glade/work/rjarolim/data/sunerf/2010_06/euvi_prep"
+
+files = FILE_SEARCH("/glade/work/rjarolim/data/sunerf/2012_01/euvi", "*.fts")
+SECCHI_PREP, files, /write_fts, savepath = "/glade/work/rjarolim/data/sunerf/2012_01/euvi_prep"

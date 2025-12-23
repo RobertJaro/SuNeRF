@@ -1,0 +1,23 @@
+base_path: "/glade/work/rjarolim/sunerf/psi_debug_v01"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/psi_debug_v01"
+
+data:
+  data_config:
+    - type: 'PSI'
+      data_path: '/glade/work/rjarolim/data/sunerf/prep_psi/193'
+      wavelengths: [193]
+      scaling: 1.0
+  num_workers: 16
+
+logging:
+  project: "sunerf"
+  name: "PSI 193 test"
+
+training:
+  log_every_n_steps: 1000
+
+model:
+  image_scaling_config:
+    PSI: { vmax: 1.0 }
+  temperature_response_config:
+    PSI: { model: '/glade/work/rjarolim/sunerf/response/psi_193.pt', scaling: 0.0, n_channels: 1, learnable: False }

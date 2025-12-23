@@ -1,19 +1,12 @@
-import os
-
 import torch
 from pytorch_lightning import LightningModule
 from torch import nn
 from torch.optim.lr_scheduler import ExponentialLR
-
-from sunerf.data.loader.base_loader import BaseDataModule
-from sunerf.rendering.base_tracing import SuNeRFRendering
-from sunerf.rendering.emission import EmissionRadiativeTransfer
-from sunerf.train.scaling import ImageAsinhScaling
-
+import torch.distributed as dist
 
 class BaseSuNeRFModule(LightningModule):
 
-    def __init__(self, Rs_per_ds, seconds_per_dt, rendering: SuNeRFRendering,
+    def __init__(self, Rs_per_ds, seconds_per_dt, rendering: nn.Module,
                  validation_dataset_mapping, lr_config=None):
         super().__init__()
 
@@ -23,11 +16,12 @@ class BaseSuNeRFModule(LightningModule):
 
         self.validation_dataset_mapping = validation_dataset_mapping
         self.validation_outputs = {}
+        self.validation_batches = {}
 
         self.lr_config = {'start': 1e-4, 'end': 1e-5, 'iterations': 1e6} if lr_config is None else lr_config
 
     def configure_optimizers(self):
-        self.optimizer = torch.optim.Adam(self.rendering.parameters(), lr=self.lr_config['start'])
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr_config['start'])
         self.scheduler = ExponentialLR(self.optimizer, gamma=(self.lr_config['end'] / self.lr_config['start']) ** (
                 1 / self.lr_config['iterations']))
         return [self.optimizer], [self.scheduler]
@@ -38,19 +32,63 @@ class BaseSuNeRFModule(LightningModule):
             self.scheduler.step()
         self.log('Learning Rate', self.scheduler.get_last_lr()[0])
 
-    def validation_epoch_end(self, outputs_list):
-        if len(outputs_list) == 0:
-            return  # skip invalid validation steps
-        self.validation_outputs = {}  # reset validation outputs
-        if isinstance(outputs_list[0], dict):
-            outputs_list = [outputs_list]  # make list if only one validation dataset is used
-        if len(outputs_list) == 0 or any([len(o) == 0 for o in outputs_list]):
-            return  # skip invalid validation steps
+        if self.rendering.shuffler is not None:
+            self.rendering.shuffler.on_train_batch_end()
 
-        for i, outputs in enumerate(outputs_list):
+    def on_validation_epoch_start(self):
+        self.validation_outputs = {}
+        self.validation_batches = {}
+
+    def on_validation_batch_end(self, outputs, batch, batch_idx, dataloader_idx: int = 0) -> None:
+        # Only rank-0 needs to keep outputs if you're running val on rank-0 only.
+        if outputs is not None:
+            # ensure CPU to keep GPU mem low
+            cpu_out = {k: v.detach().cpu() for k, v in outputs.items()}
+            cpu_out['dataset_idx'] = batch['dataset_idx'].detach().cpu()
+            if dataloader_idx not in self.validation_batches:
+                self.validation_batches[dataloader_idx] = []
+            self.validation_batches[dataloader_idx].append(cpu_out)
+
+    def on_validation_epoch_end(self):
+        outputs_list = self.validation_batches
+        if not outputs_list or len(outputs_list) == 0:
+            return
+
+        rank = dist.get_rank()
+        world = dist.get_world_size()
+        if rank == 0:
+            obj_gather_list = [None] * world
+            dist.gather_object(self.validation_batches, obj_gather_list, dst=0)
+            # Merge dicts from all ranks
+            merged_outputs = {}
+            for rank_dict in obj_gather_list:
+                for dataloader_idx, batch_list in rank_dict.items():
+                    if dataloader_idx not in merged_outputs:
+                        merged_outputs[dataloader_idx] = []
+                    merged_outputs[dataloader_idx].extend(batch_list)
+            outputs_list = merged_outputs
+        else:
+            dist.gather_object(self.validation_batches, None, dst=0)
+            return
+
+        for dataloader_idx, outputs in outputs_list.items():
+            # ---- reorder the list itself ----
+            # get a single scalar lin_idx for each batch element
+            # (use mean or first value if it's a vector)
+            idxs = []
+            for i, out in enumerate(outputs):
+                lin_idx = out.pop('dataset_idx') # for sorting; discard for later steps
+                if any([lin_idx == li for li, _ in idxs]):
+                    continue # duplicated by DDP
+                if lin_idx.ndim > 0:
+                    lin_idx = lin_idx.view(-1)[0]  # take first sample in that batch
+                idxs.append((int(lin_idx), i))
+            # sort by the scalar lin_idx
+            outputs = [outputs[i] for _, i in sorted(idxs, key=lambda x: x[0])]
+            # ---- concatenate outputs ----
             out_keys = outputs[0].keys()
             outputs = {k: torch.cat([o[k] for o in outputs]) for k in out_keys}
-            self.validation_outputs[self.validation_dataset_mapping[i]] = outputs
+            self.validation_outputs[self.validation_dataset_mapping[dataloader_idx]] = outputs
 
     def on_load_checkpoint(self, checkpoint):
         state_dict = checkpoint['state_dict']
@@ -58,91 +96,3 @@ class BaseSuNeRFModule(LightningModule):
         self.validation_outputs = {}  # reset validation outputs
 
 
-def save_state(sunerf: BaseSuNeRFModule, data_module: BaseDataModule, save_path):
-    output_path = '/'.join(save_path.split('/')[0:-1])
-    os.makedirs(output_path, exist_ok=True)
-    torch.save({
-        # sunerf  rendering module
-        'rendering': sunerf.rendering,
-        # data infor
-        'data_config': data_module.config,
-        # data scaling
-        'Rs_per_ds': data_module.Rs_per_ds,
-        'seconds_per_dt': data_module.seconds_per_dt,
-        'ref_time': data_module.ref_time
-    }, save_path)
-
-
-class EmissionSuNeRFModule(BaseSuNeRFModule):
-    def __init__(self, Rs_per_ds, seconds_per_dt, image_scaling_config,
-                 lambda_image=1.0, lambda_regularization=1.0,
-                 sampling_config=None, hierarchical_sampling_config=None,
-                 model_config=None, **kwargs):
-
-        self.lambda_image = lambda_image
-        self.lambda_regularization = lambda_regularization
-
-        # setup rendering
-        rendering = EmissionRadiativeTransfer(Rs_per_ds=Rs_per_ds,
-                                              sampling_config=sampling_config,
-                                              hierarchical_sampling_config=hierarchical_sampling_config,
-                                              model_config=model_config)
-
-        super().__init__(Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt,
-                         rendering=rendering, **kwargs)
-
-        self.image_scaling = ImageAsinhScaling(**image_scaling_config)
-        self.mse_loss = nn.MSELoss()
-
-    def training_step(self, batch, batch_nb):
-        rays, time, target_image = batch['tracing']['rays'], batch['tracing']['time'], batch['tracing']['target_image']
-        rays_o, rays_d = rays[:, 0], rays[:, 1]
-        # Run one iteration of TinyNeRF and get the rendered filtergrams.
-        outputs = self.rendering(rays_o, rays_d, time)
-
-        # Check for any numerical issues.
-        for k, v in outputs.items():
-            assert not torch.isnan(v).any(), f"! [Numerical Alert] {k} contains NaN."
-            assert not torch.isinf(v).any(), f"! [Numerical Alert] {k} contains Inf."
-
-        # backpropagation
-        target_image = self.image_scaling(target_image)
-        # optimize coarse model
-        coarse_image = self.image_scaling(outputs['coarse_image'])
-        coarse_loss = self.mse_loss(coarse_image, target_image)
-        # optimize fine model
-        fine_image = self.image_scaling(outputs['fine_image'])
-        fine_loss = self.mse_loss(fine_image, target_image)
-
-        regularization_loss = outputs['regularization'].mean()  # suppress unconstrained regions
-        loss = (self.lambda_image * (coarse_loss + fine_loss) +
-                self.lambda_regularization * regularization_loss)
-        #
-        with torch.no_grad():
-            psnr = -10. * torch.log10(fine_loss)
-
-        # log results to WANDB
-        self.log("loss", loss)
-        self.log("train",
-                 {'coarse': coarse_loss, 'fine': fine_loss,
-                  'regularization': regularization_loss, 'psnr': psnr})
-
-        return loss
-
-    def validation_step(self, batch, batch_nb, **kwargs):
-        dataloader_idx = kwargs['dataloader_idx'] if 'dataloader_idx' in kwargs else 0
-        if dataloader_idx == 0:
-            rays, time, target_image = batch['rays'], batch['time'], batch['target_image']
-            rays_o, rays_d = rays[:, 0], rays[:, 1]
-
-            outputs = self.rendering(rays_o, rays_d, time)
-
-            distance = rays_o.pow(2).sum(-1).pow(0.5)
-            return {'target_image': target_image,
-                    'fine_image': outputs['fine_image'],
-                    'coarse_image': outputs['coarse_image'],
-                    'height_map': outputs['height_map'],
-                    'absorption_map': outputs['absorption_map'],
-                    'z_vals_stratified': outputs['z_vals_stratified'],
-                    'z_vals_hierarchical': outputs['z_vals_hierarchical'],
-                    'distance': distance}

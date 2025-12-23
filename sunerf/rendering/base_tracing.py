@@ -1,24 +1,25 @@
 import torch
 from torch import nn
 
-from sunerf.model.model import NeRF
 from sunerf.train.sampling import SphericalSampler, HierarchicalSampler, StratifiedSampler
+from sunerf.train.util import TimeShuffler, NormalTimeShuffler
 
 
-class SuNeRFRendering(nn.Module):
+class MultiResolutionRenderingModule(nn.Module):
 
-    def __init__(self, Rs_per_ds, sampling_config=None, hierarchical_sampling_config=None, model_config=None):
+    def __init__(self, coarse_model, fine_model, rendering_modules, Rs_per_ds,
+                 sampling_config=None, hierarchical_sampling_config=None, shuffle_config=None):
         super().__init__()
         self.Rs_per_ds = Rs_per_ds
 
+        self.rendering_modules = nn.ModuleDict(rendering_modules)
+
         # set default configurations
-        hierarchical_sampling_config = {'type': 'hierarchical'} \
-            if hierarchical_sampling_config is None else hierarchical_sampling_config
-        sampling_config = {'type': 'stratified'} if sampling_config is None else sampling_config
-        model_config = {} if model_config is None else model_config
+        hierarchical_sampling_config = {} if hierarchical_sampling_config is None else hierarchical_sampling_config
+        sampling_config = {} if sampling_config is None else sampling_config
 
         # setup sampling strategy
-        sampling_type = sampling_config.pop('type')
+        sampling_type = sampling_config.pop('type', 'stratified')
         if sampling_type == 'spherical':
             self.sampler = SphericalSampler(Rs_per_ds=Rs_per_ds, **sampling_config)
         elif sampling_type == 'stratified':
@@ -27,17 +28,18 @@ class SuNeRFRendering(nn.Module):
             raise ValueError(f'Unknown sampling type {sampling_type}')
 
         # setup hierarchical sampling
-        hierarchical_sampling_type = hierarchical_sampling_config.pop('type')
+        hierarchical_sampling_type = hierarchical_sampling_config.pop('type', 'hierarchical')
         if hierarchical_sampling_type == 'hierarchical':
             self.sampler_hierarchical = HierarchicalSampler(**hierarchical_sampling_config)
         else:
             raise ValueError(f'Unknown sampling type {hierarchical_sampling_type}')
 
-        # setup models
-        self.coarse_model = NeRF(**model_config)
-        self.fine_model = NeRF(**model_config)
+        self.shuffler = load_shuffler(shuffle_config)
 
-    def forward(self, rays_o, rays_d, times):
+        self.coarse_model = coarse_model
+        self.fine_model = fine_model
+
+    def forward(self, batch, **kwargs):
         r"""_summary_
         		Compute forward pass through model.
 
@@ -48,6 +50,18 @@ class SuNeRFRendering(nn.Module):
         		Returns:
         			outputs: Synthesized filtergrams/images.
         		"""
+        batch = self.shuffler(batch) if self.shuffler else batch
+
+        dataset_keys = batch.keys()
+        instrument_keys = self.rendering_modules.keys()
+
+        dataset_n_rays = {k: batch[k]['rays'].shape[0] for k in dataset_keys}
+        dataset_instrument = {k: batch[k]['instrument'] for k in dataset_keys}
+
+        # merge rays from all instruments
+        rays = torch.cat([batch[k]['rays'] for k in dataset_keys], dim=0)
+        rays_o, rays_d = rays[:, 0], rays[:, 1]
+        times = torch.cat([batch[k]['time'] for k in dataset_keys], dim=0)
 
         # Sample query points along each ray.
         sampling_out = self.sampler(rays_o, rays_d)
@@ -58,13 +72,16 @@ class SuNeRFRendering(nn.Module):
         query_points_time = torch.cat([query_points, exp_times], -1)  # --> (x, y, z, t)
 
         # Coarse model pass.
-        coarse_out = self._render(self.coarse_model, query_points_time, rays_d, rays_o, z_vals)
-
-        outputs = {'z_vals_stratified': z_vals, 'coarse_image': coarse_out['image']}
+        coarse_raw = self.coarse_model(query_points_time)
+        state = {**coarse_raw, 'z_vals': z_vals,
+                 'rays_d': rays_d, 'rays_o': rays_o,
+                 'query_points': query_points_time}
+        coarse_out = self.render_instruments(dataset_n_rays, dataset_instrument, state)
 
         # Fine model pass.
         # Apply hierarchical sampling for fine query points.
-        hierarchical_out = self.sampler_hierarchical(rays_o, rays_d, z_vals, coarse_out['weights'])
+        weights = torch.cat([coarse_out[k]['weights'] for k in dataset_keys], dim=0)
+        hierarchical_out = self.sampler_hierarchical(rays_o, rays_d, z_vals, weights)
         query_points, z_vals_combined, z_hierarch = (hierarchical_out['points'],
                                                      hierarchical_out['z_vals'],
                                                      hierarchical_out['new_z_samples'])
@@ -73,50 +90,134 @@ class SuNeRFRendering(nn.Module):
         exp_times = times[:, None].repeat(1, query_points.shape[1], 1)
         query_points_time = torch.cat([query_points, exp_times], -1)
 
-        fine_out = self._render(self.fine_model, query_points_time, rays_d, rays_o, z_vals_combined)
+        fine_raw = self.fine_model(query_points_time)
+        state = {**fine_raw, 'z_vals': z_vals_combined,
+                 'rays_d': rays_d, 'rays_o': rays_o,
+                 'query_points': query_points_time}
+        fine_out = self.render_instruments(dataset_n_rays, dataset_instrument, state)
 
-        # Store outputs.
-        outputs['z_vals_hierarchical'] = z_hierarch
-        outputs['fine_image'] = fine_out['image']
-        image = fine_out['image']
-        absorption = fine_out['absorption']
-        weights = fine_out['weights']
+        return {'fine_out': fine_out, 'coarse_out': coarse_out,
+                'z_vals_stratified': z_vals, 'z_vals_hierarchical': z_hierarch}
 
-        # compute image of absorption
-        absorption_map = (1 - absorption).sum(-1)
-        # compute regularization of absorption
-        distance = query_points.pow(2).sum(-1).pow(0.5)
-        height_map = (weights * distance).sum(-1)
-        # penalize absorption past 1.2 solar radii
-        regularization = torch.relu(distance - 1.2 / self.Rs_per_ds) * (1 - absorption)
-
-        # Store outputs.
-        outputs['image'] = image
-        outputs['height_map'] = height_map
-        outputs['absorption_map'] = absorption_map
-        outputs['regularization'] = regularization
-        return outputs
-
-    def forward_points(self, query_points):
-        flat_points = query_points.view(-1, 4)
-        raw_out = self.fine_model(flat_points)
-        return raw_out
-
-    def _render(self, model, query_points, rays_d, rays_o, z_vals):
-        query_points_shape = query_points.shape[:-1]
-        flat_query_points = query_points.view(-1, 4)
-        raw = model(flat_query_points)
-        raw = raw.reshape(*query_points_shape, raw.shape[-1])
-        # Perform differentiable volume rendering to re-synthesize the filtergrams.
-        state = {'raw': raw, 'z_vals': z_vals, 'rays_d': rays_d, 'rays_o': rays_o, 'query_points': query_points}
-        out = self.raw2outputs(**state)
-        return out
-
-    def raw2outputs(self, **kwargs):
-        raise NotImplementedError("This method should be implemented in a subclass")
+    def render_instruments(self, dataset_n_rays, dataset_instrument, state):
+        ray_idx = 0
+        render_out = {}
+        # number of rays for instrument k
+        for k, n_rays in dataset_n_rays.items():
+            # split state for each instrument
+            instrument_state = {k: v[ray_idx:ray_idx + n_rays] for k, v in state.items()}
+            # render instrument output
+            instrument_key = dataset_instrument[k]
+            render_out[k] = self.rendering_modules[instrument_key](**instrument_state)
+            ray_idx += n_rays
+        return render_out
 
 
-def cumprod_exclusive(tensor: torch.Tensor) -> torch.Tensor:
+class BasicRenderingModule(nn.Module):
+
+    def __init__(self, model, rendering_modules, Rs_per_ds,
+                 sampling_config=None, hierarchical_sampling_config=None, shuffle_config=None):
+        super().__init__()
+        self.Rs_per_ds = Rs_per_ds
+
+        self.rendering_modules = nn.ModuleDict(rendering_modules)
+
+        # set default configurations
+        sampling_config = {} if sampling_config is None else sampling_config
+        hierarchical_sampling_config = {} if hierarchical_sampling_config is None else hierarchical_sampling_config
+
+        # setup sampling strategy
+        sampling_type = sampling_config.pop('type', 'spherical')
+        if sampling_type == 'spherical':
+            self.sampler = SphericalSampler(Rs_per_ds=Rs_per_ds, **sampling_config)
+        elif sampling_type == 'stratified':
+            self.sampler = StratifiedSampler(Rs_per_ds=Rs_per_ds, **sampling_config)
+        else:
+            raise ValueError(f'Unknown sampling type {sampling_type}')
+
+        # setup hierarchical sampling
+        hierarchical_sampling_type = hierarchical_sampling_config.pop('type', 'hierarchical')
+        if hierarchical_sampling_type == 'hierarchical':
+            self.sampler_hierarchical = HierarchicalSampler(**hierarchical_sampling_config)
+        else:
+            raise ValueError(f'Unknown sampling type {hierarchical_sampling_type}')
+
+        self.shuffler = load_shuffler(shuffle_config)
+
+        print('Shuffle config:', self.shuffler)
+
+        self.model = model
+
+    def forward(self, batch, **kwargs):
+        r"""_summary_
+        		Compute forward pass through model.
+
+        		Args:
+        			rays_o (tensor): Origin of rays
+        			rays_d (tensor): Direction of rays
+        			times (tensor): Times of maps
+        		Returns:
+        			outputs: Synthesized filtergrams/images.
+        		"""
+        batch = self.shuffler(batch) if self.shuffler else batch
+
+        dataset_keys = batch.keys()
+
+        dataset_n_rays = {k: batch[k]['rays'].shape[0] for k in dataset_keys}
+        dataset_instrument = {k: batch[k]['instrument'] for k in dataset_keys}
+
+        # merge rays from all instruments
+        rays = torch.cat([batch[k]['rays'] for k in dataset_keys], dim=0)
+        rays_o, rays_d = rays[:, 0], rays[:, 1]
+        times = torch.cat([batch[k]['time'] for k in dataset_keys], dim=0)
+
+        # Sample query points along each ray.
+        sampling_out = self.sampler(rays_o, rays_d)
+        query_points, z_vals = sampling_out['points'], sampling_out['z_vals']
+
+        # add time to query points
+        exp_times = times[:, None].repeat(1, query_points.shape[1], 1)
+        query_points_time = torch.cat([query_points, exp_times], -1)  # --> (x, y, z, t)
+
+        # Get weights for hierarchical sampling
+        with torch.no_grad():
+            coarse_raw = self.model(query_points_time)
+            state = {**coarse_raw, 'z_vals': z_vals,
+                     'rays_d': rays_d, 'rays_o': rays_o,
+                     'query_points': query_points_time}
+            model_out = self.render_instruments(dataset_n_rays, dataset_instrument, state)
+
+        # sample hierarchical points based on initial weights
+        weights = torch.cat([model_out[k]['weights'] for k in dataset_keys], dim=0)
+        hierarchical_out = self.sampler_hierarchical(rays_o, rays_d, z_vals, weights)
+        query_points, z_vals_combined = (hierarchical_out['points'], hierarchical_out['z_vals'])
+
+        # add time to query points = expand to dimensions of query points and slice one dimension
+        exp_times = times[:, None].repeat(1, query_points.shape[1], 1)
+        query_points_time = torch.cat([query_points, exp_times], -1)
+
+        fine_raw = self.model(query_points_time)
+        state = {**fine_raw, 'z_vals': z_vals_combined,
+                 'rays_d': rays_d, 'rays_o': rays_o,
+                 'query_points': query_points_time}
+        model_out = self.render_instruments(dataset_n_rays, dataset_instrument, state)
+
+        return {'model_out': model_out, 'z_vals': z_vals_combined, 'z_vals_stratified': z_vals}
+
+    def render_instruments(self, dataset_n_rays, dataset_instrument, state):
+        ray_idx = 0
+        render_out = {}
+        for ds_key, n_rays in dataset_n_rays.items():
+            # split state for each instrument
+            instrument_state = {k: v[ray_idx:ray_idx + n_rays] for k, v in state.items()}
+            # render instrument output
+            instrument_key = dataset_instrument[ds_key]
+            render_out[ds_key] = self.rendering_modules[instrument_key](**instrument_state)
+            ray_idx += n_rays
+        return render_out
+
+
+def cumprod_exclusive(tensor: torch.Tensor, dim=1) -> torch.Tensor:
     """
     (Courtesy of https://github.com/krrish94/nerf-pytorch)
 
@@ -131,10 +232,32 @@ def cumprod_exclusive(tensor: torch.Tensor) -> torch.Tensor:
     """
 
     # Compute regular cumprod first (this is equivalent to `tf.math.cumprod(..., exclusive=False)`).
-    cumprod = torch.cumprod(tensor, -1)
+    cumprod = torch.cumprod(tensor, dim)
     # "Roll" the elements along dimension 'dim' by 1 element.
-    cumprod = torch.roll(cumprod, 1, -1)
+    cumprod = torch.roll(cumprod, 1, dim)
     # Replace the first element by "1" as this is what tf.cumprod(..., exclusive=True) does.
-    cumprod[..., 0] = 1.
+    if dim == 0:
+        cumprod[0] = 1.
+    elif dim == 1:
+        cumprod[:, 0] = 1.
+    elif dim == 2:
+        cumprod[:, :, 0] = 1.
+    elif dim == -1:
+        cumprod[..., 0] = 1.
+    else:
+        raise NotImplementedError(f"cumprod_exclusive not implemented for dim={dim}")
 
     return cumprod
+
+
+def load_shuffler(shuffle_config):
+    if shuffle_config:
+        shuffle_type = shuffle_config.pop('type')
+        if shuffle_type == 'time':
+            return TimeShuffler(**shuffle_config)
+        elif shuffle_type == 'normal_time':
+            return NormalTimeShuffler(**shuffle_config)
+        else:
+            raise NotImplementedError(f"Shuffle type {shuffle_type} not implemented.")
+    else:
+        return None

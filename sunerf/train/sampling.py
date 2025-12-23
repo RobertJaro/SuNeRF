@@ -1,36 +1,34 @@
 import torch
+from torch import nn
 
 
 class SphericalSampler(torch.nn.Module):
 
-    def __init__(self, Rs_per_ds, distance=2.0, n_samples=64, perturb=True):
+    def __init__(self, Rs_per_ds, min_distance=1.0, max_distance=2.0, n_samples=64, perturb=True):
         super().__init__()
         self.perturb = perturb
 
-        self.register_buffer('distance', torch.tensor(distance / Rs_per_ds, dtype=torch.float32))
-        self.register_buffer('solar_R', torch.tensor(1 / Rs_per_ds, dtype=torch.float32))
+        self.max_distance = nn.Parameter(torch.tensor(max_distance / Rs_per_ds, dtype=torch.float32), requires_grad=False)
+        self.min_distance = nn.Parameter(torch.tensor(min_distance / Rs_per_ds, dtype=torch.float32), requires_grad=False)
 
         t_vals = torch.linspace(0., 1., n_samples)[None]
-        self.register_buffer('t_vals', torch.tensor(t_vals, dtype=torch.float32))
+        self.t_vals = nn.Parameter(torch.tensor(t_vals, dtype=torch.float32), requires_grad=False)
 
     def forward(self, rays_o: torch.Tensor, rays_d: torch.Tensor):
         r"""
         Sample from near to solar surface. If no points are on the solar surface this
         """
 
-        # convert near and far from center to actual distance
-        distance = rays_o.pow(2).sum(-1).pow(0.5)
-
         # solve quadratic equation --> find points at distance
         a = rays_d.pow(2).sum(-1)
         b = (2 * rays_o * rays_d).sum(-1)
-        c = rays_o.pow(2).sum(-1) - self.distance ** 2
-        dist_near = (-b - torch.sqrt(b.pow(2) - 4 * a * c)) / (2 * a)
-        dist_far = (-b + torch.sqrt(b.pow(2) - 4 * a * c)) / (2 * a)
+        c = rays_o.pow(2).sum(-1) - self.max_distance ** 2
+        dist_near = (-b - torch.sqrt(b.pow(2) - 4 * a * c)) / (2 * a + 1e-8)
+        dist_far = (-b + torch.sqrt(b.pow(2) - 4 * a * c)) / (2 * a + 1e-8)
 
         # solve quadratic equation --> find points at 1 solar radii
         # stop sampling at solar surface
-        c = rays_o.pow(2).sum(-1) - self.solar_R ** 2
+        c = rays_o.pow(2).sum(-1) - self.min_distance ** 2
         dist_inner = (-b - torch.sqrt(b.pow(2) - 4 * a * c)) / (2 * a)
 
         intersect_solar_surface = ~torch.isnan(dist_inner)
@@ -53,13 +51,14 @@ class SphericalSampler(torch.nn.Module):
 
         return {'points': pts, 'z_vals': z_vals}
 
+
 class StratifiedSampler(torch.nn.Module):
 
-    def __init__(self, Rs_per_ds, distance=1.3, n_samples=64, perturb=True):
+    def __init__(self, Rs_per_ds, max_distance=1.3, n_samples=64, perturb=True):
         super().__init__()
         self.perturb = perturb
 
-        self.register_buffer('distance', torch.tensor(distance / Rs_per_ds, dtype=torch.float32))
+        self.register_buffer('distance', torch.tensor(max_distance / Rs_per_ds, dtype=torch.float32))
         self.register_buffer('solar_R', torch.tensor(1 / Rs_per_ds, dtype=torch.float32))
 
         t_vals = torch.linspace(0., 1., n_samples)[None]
@@ -100,6 +99,7 @@ class StratifiedSampler(torch.nn.Module):
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
 
         return {'points': pts, 'z_vals': z_vals}
+
 
 class HierarchicalSampler(torch.nn.Module):
 

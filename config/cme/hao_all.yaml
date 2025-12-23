@@ -1,0 +1,81 @@
+base_path: "/glade/work/rjarolim/sunerf-cme-v2/all_v02"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme/all_v01'
+
+instruments:
+  - type: 'default'
+    key: 'HAO'
+    scaling: {type: 'log'}
+
+model:
+  dim: 512
+
+data:
+  train_datasets:
+    - type: 'HAO'
+      key: 'HAO'
+      instrument_key: 'HAO'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_all/*pB*.fits"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_all/*tB*.fits"
+      batch_size: 2048
+    - type: 'random'
+      name: 'continuity'
+      radius_range: [ 20, 140 ]
+      unit: 'solRad'
+      batch_size: 4096
+  valid_datasets:
+    - type: 'HAO'
+      key: 'HAO_sample'
+      instrument_key: 'HAO'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_all/dcmer_040W_bang_0000_pB_stepnum_030.fits"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/hao/prep-data-v2/prep_HAO_all/dcmer_040W_bang_0000_tB_stepnum_030.fits"
+    - type: 'reference_cube'
+      key: 'cube'
+      data_path: "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/dens_stepnum_030.sav"
+      batch_size: 16384
+    - type: 'series'
+      name: 'series'
+      batch_size: 16384
+  debug: False
+  Rs_per_ds: 100
+  seconds_per_dt: 100000
+  batch_size: 4096
+  validation_batch_size: 4096
+  num_workers: 16
+
+callbacks:
+  - type: 'thomson_image'
+    ds_key: 'HAO_sample'
+  - type: 'latitude_slice'
+    name: 'latitude_slice'
+    ds_key: 'cube'
+    latitude: 0
+  - type: 'longitude_slice'
+    name: 'longitude_slice'
+    ds_key: 'cube'
+    longitude: 135
+  - type: 'velocity_slice'
+    name: 'velocity_slice'
+    ds_key: 'series'
+    latitude: 0
+  - type: 'cube'
+    ds_key: 'cube'
+
+logging:
+  entity: "robert_jarolim"
+  project: "sunerf-cme"
+  name: "All Viewpoints v02"
+
+sampling:
+  type: "spherical"
+  n_samples: 64
+  max_distance: 140
+
+lambda:
+  image: 1.0
+  ratio: 1.0
+  radial: 1.0e-2
+  continuity: 1.0e-4
+  velocity: 1.0e-2
+
+training:
+  log_every_n_steps: 5000

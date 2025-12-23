@@ -1,0 +1,30 @@
+base_path: "/glade/work/rjarolim/sunerf/multi_2023_01_v01"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/multi_2023_01_v01"
+
+data:
+  data_config:
+    - type: 'AIA'
+      data_path: '/glade/work/rjarolim/data/sunerf/2023_01_prep/aia/*.fits'
+    - type: 'EUVI'
+      key: 'EUVI-A'
+      data_path: '/glade/work/rjarolim/data/sunerf/2023_01_prep/euvi/*A.fts'
+  debug: True
+  batch_size: 512
+  num_workers: 16
+
+logging:
+  project: "sunerf"
+  name: "Calibration"
+
+training:
+  log_every_n_steps: 2000
+
+model:
+  image_scaling_config:
+    AIA: { vmax: 1.0 }
+    EUVI-A: { vmax: 1.0 }
+    EUVI-B: { vmax: 1.0 }
+  temperature_response_config:
+    AIA: { file: '/glade/work/rjarolim/sunerf/response/aia_interpolated.npz', scaling: 0.0, n_channels: 7, learnable: False }
+    EUVI-A: { file: '/glade/work/rjarolim/sunerf/response/stereo_ahead_interpolated.npz', scaling: 0.0, n_channels: 4, learnable: True }
+

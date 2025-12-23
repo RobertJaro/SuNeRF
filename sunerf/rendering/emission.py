@@ -1,15 +1,17 @@
 import torch
-from torch import nn
 
-from sunerf.rendering.base_tracing import SuNeRFRendering, cumprod_exclusive
+from sunerf.model.model import EmissionModel
+from sunerf.rendering.base_tracing import MultiResolutionRenderingModule, cumprod_exclusive
 
 
-class EmissionRadiativeTransfer(SuNeRFRendering):
+class EmissionRadiativeTransfer(MultiResolutionRenderingModule):
 
     def __init__(self, model_config=None, **kwargs):
         model_config = {} if model_config is None else model_config
-        model_config.update({'d_input': 4, 'd_output': 2, })  # x,y,z,t --> emission, absorption (required model config)
-        super().__init__(model_config=model_config, **kwargs)
+        # setup models
+        coarse_model = EmissionModel(1, **model_config)
+        fine_model = EmissionModel(1, **model_config)
+        super().__init__(coarse_model=coarse_model, fine_model=fine_model, **kwargs)
 
     def raw2outputs(self, raw: torch.Tensor, z_vals: torch.Tensor, rays_d: torch.Tensor, **kwargs):
         r"""
@@ -31,10 +33,12 @@ class EmissionRadiativeTransfer(SuNeRFRendering):
         # emission ([..., 0]; epsilon(z)) and absorption ([..., 1]; kappa(z)) coefficient per unit volume
         # dtau = - kappa dz
         # I' / I = - kappa dz --> I' emerging intensity; I incident intensity;
-        intensity = torch.exp(raw[..., 0]) * dists  # emission per sampled point [n_rays, n_samples]
+        emission = raw['emission'][..., 0]  # torch.exp(raw[..., 0])
+        intensity = emission * dists  # emission per sampled point [n_rays, n_samples]
 
         # transmission per sampled point [n_rays, n_samples]
-        absorption = torch.exp(-nn.functional.relu(raw[..., 1]) * dists)
+        alpha = raw['alpha'][..., 0]  # nn.functional.relu(raw[..., 1])
+        absorption = torch.exp(-alpha * dists)
         # [1, .9, 1, 0, 0, 1] --> less dense objects transmit light (1); dense objects absorbe light (0)
 
         # compute total absorption for each light ray (intensity)
@@ -51,4 +55,6 @@ class EmissionRadiativeTransfer(SuNeRFRendering):
         weights = emerging_intensity
         weights = weights / (weights.sum(1)[:, None] + 1e-10)
 
-        return {'image': pixel_intensity, 'weights': weights, 'absorption': absorption}
+        mean_absorption = (1 - absorption).mean(1)
+
+        return {'image': pixel_intensity, 'weights': weights, 'absorption_map': mean_absorption}

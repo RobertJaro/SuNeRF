@@ -1,0 +1,283 @@
+import copy
+import glob
+import multiprocessing
+import os
+from datetime import timedelta
+from itertools import repeat
+
+import numpy as np
+import scipy
+import torch
+from astropy import units as u
+from astropy.io import fits
+from dateutil.parser import parse
+from sunpy.map import Map
+from sunpy.visualization.colormaps import cm
+from tqdm import tqdm
+
+from sunerf.data.date_util import normalize_datetime
+from sunerf.data.loader.base_loader import BaseDataModule, TensorsDataset, MapDataLoader
+from sunerf.data.loader.volume_sampling import RandomSphericalCoordinateDataset
+from sunerf.train.callback import log_overview
+from sunerf.train.coordinate_transformation import spherical_to_cartesian
+
+
+class ThomsonDataModule(BaseDataModule):
+
+    def __init__(self, train_datasets, valid_datasets, work_directory, Rs_per_ds, seconds_per_dt, ref_date=None,
+                 batch_size=int(2 ** 10), validation_batch_size=int(2 ** 11), debug=False,
+                 **kwargs):
+        os.makedirs(work_directory, exist_ok=True)
+
+        ref_date = parse(ref_date) if ref_date is not None else None  # parse ref time if specified
+        base_config = {'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt, 'ref_date': ref_date,
+                       'debug': debug, 'work_directory': work_directory, 'batch_size': batch_size}
+
+        train_dict, ref_date = self._load_dataset(train_datasets, base_config)
+
+        module_config = {}
+        for k, train_ds in train_dict.items():
+            if not isinstance(train_ds, GenericThomsonDataset):
+                continue
+            dc = train_ds.data_config
+            module_config[k] = {'type': 'thomson', 'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt,
+                                'ref_date': ref_date, 'image_scaling': train_ds.scaling,
+                                'wcs': dc['wcs'], 'image_shape': dc['image_shape'], 'times': train_ds.times,
+                                'observers': dc['observers']}
+
+        base_config['batch_size'] = validation_batch_size
+        times = np.concatenate([dataset.normalized_times for dataset in train_dict.values() if isinstance(dataset, GenericThomsonDataset)])
+        time_range = [np.min(times), np.max(times)]
+        valid_dict = self._load_valid_dataset(valid_datasets, base_config, time_range=time_range)
+
+        super().__init__(train_dict, valid_dict,
+                         Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt, ref_date=ref_date,
+                         module_config=module_config, **kwargs)
+
+    def _load_dataset(self, data_config, base_config):
+        ref_date = None if 'ref_date' not in base_config else base_config['ref_date']
+        data_config = copy.deepcopy(data_config)
+
+        train_dict = {}
+        for config in data_config:
+            config = copy.deepcopy(config)
+            ds_type = config.pop('type')
+            ds_key = config.pop('key') if 'key' in config else ds_type
+            ds_config = copy.deepcopy(base_config)
+            ds_config.update(config)
+
+            if ds_type.lower() == 'hao':
+                dataset = HAOThomsonDataset(**ds_config, ds_key=ds_key)
+            elif ds_type.lower() == 'random':
+                assert len(train_dict) > 0, 'Specify at least one dataset for reference times. The random dataset configuration needs to be last in config file.'
+                times = np.concatenate([dataset.normalized_times for dataset in train_dict.values() if isinstance(dataset, GenericThomsonDataset)])
+                time_range = [np.min(times), np.max(times)]
+                radius_range = u.Quantity(ds_config.pop('radius_range'), unit=ds_config.pop('unit', 'AU'))
+                dataset = RandomSphericalCoordinateDataset(time_range=time_range, radius_range=radius_range, **ds_config)
+            else:
+                raise ValueError(f'Unknown dataset type {ds_type}')
+            # update ref time
+            if ref_date is None:
+                ref_date = dataset.ref_date
+                base_config['ref_date'] = ref_date
+            assert ds_key not in train_dict, f'Duplicate dataset key {ds_key}'
+            train_dict[ds_key] = dataset
+        return train_dict, ref_date
+
+    def _load_valid_dataset(self, data_config, base_config, time_range):
+        data_config = copy.deepcopy(data_config)
+
+        valid_dict = {}
+        for config in data_config:
+            config = copy.deepcopy(config)
+            ds_type = config.pop('type')
+            ds_key = config.pop('key') if 'key' in config else ds_type
+            ds_config = copy.deepcopy(base_config)
+            ds_config.update(config)
+            if ds_type.lower() == 'hao':
+                dataset = HAOThomsonDataset(**ds_config, ds_key=ds_key, test=True)
+            elif ds_type.lower() == 'reference_cube':
+                dataset = ReferenceCubeDataset(**ds_config, ds_key=ds_key, shuffle=False, filter_nans=False)
+            elif ds_type.lower() == 'series':
+                dataset = SeriesCubeDataset(**ds_config, time_range=time_range)
+            else:
+                raise ValueError(f'Unknown dataset type {ds_type}')
+            assert ds_key not in valid_dict, f'Duplicate dataset key {ds_key}'
+            valid_dict[ds_key] = dataset
+        return valid_dict
+
+
+class GenericThomsonDataset(TensorsDataset):
+    def __init__(self, data_path_pB, data_path_tB, scaling, ds_key, instrument_key,
+                 Rs_per_ds, seconds_per_dt, ref_date=None,
+                 batch_size=int(2 ** 10), debug=False, test=False, noise_level=False, **kwargs):
+        self.scaling = scaling
+        # select files with min diff in dates
+        tB_files = sorted(glob.glob(data_path_tB))
+        pB_files = sorted(glob.glob(data_path_pB)) if data_path_pB is not None else None
+
+        if debug:
+            sampling = len(tB_files) // 20
+            tB_files = tB_files[::sampling]
+            pB_files = pB_files[::sampling] if pB_files is not None else None
+        if test:
+            # select file at center of the list
+            idx = len(pB_files) // 2
+            tB_files = tB_files[idx:idx + 1]
+            pB_files = pB_files[idx:idx + 1] if pB_files is not None else None
+
+        # load rays
+        data_dict = {}
+        with multiprocessing.Pool(os.cpu_count()) as p:
+            loader = MapDataLoader(Rs_per_ds, 'heliographic', azimuthal_equidistant=True)
+            data = [v for v in
+                    tqdm(p.imap(loader.load, tB_files), total=len(tB_files), desc=f'Loading tB + rays')]
+        observers = [d.pop('observer') for d in data]
+        for k in data[0].keys():
+            data_dict[k] = np.stack([d[k] for d in data], axis=0)
+
+        # load remaining images
+        if pB_files is None:
+            pB_image_stack = np.ones_like(data_dict['image']) * np.nan
+        else:
+            with multiprocessing.Pool(os.cpu_count()) as p:
+                pB_image_stack = [v for v in tqdm(p.imap(fits.getdata, pB_files), total=len(pB_files), desc=f'Loading pB')]
+                pB_image_stack = np.stack(pB_image_stack, axis=0)
+
+        image_stack = np.stack([data_dict['image'], pB_image_stack], axis=-1)
+        image_stack = image_stack / scaling
+
+        if noise_level:
+            mean_B = np.nanmean(image_stack)
+            noise = np.random.normal(0, 1, size=image_stack.shape).astype(np.float32)
+            noise = noise * noise_level * mean_B
+            image_stack += noise
+
+        mask = np.any(image_stack < 1e-8, axis=-1)
+        image_stack[mask] = np.nan  # set both tB and pB to NaN if either is negative
+        data_dict['image'] = image_stack
+
+
+        # expand and normalize times
+        times = data_dict['time']
+        ref_date = min(times) if ref_date is None else ref_date
+        self.ref_date = ref_date
+        self.times = times
+        times = np.array([normalize_datetime(t, seconds_per_dt, ref_date) for t in times])
+        self.normalized_times = times
+        times_arr = np.ones((*data_dict['image'].shape[:-1], 1), dtype=np.float32) * times[:, None, None, None]
+        data_dict['time'] = times_arr
+
+        if not test:
+            cmap = cm.soholasco2.copy()
+            cmap.set_bad(color='green')
+            log_overview(data_dict["image"], data_dict['pose'], times, cmap, seconds_per_dt, Rs_per_ds, ref_date, ds_key=ds_key)
+            print('----- Data Overview -----')
+            print(
+                f'Image shape: {data_dict["image"].shape}; MIN: {np.nanmin(data_dict["image"])}; MAX: {np.nanmax(data_dict["image"])}')
+            print(f'Time shape: {times_arr.shape}; MIN: {np.nanmin(times_arr)}; MAX: {np.nanmax(times_arr)}')
+
+        tensors = {k: v.reshape((-1, *v.shape[3:])) for k, v in data_dict.items() if k in ['image', 'rays', 'time']}
+        # set all values where image (pB + tB) is NaN to NaN --> skip for training
+        nan_mask = np.all(np.isnan(tensors['image']), -1)
+        for k, v in tensors.items():
+            tensors[k][nan_mask] = np.nan
+
+        # info for plotting
+        self.image_shape = image_stack.shape[1:3]
+
+        # add observable information
+        for observer in observers:
+            observer['observables'] = ['tB', 'pB'] if pB_files is not None else ['tB']
+
+        # data config for model checkpoint
+        data_config = {}
+        # load reference info
+        ref_map = Map(tB_files[0])
+        data_config['image_shape'] = ref_map.data.shape
+        data_config['wcs'] = ref_map.wcs
+        data_config['wavelength'] = ref_map.wavelength
+        data_config['observers'] = observers
+        self.data_config = data_config
+
+        super().__init__(tensors=tensors, batch_size=batch_size, shuffle=not test, filter_nans=not test, instrument=instrument_key, **kwargs)
+
+
+class HAOThomsonDataset(GenericThomsonDataset):
+
+    def __init__(self, **kwargs):
+        super().__init__(scaling=5e-5, **kwargs)
+
+
+class ReferenceCubeDataset(TensorsDataset):
+
+    def __init__(self, data_path, ref_date, seconds_per_dt, Rs_per_ds, min_radius=30, max_radius=100, **kwargs):
+
+        o = scipy.io.readsav(data_path)
+        date0 = parse("2010-04-03T09:04:00.000")
+        time = date0 + timedelta(hours=float(o['this_time']))
+        time = normalize_datetime(time, seconds_per_dt, ref_date)
+
+        density = o['dens'].astype(np.float32).T
+        ph = o['ph1d'].astype(np.float32)
+        r = o['r1d'].astype(np.float32)
+        th = o['th1d'].astype(np.float32) - np.pi / 2
+
+        # clip radius to 100 Rsun
+        mask = (r < max_radius) & (r > min_radius)
+        r = r[mask]
+        density = density[mask]
+
+        radius, theta, phi, t = np.meshgrid(r, th, ph, np.array([time]), indexing="ij")
+        spherical_coords = np.stack([radius, theta, phi], axis=-1)
+
+        cartesian_coords = spherical_to_cartesian(spherical_coords)
+        cartesian_coords = cartesian_coords / Rs_per_ds
+        x, y, z = cartesian_coords[..., 0], cartesian_coords[..., 1], cartesian_coords[..., 2]
+
+        query_points = np.stack([x, y, z, t], axis=-1, dtype=np.float32)
+        query_points = query_points[:, :, :, 0] # squeeze time dimension
+
+        print('Query points range: ', query_points.reshape(-1, 4).min(0), query_points.reshape(-1, 4).max(0))
+
+        self.cube_shape = query_points.shape[:-1]
+
+        query_points = query_points.reshape(-1, 4)
+        density = density.reshape(-1)
+        spherical_coords = spherical_coords.reshape(-1, 3)
+
+        tensors = {'query_points': query_points,
+                   'spherical_coords': spherical_coords,
+                   'rho': density}
+        super().__init__(tensors, **kwargs)
+
+
+
+class SeriesCubeDataset(TensorsDataset):
+
+    def __init__(self, time_range, Rs_per_ds, radius_range=[ 21.5, 130 ],
+                 filter_nans=False, shuffle=False, **kwargs):
+
+        times = np.linspace(time_range[0], time_range[1], 6, dtype=np.float32)
+        max_radius = radius_range[1]
+        x_range = np.linspace(-max_radius, max_radius, 256, dtype=np.float32)
+        y_range = np.linspace(-max_radius, max_radius, 256, dtype=np.float32)
+
+        query_points = np.stack(np.meshgrid(x_range, y_range, [0], times), axis=-1)
+
+        r = np.linalg.norm(query_points[..., :3], axis=-1)
+        # clip radius to 100 Rsun
+        mask = (r > radius_range[0]) & (r < radius_range[1])
+        query_points[~mask] = np.nan
+
+        query_points[..., :3] = query_points[..., :3] / Rs_per_ds
+
+        self.cube_shape = query_points.shape[:-1]
+
+        query_points = query_points.reshape(-1, 4)
+
+        print('Series dataset-----------------')
+        print('Query points range: ', np.nanmin(query_points.reshape(-1, 4), 0), np.nanmax(query_points.reshape(-1, 4), 0))
+
+        tensors = {'query_points': query_points}
+        super().__init__(tensors, filter_nans=filter_nans, shuffle=shuffle, **kwargs)

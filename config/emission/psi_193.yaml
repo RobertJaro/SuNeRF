@@ -1,0 +1,13 @@
+path_to_save: "/glade/work/rjarolim/sunerf/psi_baseline_v01"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf/psi_baseline_v01'
+
+data:
+  data_path: "/glade/work/rjarolim/data/sunerf/prep_psi/193/*"
+  cmap: "sdoaia193"
+
+logging:
+  project: "sunerf"
+  name: "psi baseline"
+
+training:
+  log_every_n_steps: 2000

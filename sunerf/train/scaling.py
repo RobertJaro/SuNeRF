@@ -4,7 +4,7 @@ from torch import nn
 
 
 class ImageLogScaling(nn.Module):
-    def __init__(self, vmin, vmax):
+    def __init__(self, vmin=0, vmax=1):
         super().__init__()
         self.vmin = nn.Parameter(torch.tensor(vmin, dtype=torch.float32), requires_grad=False)
         self.vmax = nn.Parameter(torch.tensor(vmax, dtype=torch.float32), requires_grad=False)
@@ -25,4 +25,15 @@ class ImageAsinhScaling(nn.Module):
     def forward(self, image):
         image = image / self.vmax
         image = torch.asinh(image / self.a) / self.normalization
+        return image
+
+class ImageLinearScaling(nn.Module):
+
+    def __init__(self, vmin=0, vmax=1):
+        super().__init__()
+        self.vmin = nn.Parameter(torch.tensor(vmin, dtype=torch.float32), requires_grad=False)
+        self.vmax = nn.Parameter(torch.tensor(vmax, dtype=torch.float32), requires_grad=False)
+
+    def forward(self, image):
+        image = (image - self.vmin) / (self.vmax - self.vmin)
         return image

@@ -1,0 +1,300 @@
+import copy
+import datetime
+import glob
+import multiprocessing
+import os
+from datetime import timedelta
+from itertools import repeat
+from time import strptime
+
+import numpy as np
+import torch
+from astropy.io import fits
+from dateutil.parser import parse
+from sunpy.map import Map
+from torch.utils.data import Dataset
+from tqdm import tqdm
+
+from sunerf.data.date_util import normalize_datetime
+from sunerf.data.loader.base_loader import BaseDataModule, TensorsDataset, MapDataLoader
+from sunerf.data.loader.volume_sampling import RandomSphericalCoordinateDataset
+from sunerf.train.callback import log_overview
+
+
+class MultiInstrumentDataModule(BaseDataModule):
+
+    def __init__(self, train_datasets, valid_datasets, work_directory, Rs_per_ds=1, seconds_per_dt=864000, ref_date=None,
+                 batch_size=int(2 ** 10), validation_batch_size=int(2 ** 11), debug=False, random_config=None, use_absorption=False,
+                 **kwargs):
+        os.makedirs(work_directory, exist_ok=True)
+
+        ref_date = parse(ref_date) if ref_date is not None else None  # parse ref time if specified
+        base_config = {'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt, 'ref_date': ref_date,
+                       'debug': debug, 'work_directory': work_directory, 'batch_size': batch_size}
+
+        train_dict = self._load_dataset(train_datasets, base_config)
+        ref_date = base_config['ref_date'] # update ref date if not specified
+
+        module_config = {}
+        for k, ref_ds in train_dict.items():
+            dc = ref_ds.data_config
+            module_config[k] = {'type': 'plasma', 'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt,
+                                'ref_date': ref_date,
+                                'wcs': dc['wcs'], 'image_shape': dc['image_shape'], 'times': ref_ds.times,
+                                'cmaps': dc['cmaps']}
+
+        # include random sampling if specified
+        if random_config is not None:
+            times = np.concatenate([dataset.normalized_times for dataset in train_dict.values()])
+            time_range = [np.min(times), np.max(times)]
+            random_ds = RandomSphericalCoordinateDataset(time_range=time_range, Rs_per_ds=Rs_per_ds, **random_config)
+            train_dict['random'] = random_ds
+
+
+        base_config['validation_batch_size'] = validation_batch_size
+        valid_dict = self._load_dataset(valid_datasets, base_config, test_ds=True)
+
+        if use_absorption:
+            valid_dict['absorption'] = AbsorptionTestDataset(batch_size=validation_batch_size)
+
+        super().__init__(train_dict, valid_dict,
+                         Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt, ref_date=ref_date,
+                         module_config=module_config, **kwargs)
+
+    def _load_dataset(self, data_config, base_config, test_ds=False):
+        N_GPUS = torch.cuda.device_count()
+        ref_date = None if 'ref_date' not in base_config else base_config['ref_date']
+        data_config = copy.deepcopy(data_config)
+
+        train_dict = {}
+        for config in data_config:
+            ds_type = config.pop('type')
+            ds_key = config.pop('key') if 'key' in config else ds_type
+            instrument_key = config.pop('instrument_key') # instrument key is required
+            ds_config = copy.deepcopy(base_config)
+            ds_config.update(config)
+            # adjust batch size for multi-gpu
+            ds_config['batch_size'] = ds_config['validation_batch_size'] if test_ds else ds_config['batch_size']
+            ds_config['batch_size'] = ds_config['batch_size'] * N_GPUS if N_GPUS > 1 else ds_config['batch_size']
+            if ds_type == 'AIA':
+                dataset = AIADataset(**ds_config, ds_key=ds_key, test=test_ds, instrument_key=instrument_key)
+            elif ds_type == 'EUI':
+                dataset = EUIDataset(**ds_config, ds_key=ds_key, test=test_ds, instrument_key=instrument_key)
+            elif ds_type == 'EUVI':
+                dataset = EUVIDataset(**ds_config, ds_key=ds_key, test=test_ds, instrument_key=instrument_key)
+            elif ds_type == 'PSI':
+                dataset = PSIDataset(**ds_config, ds_key=ds_key, test=test_ds, instrument_key=instrument_key)
+            else:
+                raise ValueError(f'Unknown dataset type {ds_type}')
+            # update ref time
+            if ref_date is None:
+                ref_date = dataset.ref_date
+                base_config['ref_date'] = ref_date
+            assert ds_key not in train_dict, f'Duplicate dataset key {ds_key}'
+            train_dict[ds_key] = dataset
+        return train_dict
+
+
+class GenericEUVDataset(TensorsDataset):
+    def __init__(self, file_dict, date_dict, work_directory, ds_key, instrument_key, Rs_per_ds=1, seconds_per_dt=86400, ref_date=None,
+                 batch_size=int(2 ** 10), debug=False, test=False, cmaps=None, scaling=1, static=False, max_radius=None, **kwargs):
+        self.scaling = scaling
+        # choose channel with min number of dates
+        min_wl = min(date_dict, key=lambda k: len(date_dict[k]))
+        ref_dates = date_dict[min_wl]
+        # select files with min diff in dates
+        for wl, f, dates in zip(file_dict.keys(), file_dict.values(), date_dict.values()):
+            dates = np.array(dates)
+            f = np.array(f)
+            #
+            closest_dates = [np.argmin(np.abs(dates - t)) for t in ref_dates]
+            file_dict[wl] = f[closest_dates]
+            date_dict[wl] = dates[closest_dates]
+
+        min_diff_cond = np.ones_like(ref_dates, dtype=bool)
+        for wl in file_dict.keys():
+            cond = [np.abs(t1 - t2) < timedelta(minutes=2) for t1, t2 in zip(ref_dates, date_dict[wl])]
+            min_diff_cond = min_diff_cond & cond
+
+        print(f'Using {len(min_diff_cond)} out of {len(ref_dates)} observations')
+
+        # select files with min diff in dates
+        for wl in file_dict.keys():
+            file_dict[wl] = file_dict[wl][min_diff_cond]
+            date_dict[wl] = date_dict[wl][min_diff_cond]
+
+        data_config = {}
+        wavelengths = sorted(list(file_dict.keys()))
+        # load reference info
+        ref_map = Map(file_dict[wavelengths[0]][0])
+        data_config['image_shape'] = ref_map.data.shape
+        data_config['wcs'] = ref_map.wcs
+        data_config['wavelength'] = ref_map.wavelength
+        data_config['cmaps'] = ['gray'] * len(wavelengths) if cmaps is None else cmaps
+        self.data_config = data_config
+
+        if debug:
+            for k, v in file_dict.items():
+                sampling = len(v) // 20
+                file_dict[k] = v[::sampling]
+
+        if test:
+            for k, v in file_dict.items():
+                # select file at center of the list
+                file_dict[k] = [v[len(v) // 2]]
+
+        # load rays
+        data_dict = {}
+        with multiprocessing.Pool(os.cpu_count()) as p:
+            f = file_dict[wavelengths[0]]
+            loader = MapDataLoader(Rs_per_ds=Rs_per_ds, max_radius=max_radius, reference_frame='carrington')
+            data = [v for v in
+                    tqdm(p.imap(loader.load, f), total=len(f), desc=f'Loading {wavelengths[0]} + rays')]
+        for k in data[0].keys():
+            data_dict[k] = np.stack([d[k] for d in data], axis=0)
+
+        # load images
+        with multiprocessing.Pool(os.cpu_count()) as p:
+            image_stack = []
+            for wl in wavelengths[1:]:
+                f = file_dict[wl]
+                images = [v for v in tqdm(p.imap(fits.getdata, f), total=len(f), desc=f'Loading {wl}')]
+                images = np.stack(images, axis=0)
+                image_stack.append(images)
+
+        image_stack = np.stack([data_dict['image'], *image_stack], axis=-1)
+        image_stack[image_stack < 0] = 0  # remove negative values
+
+        data_dict['image'] = image_stack / scaling
+
+        # set to same time if static
+        if static:
+            times = data_dict['time']
+            ref_date = min(times) if ref_date is None else ref_date
+            data_dict['time'] = [ref_date] * len(times)
+
+        # expand and normalize times
+        times = data_dict['time']
+        ref_date = min(times) if ref_date is None else ref_date
+        self.ref_date = ref_date
+        self.times = times
+        times = np.array([normalize_datetime(t, seconds_per_dt, ref_date) for t in times])
+        self.normalized_times = times
+        times_arr = np.ones((*data_dict['image'].shape[:-1], 1), dtype=np.float32) * times[:, None, None, None]
+        data_dict['time'] = times_arr
+
+        if not test:
+            log_overview(data_dict["image"], data_dict['pose'], times, 'gray', seconds_per_dt, Rs_per_ds, ref_date, ds_key=ds_key)
+
+        tensors = {k: v.reshape((-1, *v.shape[3:])) for k, v in data_dict.items() if k in ['image', 'rays', 'time']}
+
+        super().__init__(tensors=tensors, work_directory=work_directory, batch_size=batch_size,
+                         shuffle=not test, filter_nans=not test, instrument=instrument_key)
+
+
+class AIADataset(GenericEUVDataset):
+
+    def __init__(self, data_path, wavelengths=None, scaling=10000, **kwargs):
+        wavelengths = [94, 131, 171, 193, 211, 304, 335] if wavelengths is None else wavelengths
+        cmaps_dict = {94: 'sdoaia94', 131: 'sdoaia131', 171: 'sdoaia171', 193: 'sdoaia193',
+                      211: 'sdoaia211', 304: 'sdoaia304', 335: 'sdoaia335'}
+        cmaps = [cmaps_dict[wl] for wl in wavelengths]
+
+        files = sorted(glob.glob(data_path))
+        assert len(files) > 0, f'No files found in {data_path}'
+
+        # group by wavelength
+        file_dict = {wl: [] for wl in wavelengths}
+        date_dict = {wl: [] for wl in wavelengths}
+        for f in files:
+            f_ids = os.path.basename(f).split('.')
+            wl = int(f_ids[3])
+            if wl not in wavelengths:
+                continue
+            date = parse(f_ids[2])
+            file_dict[wl].append(f)
+            date_dict[wl].append(date)
+
+        super().__init__(file_dict, date_dict, cmaps=cmaps, scaling=scaling, **kwargs)
+
+
+class EUIDataset(GenericEUVDataset):
+
+    def __init__(self, data_path, wavelengths=None, scaling=10000, **kwargs):
+        wavelengths = [174, 304] if wavelengths is None else wavelengths
+        cmaps_dict = {174: 'sdoaia171', 304: 'sdoaia304'}
+        cmaps = [cmaps_dict[wl] for wl in wavelengths]
+        wl_mapping = {'eui-fsi174-image': 174, 'eui-fsi304-image': 304}
+
+        files = sorted(glob.glob(data_path, recursive=True))
+        assert len(files) > 0, f'No files found in {data_path}'
+
+        # group by wavelength
+        file_dict = {wl: [] for wl in wavelengths}
+        date_dict = {wl: [] for wl in wavelengths}
+        for f in files:
+            f_ids = os.path.basename(f).split('_')
+            wl_key = f_ids[2]
+            wl = wl_mapping[wl_key]
+            if wl not in wavelengths:
+                continue
+            date = parse(f_ids[3][:-3]) # ignore milliseconds
+            file_dict[wl].append(f)
+            date_dict[wl].append(date)
+
+        super().__init__(file_dict, date_dict, cmaps=cmaps, scaling=scaling, **kwargs)
+
+class EUVIDataset(GenericEUVDataset):
+
+    def __init__(self, data_path, wavelengths=None, scaling=7000, **kwargs):
+        wavelengths = [171, 195, 284, 304] if wavelengths is None else wavelengths
+        cmaps = {171: 'sdoaia171', 195: 'sdoaia193', 284: 'sdoaia211', 304: 'sdoaia304'}
+        cmaps = [cmaps[wl] for wl in wavelengths]
+
+        files = sorted(glob.glob(data_path))
+        assert len(files) > 0, f'No files found in {data_path}'
+
+        # group by wavelength
+        file_dict = {wl: [] for wl in wavelengths}
+        date_dict = {wl: [] for wl in wavelengths}
+        for f in files:
+            wl = int(fits.getheader(f)['WAVELNTH'])
+            if wl not in wavelengths:
+                continue
+            date = parse(fits.getheader(f)['DATE-OBS'])
+            file_dict[wl].append(f)
+            date_dict[wl].append(date)
+
+        super().__init__(file_dict, date_dict,
+                         cmaps=cmaps,
+                         scaling=scaling,
+                         **kwargs)
+
+
+class PSIDataset(GenericEUVDataset):
+
+    def __init__(self, data_path, wavelengths=None, **kwargs):
+        wavelengths = [171, 193, 211] if wavelengths is None else wavelengths
+
+        file_dict = {wl: sorted(glob.glob(os.path.join(data_path, f'*_AIA_{wl}_*.fits'))) for wl in wavelengths}
+
+        cmaps = {171: 'sdoaia171', 193: 'sdoaia193', 211: 'sdoaia211'}
+        cmaps = [cmaps[wl] for wl in wavelengths]
+        super().__init__(file_dict, cmaps=cmaps, **kwargs)
+
+
+class AbsorptionTestDataset(Dataset):
+
+    def __init__(self, n_logT=100, n_logNe=100, logT_range=(3.7, 8), logNe_range=(-3, 4), batch_size=1024):
+        self.data = np.stack(np.meshgrid(np.linspace(*logT_range, n_logT),
+                                         np.linspace(*logNe_range, n_logNe), indexing='ij'), -1)
+        self.image_shape = (n_logT, n_logNe)
+        self.data_tensor = torch.from_numpy(self.data).float().reshape(-1, 2)
+        self.batch_size = batch_size
+
+    def __len__(self):
+        return np.ceil(self.data_tensor.shape[0] / self.batch_size).astype(int)
+
+    def __getitem__(self, idx):
+        data = self.data_tensor[idx * self.batch_size: (idx + 1) * self.batch_size]
+        return {'log_T': data[:, 0:1], 'log_ne': data[:, 1:2]}

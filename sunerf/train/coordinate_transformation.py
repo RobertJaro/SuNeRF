@@ -15,9 +15,9 @@ rot_phi = lambda phi: torch.Tensor([
     [0, 0, 0, 1]]).float()
 
 rot_theta = lambda th: torch.Tensor([
-    [np.cos(th), 0, -np.sin(th), 0],
+    [np.sin(th), 0, -np.cos(th), 0],
     [0, 1, 0, 0],
-    [np.sin(th), 0, np.cos(th), 0],
+    [np.cos(th), 0, np.sin(th), 0],
     [0, 0, 0, 1]]).float()
 
 trans_shift = lambda tx, ty, tz: torch.Tensor([
@@ -54,7 +54,11 @@ def pose_spherical(theta, phi, radius, shift=None):
     return c2w
 
 
-def spherical_to_cartesian(r, lat, lon):
-    return np.array([r * np.cos(lat) * np.cos(lon),
-                     r * np.cos(lat) * np.sin(lon),
-                     r * np.sin(lat)])
+def spherical_to_cartesian(v, f=np):
+    sin = f.sin
+    cos = f.cos
+    r, t, p = v[..., 0], v[..., 1], v[..., 2]
+    x = r * cos(t) * cos(p)
+    y = r * cos(t) * sin(p)
+    z = r * sin(t)
+    return f.stack([x, y, z], -1)
