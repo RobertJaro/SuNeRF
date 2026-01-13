@@ -283,16 +283,13 @@ class ConditionedSuNeRFLoader:
         data_config = state['data_config']
         self.ds_keys = list(data_config.keys())
         self.config = data_config
-        self.observers = [o for k in data_config.keys() if 'observers' in data_config[k] for o in data_config[k]['observers']]
 
         rendering = state['rendering']
         self.rendering = rendering.to(device)
         self.model = rendering.model.to(device)
 
-        self.seconds_per_dt = state['seconds_per_dt']
         self.Rs_per_ds = state['Rs_per_ds']
         self.Mm_per_ds = self.Rs_per_ds * (1 * u.R_sun).to_value(u.Mm)
-        self.ref_date = state['ref_date']
 
         self.image_norm = state['image_norm']
         self.arcsec_norm = state['arcsec_norm']
@@ -300,16 +297,15 @@ class ConditionedSuNeRFLoader:
 
         self.image_encoder = state['image_encoder'].to(device)
         self.coordinate_encoder = state['coordinate_encoder'].to(device)
+        self.image_scaling = state['image_scaling'].to(device)
 
     @torch.no_grad()
     def load_image(self, data_file: str, lat: u, lon: u,
-                   time: datetime,
                    distance=(1 * u.AU).to(u.solRad),
                    hpc_lat: u = 0 * u.arcsec, hpc_lon: u = 0 * u.arcsec,
-                   resolution=(256, 256) * u.pix, scale=[2400 / 256, 2400 / 256] * u.arcsec / u.pix,
-                   instrument_key=None, **kwargs):
-        instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
+                   resolution=(256, 256) * u.pix, scale=[2400 / 256, 2400 / 256] * u.arcsec / u.pix, **kwargs):
 
+        time = Map(data_file).date
         obs = SkyCoord(0 * u.deg, 0 * u.deg, distance, frame=frames.HeliographicStonyhurst, obstime=time)
         reference_coord = SkyCoord(hpc_lat, hpc_lon, obstime=time, observer=obs,
                                    frame=frames.Helioprojective)
@@ -318,9 +314,9 @@ class ConditionedSuNeRFLoader:
         ref_map = Map(mock_data, header)
 
         # convert to pose
-        target_pose = pose_spherical(-lon.to_value(u.rad), lat.to_value(u.rad), distance.to_value(u.solRad)).numpy()
+        target_pose = pose_spherical(lon.to_value(u.rad), lat.to_value(u.rad), distance.to_value(u.solRad)).numpy()
         # load image coordinates
-        img_coords = get_azimuthal_equidistant_coordinates(ref_map)
+        img_coords = all_coordinates_from_map(ref_map).transform_to(frames.Helioprojective)
 
         pose_out = self.load_pose(data_file, img_coords, target_pose, **kwargs)
         return pose_out
@@ -330,28 +326,25 @@ class ConditionedSuNeRFLoader:
         latent_z = self.load_latent(data_file)
 
         # load rays
-        rays_o, rays_d = get_rays(img_coords[..., 0], img_coords[..., 1], target_pose)
+        rays_o, rays_d = get_rays(img_coords.Tx, img_coords.Ty, target_pose)
         rays_o, rays_d = torch.from_numpy(rays_o), torch.from_numpy(rays_d)
         img_shape = rays_o.shape[:2]
 
-        # flatten and repeat latent vector for all rays in the batch
-        latent_z = latent_z[:, None, :].repeat(1, rays_o.shape[1], 1)  # [batch, n_rays, z_dim]
-
-        flat_latent_z = latent_z.view(-1, latent_z.shape[-1]).to(self.device)  # [batch * n_rays, z_dim]
-        flat_rays_o = rays_o.view(-1, rays_o.shape[-1]).to(self.device)  # [batch * n_rays, 3]
-        flat_rays_d = rays_d.view(-1, rays_d.shape[-1]).to(self.device)  # [batch * n_rays, 3]
+        flat_rays_o = rays_o.reshape(-1, rays_o.shape[-1]).to(self.device)  # [n_rays, 3]
+        flat_rays_d = rays_d.reshape(-1, rays_d.shape[-1]).to(self.device)  # [n_rays, 3]
 
         # make batches
-        rays_o, rays_d, latent_z = torch.split(flat_rays_o, batch_size), \
-            torch.split(flat_rays_d, batch_size), \
-            torch.split(flat_latent_z, batch_size)
+        rays_o, rays_d = torch.split(flat_rays_o, batch_size), \
+            torch.split(flat_rays_d, batch_size)
 
         output_image = []
-        iter = tqdm(zip(rays_o, rays_d, latent_z), total=len(rays_o)) if progress else zip(rays_o, rays_d, latent_z)
-        for b_rays_o, b_rays_d, b_latent in iter:
+        iter = tqdm(zip(rays_o, rays_d), total=len(rays_o)) if progress else zip(rays_o, rays_d)
+        for b_rays_o, b_rays_d  in iter:
+            b_latent = latent_z.repeat(b_rays_o.shape[0], 1)
             outputs = self.rendering(b_rays_o, b_rays_d, b_latent)
             output_image.append(outputs['model_out']['image'].detach().cpu())
         output_image = torch.cat(output_image).view(*img_shape, -1).numpy()
+        output_image *= self.image_norm  # rescale to original range
         return {'image': output_image}
 
     def load_latent(self, data_file):
@@ -368,9 +361,12 @@ class ConditionedSuNeRFLoader:
         hpc = hpc.transpose(2, 0, 1)  # [2, H, W]
         input_image = np.concatenate([image, hpc], axis=0)  # [C, H, W]
 
-        observer_coords = torch.stack([torch.sin(latitude), torch.cos(latitude),
-                                       torch.sin(longitude), torch.cos(longitude)], dim=-1)
+        observer_coords = np.stack([np.sin(latitude), np.cos(latitude),
+                                       np.sin(longitude), np.cos(longitude)], axis=-1)
 
+        # convert to tensor
+        input_image = torch.tensor(input_image, dtype=torch.float32).unsqueeze(0).to(self.device)  # [1, C, H, W]
+        observer_coords = torch.tensor(observer_coords, dtype=torch.float32).unsqueeze(0).to(self.device)  # [1, 4]
         # scale target image
         input_image = self.image_scaling(input_image)  # [batch, C, H, W]
 

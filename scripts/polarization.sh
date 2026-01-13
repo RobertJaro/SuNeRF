@@ -34,7 +34,7 @@ python -m sunerf.evaluation.cme.cme_tomography --sunerf_path "/glade/work/rjarol
 python -m sunerf.evaluation.cme.cme_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/polarization/no_polarization_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
 
 
-#python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/polarization/full_polarization_v02/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav" --plot_ground_truth
+python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/polarization/full_polarization_v02/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav" --plot_ground_truth
 python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/polarization/mixed_3view_polarization_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
 python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/polarization/mixed_polarization_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"
 python -m sunerf.evaluation.cme.center_of_mass --sunerf_path "/glade/work/rjarolim/sunerf-cme-v2/polarization/no_3view_polarization_v01/save_state.snf" --data_path "/glade/work/rjarolim/data/sunerf-cme/hao/density_cube_v2/*.sav"

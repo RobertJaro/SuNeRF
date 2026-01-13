@@ -32,8 +32,13 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 
 #################################################
 # Data Preparation
-python -m sunerf.data.euv.prep_aia_v2 --data_path "/glade/work/rjarolim/data/sunerf-conditioned/aia_193/*.fits" --out_path "/glade/work/rjarolim/data/sunerf-conditioned/aia_193_prep" --resolution 256
+#python -m sunerf.data.euv.prep_aia_v2 --data_path "/glade/work/rjarolim/data/sunerf-conditioned/aia_193/*.fits" --out_path "/glade/work/rjarolim/data/sunerf-conditioned/aia_193_prep" --resolution 256
 
 #################################################
 # Training
 python -m sunerf.run_conditioned --config "config/conditioned/aia_193.yaml"
+
+
+#################################################
+# Evaluation
+#python -m sunerf.evaluation.conditioned.video --chk_path "/glade/work/rjarolim/sunerf-conditioned/aia_193_v06/save_state.snf" --ref_file "/glade/work/rjarolim/data/sunerf-conditioned/aia_193_prep/aia.lev1_euv_12s.2024-05-10T000006Z.193.image_lev1.fits"

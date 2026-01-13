@@ -37,6 +37,8 @@ def save_conditioned_sunerf(sunerf, data_module, save_path):
         # latent encoder
         'image_encoder': sunerf.image_encoder,
         'coordinate_encoder': sunerf.coordinate_encoder,
+        # image scaling
+        'image_scaling': sunerf.image_scaling
     }
     torch.save(state, save_path)
 

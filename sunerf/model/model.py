@@ -167,7 +167,7 @@ class ConditionedNeRF(nn.Module):
 
     def __init__(self, n_channels=1, z_dim=128, **kwargs):
         super().__init__()
-        self.posenc = GaussianPositionalEncoding(3, scales=16, num_frequencies=16)
+        self.posenc = GaussianPositionalEncoding(3, scales=64, num_frequencies=32)
         dim_encoding = self.posenc.d_output
         encoding_config = {'type': 'identity'}
         self.nerf = SirenModel(in_dim=dim_encoding + z_dim, out_dim=n_channels * 2, dim=512, n_layers=8, encoding_config=encoding_config, **kwargs)
