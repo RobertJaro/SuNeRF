@@ -1,0 +1,119 @@
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/202409_combined_v10"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/202409_combined_v09'
+
+instruments:
+  - type: 'default'
+    key: 'Metis'
+    scaling: {type: 'log'}
+    correction: True
+    calibration: True
+  - type: 'default'
+    key: 'COR2'
+    scaling: {type: 'log'}
+    correction: True
+    calibration: False
+  - type: 'default'
+    key: 'C2'
+    scaling: {type: 'log'}
+    correction: True
+    calibration: True
+
+model:
+  dim: 128
+  static: False
+  encoding_config: {type: multi_spectral, weights: [10, 10, 10, 1]}
+
+data:
+  train_datasets:
+    - type: 'Metis'
+      key: 'Metis'
+      instrument_key: 'Metis'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/metis/pB/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/metis/tB/*"
+      batch_size: 1024
+      debug: False
+    - type: 'COR'
+      key: 'COR2'
+      instrument_key: 'COR2'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/pB/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/tB/*"
+      batch_size: 1024
+      debug: False
+    - type: 'LASCO'
+      key: 'C2'
+      instrument_key: 'C2'
+      data_path_pB: null
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/lasco_c2/*"
+      batch_size: 1024
+      debug: False
+    - type: 'random'
+      name: 'continuity'
+      radius_range: [ 1.5, 17.0 ]
+      unit: 'solRad'
+      batch_size: 4096
+  valid_datasets:
+    - type: 'COR'
+      key: 'COR2_sample'
+      instrument_key: 'COR2'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/pB/20240915_000745_1P4c2A.fts"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/tB/20240915_000745_1B4c2A.fts"
+    - type: 'LASCO'
+      key: 'C2_sample'
+      instrument_key: 'C2'
+      data_path_pB: null
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/lasco_c2/25963828_patched.fts"
+    - type: 'Metis'
+      key: 'Metis_sample'
+      instrument_key: 'Metis'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/metis/pB/solo_L2_metis-vl-pb_20240915T003001_V01.fits"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/metis/tB/solo_L2_metis-vl-tb_20240915T003001_V01.fits"
+    - type: 'series'
+      name: 'series'
+      batch_size: 16384
+      radius_range: [ 1.5, 15.0 ]
+  debug: False
+  Rs_per_ds: 15
+  seconds_per_dt: 2356585.92
+  batch_size: 4096
+  validation_batch_size: 4096
+  num_workers: 16
+
+callbacks:
+  # image callbacks
+  - type: 'thomson_image'
+    ds_key: 'COR2_sample'
+  - type: 'thomson_image'
+    ds_key: 'C2_sample'
+  - type: 'thomson_image'
+    ds_key: 'Metis_sample'
+  # correction images
+  - type: 'correction_image'
+    ds_key: 'COR2_sample'
+  - type: 'correction_image'
+    ds_key: 'Metis_sample'
+  - type: 'correction_image'
+    ds_key: 'C2_sample'
+  - type: 'velocity_slice'
+    name: 'velocity_slice'
+    ds_key: 'series'
+    latitude: 0
+
+logging:
+  entity: "robert_jarolim"
+  project: "sunerf-cme-obs"
+  name: "2024-10 - COR2 + Metis + C2"
+
+sampling:
+  type: "spherical"
+  n_samples: 64
+  max_distance: 17.0
+
+lambda:
+  image: 1.0
+  ratio: 10.0
+  radial: 1.0e-4
+  continuity: 1.0e-5
+  velocity: 1.0e-4
+
+training:
+  log_every_n_steps: 10000

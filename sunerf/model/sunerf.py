@@ -32,8 +32,7 @@ class BaseSuNeRFModule(LightningModule):
             self.scheduler.step()
         self.log('Learning Rate', self.scheduler.get_last_lr()[0])
 
-        if self.rendering.shuffler is not None:
-            self.rendering.shuffler.on_train_batch_end()
+        self.rendering.on_train_batch_end(*args, **kwargs)
 
     def on_validation_epoch_start(self):
         self.validation_outputs = {}

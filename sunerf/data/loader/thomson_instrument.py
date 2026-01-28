@@ -68,6 +68,12 @@ class ThomsonDataModule(BaseDataModule):
 
             if ds_type.lower() == 'hao':
                 dataset = HAOThomsonDataset(**ds_config, ds_key=ds_key)
+            elif ds_type.lower() == 'cor':
+                dataset = COR2Dataset(**ds_config, ds_key=ds_key)
+            elif ds_type.lower() == 'lasco':
+                dataset = LASCOC2Dataset(**ds_config, ds_key=ds_key)
+            elif ds_type.lower() == 'metis':
+                dataset = MetisDataset(**ds_config, ds_key=ds_key)
             elif ds_type.lower() == 'random':
                 assert len(train_dict) > 0, 'Specify at least one dataset for reference times. The random dataset configuration needs to be last in config file.'
                 times = np.concatenate([dataset.normalized_times for dataset in train_dict.values() if isinstance(dataset, GenericThomsonDataset)])
@@ -96,6 +102,12 @@ class ThomsonDataModule(BaseDataModule):
             ds_config.update(config)
             if ds_type.lower() == 'hao':
                 dataset = HAOThomsonDataset(**ds_config, ds_key=ds_key, test=True)
+            elif ds_type.lower() == 'cor':
+                dataset = COR2Dataset(**ds_config, ds_key=ds_key, test=True)
+            elif ds_type.lower() == 'lasco':
+                dataset = LASCOC2Dataset(**ds_config, ds_key=ds_key, test=True)
+            elif ds_type.lower() == 'metis':
+                dataset = MetisDataset(**ds_config, ds_key=ds_key, test=True)
             elif ds_type.lower() == 'reference_cube':
                 dataset = ReferenceCubeDataset(**ds_config, ds_key=ds_key, shuffle=False, filter_nans=False)
             elif ds_type.lower() == 'series':
@@ -109,8 +121,10 @@ class ThomsonDataModule(BaseDataModule):
 
 class GenericThomsonDataset(TensorsDataset):
     def __init__(self, data_path_pB, data_path_tB, scaling, ds_key, instrument_key,
-                 Rs_per_ds, seconds_per_dt, ref_date=None,
-                 batch_size=int(2 ** 10), debug=False, test=False, noise_level=False, **kwargs):
+                 Rs_per_ds, seconds_per_dt, image_norm=512, ref_date=None,
+                 batch_size=int(2 ** 10), debug=False, test=False, noise_level=False,
+                 reference_frame='heliographic', azimuthal_equidistant=True,
+                 **kwargs):
         self.scaling = scaling
         # select files with min diff in dates
         tB_files = sorted(glob.glob(data_path_tB))
@@ -122,14 +136,14 @@ class GenericThomsonDataset(TensorsDataset):
             pB_files = pB_files[::sampling] if pB_files is not None else None
         if test:
             # select file at center of the list
-            idx = len(pB_files) // 2
+            idx = len(tB_files) // 2
             tB_files = tB_files[idx:idx + 1]
             pB_files = pB_files[idx:idx + 1] if pB_files is not None else None
 
         # load rays
         data_dict = {}
         with multiprocessing.Pool(os.cpu_count()) as p:
-            loader = MapDataLoader(Rs_per_ds, 'heliographic', azimuthal_equidistant=True)
+            loader = MapDataLoader(Rs_per_ds, reference_frame, azimuthal_equidistant=azimuthal_equidistant)
             data = [v for v in
                     tqdm(p.imap(loader.load, tB_files), total=len(tB_files), desc=f'Loading tB + rays')]
         observers = [d.pop('observer') for d in data]
@@ -153,7 +167,7 @@ class GenericThomsonDataset(TensorsDataset):
             noise = noise * noise_level * mean_B
             image_stack += noise
 
-        mask = np.any(image_stack < 1e-8, axis=-1)
+        mask = np.any(image_stack <= 0, axis=-1)
         image_stack[mask] = np.nan  # set both tB and pB to NaN if either is negative
         data_dict['image'] = image_stack
 
@@ -168,6 +182,18 @@ class GenericThomsonDataset(TensorsDataset):
         times_arr = np.ones((*data_dict['image'].shape[:-1], 1), dtype=np.float32) * times[:, None, None, None]
         data_dict['time'] = times_arr
 
+        # add image coordinates
+        ny, nx = image_stack.shape[1], image_stack.shape[2]
+        image_coords = np.stack(np.mgrid[:ny, :nx], axis=-1).astype(np.float32)
+
+        # center: y uses ny, x uses nx
+        image_coords[..., 0] -= 0.5 * (ny - 1)
+        image_coords[..., 1] -= 0.5 * (nx - 1)
+
+        image_coords /= image_norm
+        image_coords = image_coords[None, :, :, :].repeat(image_stack.shape[0], axis=0)  # repeat over time
+        data_dict['image_coords'] = image_coords
+
         if not test:
             cmap = cm.soholasco2.copy()
             cmap.set_bad(color='green')
@@ -177,9 +203,9 @@ class GenericThomsonDataset(TensorsDataset):
                 f'Image shape: {data_dict["image"].shape}; MIN: {np.nanmin(data_dict["image"])}; MAX: {np.nanmax(data_dict["image"])}')
             print(f'Time shape: {times_arr.shape}; MIN: {np.nanmin(times_arr)}; MAX: {np.nanmax(times_arr)}')
 
-        tensors = {k: v.reshape((-1, *v.shape[3:])) for k, v in data_dict.items() if k in ['image', 'rays', 'time']}
-        # set all values where image (pB + tB) is NaN to NaN --> skip for training
-        nan_mask = np.all(np.isnan(tensors['image']), -1)
+        tensors = {k: v.reshape((-1, *v.shape[3:])) for k, v in data_dict.items() if k in ['image', 'rays', 'time', 'image_coords']}
+        # set all values where image (tB) is NaN to NaN --> skip for training
+        nan_mask = np.isnan(tensors['image'][..., 0])
         for k, v in tensors.items():
             tensors[k][nan_mask] = np.nan
 
@@ -207,6 +233,21 @@ class HAOThomsonDataset(GenericThomsonDataset):
 
     def __init__(self, **kwargs):
         super().__init__(scaling=5e-5, **kwargs)
+
+class COR2Dataset(GenericThomsonDataset):
+
+    def __init__(self, **kwargs):
+        super().__init__(scaling=1.0e-6, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
+
+class LASCOC2Dataset(GenericThomsonDataset):
+
+    def __init__(self, **kwargs):
+        super().__init__(scaling=1.0e-6, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
+
+class MetisDataset(GenericThomsonDataset):
+
+    def __init__(self, **kwargs):
+        super().__init__(scaling=1.0e-6, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
 
 
 class ReferenceCubeDataset(TensorsDataset):
@@ -266,7 +307,6 @@ class SeriesCubeDataset(TensorsDataset):
         query_points = np.stack(np.meshgrid(x_range, y_range, [0], times), axis=-1)
 
         r = np.linalg.norm(query_points[..., :3], axis=-1)
-        # clip radius to 100 Rsun
         mask = (r > radius_range[0]) & (r < radius_range[1])
         query_points[~mask] = np.nan
 

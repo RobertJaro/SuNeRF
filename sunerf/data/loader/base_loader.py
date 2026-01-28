@@ -43,7 +43,7 @@ class BaseDataModule(LightningDataModule):
 
     def train_dataloader(self):
         loaders = {name: DataLoader(ds, batch_size=None, num_workers=self.num_workers,
-                                    pin_memory=True, shuffle=True, persistent_workers=True, prefetch_factor=5)
+                                    pin_memory=False, shuffle=True, persistent_workers=True, prefetch_factor=5)
                    for name, ds in self.training_datasets.items()}
         return CombinedLoader(loaders, 'max_size_cycle')
 
@@ -52,7 +52,7 @@ class BaseDataModule(LightningDataModule):
         loaders = []
         for dataset in datasets.values():
             dataset = IndexedDataset(dataset)
-            loader = DataLoader(dataset, batch_size=None, num_workers=self.num_workers, pin_memory=True,
+            loader = DataLoader(dataset, batch_size=None, num_workers=self.num_workers, pin_memory=False,
                                 shuffle=False)
             loaders.append(loader)
         return loaders
@@ -94,7 +94,7 @@ class MapDataLoader:
         if self.reference_frame == 'carrington':
             pose = pose_spherical(s_map.carrington_longitude.to(u.rad).value,
                                   s_map.carrington_latitude.to(u.rad).value,
-                                  s_map.dsun.to_value(u.solRad) / self.Rs_per_ds).float().numpy()
+                                  s_map.dsun.to_value(u.solRad) / self.Rs_per_ds)
             observer = {'radius': s_map.dsun.to(u.solRad),
                         'latitude': s_map.carrington_latitude.to(u.deg),
                         'longitude': s_map.carrington_longitude.to(u.deg),
@@ -102,10 +102,19 @@ class MapDataLoader:
         elif self.reference_frame == 'heliographic':
             pose = pose_spherical(s_map.heliographic_longitude.to(u.rad).value,
                                   s_map.heliographic_latitude.to(u.rad).value,
-                                  s_map.dsun.to_value(u.solRad) / self.Rs_per_ds).float().numpy()
+                                  s_map.dsun.to_value(u.solRad) / self.Rs_per_ds)
             observer = {'radius': s_map.dsun.to(u.solRad),
                         'latitude': s_map.heliographic_latitude.to(u.deg),
                         'longitude': s_map.heliographic_longitude.to(u.deg),
+                        'time': time}
+        elif self.reference_frame == 'inertial':
+            obs_coord = s_map.observer_coordinate.transform_to(frames.HeliocentricInertial)
+            pose = pose_spherical(obs_coord.lon.to_value(u.rad),
+                                  obs_coord.lat.to_value(u.rad),
+                                  obs_coord.distance.to_value(u.solRad) / self.Rs_per_ds)
+            observer = {'radius': obs_coord.distance.to(u.solRad),
+                        'latitude': obs_coord.lat.to(u.deg),
+                        'longitude': obs_coord.lon.to(u.deg),
                         'time': time}
         else:
             raise ValueError('reference_frame must be "heliographic" or "carrington"')

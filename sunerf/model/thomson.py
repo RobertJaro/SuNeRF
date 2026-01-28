@@ -10,6 +10,7 @@ from sunerf.model.sunerf import BaseSuNeRFModule
 from sunerf.model.util import jacobian
 from sunerf.rendering.base_tracing import BasicRenderingModule
 from sunerf.rendering.thomson import ThomsonScattering
+from sunerf.train.correction import CorrectionModule, CalibrationModule
 from sunerf.train.scaling import ImageAsinhScaling, ImageLinearScaling, ImageLogScaling
 
 
@@ -17,16 +18,21 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
     def __init__(self, Rs_per_ds, seconds_per_dt,
                  instruments, lambda_config=None,
                  sampling_config=None,
-                 model_config=None, **kwargs):
+                 model_config=None,
+                 shuffle_config=None, **kwargs):
         # setup rendering
         sampling_config = sampling_config if sampling_config is not None else {}
 
         rendering_modules = {}
         scaling_modules = {}
+        correction_modules = {}
+        calibration_modules = {}
         for instrument_config in instruments:
             instrument_config = instrument_config.copy()
             instrument_key = instrument_config.pop('key')
             instrument_type = instrument_config.pop('type')
+            correction = instrument_config.pop('correction', False)
+            calibration = instrument_config.pop('calibration', False)
             # rendering module
             rendering_config = instrument_config.pop('rendering', {})
             if instrument_type == 'default':
@@ -44,13 +50,20 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                 scaling_modules[instrument_key] = ImageLogScaling(**scaling_config)
             else:
                 raise ValueError(f"Unknown scaling type: {scaling_type}")
+            # correction module
+            if correction:
+                correction_modules[instrument_key] = CorrectionModule()
+            # calibration module
+            if calibration:
+                calibration_config = {} if isinstance(calibration, bool) else calibration
+                calibration_modules[instrument_key] = CalibrationModule(**calibration_config)
 
         model_config = {} if model_config is None else model_config
-        model = RhoModel(Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt,**model_config)
+        model = RhoModel(Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt, **model_config)
         rendering = BasicRenderingModule(model=model,
                                          rendering_modules=rendering_modules,
                                          Rs_per_ds=Rs_per_ds,
-                                         sampling_config=sampling_config)
+                                         sampling_config=sampling_config, shuffle_config=shuffle_config)
 
         super().__init__(Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt,
                          rendering=rendering, **kwargs)
@@ -59,10 +72,10 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         self.model = model
 
         # define lambda values
-        lambda_config = {'image':1.0,
-                         'ratio':1.0,
-                         'continuity':1e-3,
-                         'radial':1e-2,
+        lambda_config = {'image': 1.0,
+                         'ratio': 1.0,
+                         'continuity': 1e-3,
+                         'radial': 1e-2,
                          'velocity': 1e-3} if lambda_config is None else lambda_config
         # check lambda config
         available_lambdas = ['image', 'ratio', 'continuity', 'radial', 'velocity', 'target_velocity']
@@ -92,16 +105,22 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
         self.lambdas = nn.ParameterDict(lambdas)
 
+        self.correction_modules = nn.ModuleDict(correction_modules)
+        self.calibration_modules = nn.ModuleDict(calibration_modules)
         self.scaling_modules = nn.ModuleDict(scaling_modules)
         self.mse_loss = nn.MSELoss()
 
         # solar wind
-        velocity_min = (200.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
+        velocity_min = (100.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
         self.velocity_min = nn.Parameter(torch.tensor(velocity_min, dtype=torch.float32), requires_grad=False)
         velocity_max = (800.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
         self.velocity_max = nn.Parameter(torch.tensor(velocity_max, dtype=torch.float32), requires_grad=False)
         velocity_avg = (300.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
         self.velocity_avg = nn.Parameter(torch.tensor(velocity_avg, dtype=torch.float32), requires_grad=False)
+
+        # radial weighting
+        self.min_radius_weight = nn.Parameter(torch.tensor(3.0 / Rs_per_ds, dtype=torch.float32), requires_grad=False)
+        self.max_radius_weight = nn.Parameter(torch.tensor(12.0 / Rs_per_ds, dtype=torch.float32), requires_grad=False)
 
         print(f'Velocity min: {velocity_min}, max: {velocity_max}')
         drop_off_distance = (1 * u.AU).to_value(u.R_sun) / Rs_per_ds
@@ -119,10 +138,15 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
         for k in dataset_batch.keys():
             instrument_key = batch[k]['instrument']
-            image_scaling = self.scaling_modules[instrument_key]
+            image_coords = batch[k]['image_coords']
 
             model_image = model_out[k]['image']
             target_image = dataset_batch[k]['image']
+
+            if instrument_key in self.correction_modules:
+                model_image = self.correction_modules[instrument_key](model_image, image_coords)
+            if instrument_key in self.calibration_modules:
+                model_image = self.calibration_modules[instrument_key](model_image)
 
             pB_nan_mask = ~torch.isnan(target_image[..., 1])
 
@@ -131,6 +155,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             ratio_model_image = model_image[pB_nan_mask, 1] / (model_image[pB_nan_mask, 0] + 1e-8)
 
             # scale images
+            image_scaling = self.scaling_modules[instrument_key]
             scaled_model_image = image_scaling(model_image)
             scaled_target_image = image_scaling(target_image)
 
@@ -167,6 +192,10 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             query_points = batch['random']['coords']
             query_points.requires_grad = True
 
+            r = torch.norm(query_points[:, :3], dim=-1)
+            radial_weight = torch.clamp((r - self.min_radius_weight) / (self.max_radius_weight - self.min_radius_weight),
+                                        min=0.0, max=1.0).pow(2)
+
             model_out = self.model(query_points)
 
             rho = model_out['rho']
@@ -174,22 +203,25 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             v = model_out['v']
             # continuity_loss = self.compute_continuity_loss(rho, v, query_points)
             continuity_loss = self.compute_log_continuity_loss(log_rho, v, query_points)
+            continuity_loss = continuity_loss.mean()
 
             loss += self.lambdas['continuity']['value'] * continuity_loss
             log_values['continuity'] = continuity_loss
 
             # velocity regularization
             v_abs = torch.norm(v, dim=-1)
-            min_v = torch.clip(v_abs - self.velocity_min, max=0).pow(2).mean()
-            max_v = torch.clip(v_abs - self.velocity_max, min=0).pow(2).mean()
+            min_v = torch.clip(v_abs - self.velocity_min, max=0).pow(2)
+            max_v = torch.clip(v_abs - self.velocity_max, min=0).pow(2)
             velocity_loss = min_v + max_v
+            velocity_loss = (velocity_loss * radial_weight).sum() / (radial_weight.sum() + 1e-7)
             log_values['velocity'] = velocity_loss
             loss += self.lambdas['velocity']['value'] * velocity_loss
 
             # radial regularization
             normalization = torch.norm(query_points[:, :3], dim=-1) * torch.norm(v, dim=-1) + 1e-7
             radial_loss = torch.norm(torch.cross(v, query_points[:, :3], dim=-1), dim=-1) / normalization
-            radial_loss = radial_loss.pow(2).mean()
+            radial_loss = radial_loss.pow(2)
+            radial_loss = (radial_loss * radial_weight).sum() / (radial_weight.sum() + 1e-7)
             log_values['radial'] = radial_loss
             loss += self.lambdas['radial']['value'] * radial_loss
 
@@ -197,10 +229,14 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             target_velocity = query_points[:, :3] / (torch.norm(query_points[:, :3], dim=-1, keepdim=True) + 1e-7)
             target_velocity = target_velocity * self.velocity_avg
             target_loss = (v - target_velocity).pow(2).sum(-1)
-            target_loss = target_loss.mean()
+            target_loss = (target_loss * radial_weight).sum() / (radial_weight.sum() + 1e-7)
             log_values['target_velocity'] = target_loss
             loss += self.lambdas['target_velocity']['value'] * target_loss
 
+            assert torch.isnan(continuity_loss).sum() == 0, 'Invalid loss detected: continuity_loss'
+            assert torch.isnan(velocity_loss).sum() == 0, 'Invalid loss detected: velocity_loss'
+            assert torch.isnan(radial_loss).sum() == 0, 'Invalid loss detected: radial_loss'
+            assert torch.isnan(target_loss).sum() == 0, 'Invalid loss detected: target_loss'
 
         assert torch.isnan(loss).sum() == 0, 'Invalid loss detected: loss'
         # log results to WANDB
@@ -225,14 +261,14 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         div_rho_v = dRhoVx_dx + dRhoVy_dy + dRhoVz_dz
         continuity_eq = dRho_dt + div_rho_v
 
-        loss = continuity_eq.abs()
-        radial_distance = torch.norm(query_points[:, :3], dim=-1)
+        loss = continuity_eq.pow(2)
+        radial_distance = torch.norm(query_points[..., :3], dim=-1)
         # compensate for the radial drop-off
-        loss = loss * radial_distance ** 2
+        loss = loss * radial_distance.pow(4)
         # normalize density
-        loss = loss / (rho * radial_distance ** 2).mean()
+        loss = loss / (rho * radial_distance.pow(2) + 1e-6).pow(2).mean()
 
-        return loss.mean()
+        return loss
 
     def compute_log_continuity_loss(self, log_rho, v, query_points):
         rho_jac_matrix = jacobian(log_rho, query_points)
@@ -251,12 +287,8 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         v_dot_grad_logRho = (v * grad_logRho).sum(-1)
         continuity_eq = dlogRho_dt + div_V + v_dot_grad_logRho
 
-        loss = continuity_eq.abs()
-        # compensate for the radial drop-off
-        # radial_distance = torch.norm(query_points[:, :3], dim=-1)
-        # loss = loss * radial_distance ** 2
-
-        return loss.mean()
+        loss = continuity_eq.pow(2)
+        return loss
 
     def validation_step(self, batch, batch_nb, *args):
         dataloader_idx = args[0] if len(args) > 0 else 0
@@ -264,7 +296,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
         if 'instrument' in batch:
             instrument_key = batch['instrument']
-
+            image_coords = batch['image_coords']
             image = batch['image']
 
             rendering_out = self.rendering({dataset_key: batch})
@@ -274,6 +306,14 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
             model_image = model_out['image']
 
+            if instrument_key in self.correction_modules:
+                model_image = self.correction_modules[instrument_key](model_image, image_coords)
+                correction = self.correction_modules[instrument_key].get_correction(image_coords)
+            else:
+                correction = None
+            if instrument_key in self.calibration_modules:
+                model_image = self.calibration_modules[instrument_key](model_image)
+
             target_ratio = image[..., 1:2] / (image[..., 0:1] + 1e-8)
             model_ratio = model_image[..., 1:2] / (model_image[..., 0:1] + 1e-8)
 
@@ -281,14 +321,17 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             target_image = image_scaling(image)
             model_image = image_scaling(model_image)
 
-            return {'target_image': target_image,
-                    'model_image': model_image,
-                    'model_ratio': model_ratio,
-                    'target_ratio': target_ratio,
-                    'density': model_out['density'],
-                    'distance_from_sun': model_out['distance_from_sun'],
-                    'distance_from_obs': model_out['distance_from_obs'],
-                    'distance': model_out['distance']}
+            result = {'target_image': target_image,
+                         'model_image': model_image,
+                         'model_ratio': model_ratio,
+                         'target_ratio': target_ratio,
+                         'density': model_out['density'],
+                         'distance_from_sun': model_out['distance_from_sun'],
+                         'distance_from_obs': model_out['distance_from_obs'],
+                         'distance': model_out['distance']}
+            if correction is not None:
+                result['correction'] = correction['tB_add']
+            return result
         elif 'rho' in batch:
             query_points = batch['query_points']
             spherical_coords = batch['spherical_coords']
@@ -302,11 +345,6 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             model_out = self.model(query_points)
             return {'rho_pred': model_out['rho'], 'v_pred': model_out['v'], 'query_points': query_points}
 
-    def on_validation_epoch_end(self):
-        scaling = {f'instrument_scaling.{k}': float(m.scaling.detach().cpu().numpy())
-                   for k, m in self.rendering_modules.items()}
-        self.log_dict(scaling, sync_dist=True)
-        super().on_validation_epoch_end()
 
     def on_train_batch_end(self, *args, **kwargs):
         # update lambda values
@@ -316,16 +354,20 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                 if new_value <= v['end']:
                     new_value = v['end']
                 v['value'] = new_value
-                self.log(f'lambda_{k}', float(v['value'].detach().cpu().numpy()))
+                self.log(f'lambda_{k}', float(v['value'].detach().cpu().numpy()), sync_dist=True)
             if v['type'] == 'exponential_growth':
                 new_value = v['value'] * v['gamma']
                 if new_value >= v['end']:
                     new_value = v['end']
                 v['value'] = new_value
-                self.log(f'lambda_{k}', float(v['value'].detach().cpu().numpy()))
+                self.log(f'lambda_{k}', float(v['value'].detach().cpu().numpy()), sync_dist=True)
             if v['type'] == 'constant':
-                pass # no change required, no logging
-
+                pass  # no change required, no logging
+        # log instrument scaling
+        scaling = {f'instrument_calibration.{k}': float(torch.exp(m.calibration).detach().cpu().numpy())
+                   for k, m in self.calibration_modules.items()}
+        self.log_dict(scaling, sync_dist=True)
+        # call super method
         super().on_train_batch_end(*args, **kwargs)
 
 

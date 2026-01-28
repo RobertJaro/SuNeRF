@@ -13,14 +13,19 @@ def get_rays(Tx, Ty, c2w: np.array) -> Tuple[np.array, np.array]:
     # get direction vector --> 0,0 is the down the z axis
     # central pixel (Tx=Ty=0) = (0, 0, -1)
 
+    x = np.tan(Tx)
+    y = np.tan(Ty)
+    z = - np.ones_like(x)
+
     # alternative rotation (might need verification)
-    alpha = np.arctan2(Tx, Ty)
-    rho = np.sqrt(Tx ** 2 + Ty ** 2)
-    x = np.sin(alpha) * np.sin(rho)
-    y = - np.cos(alpha) * np.sin(rho)
-    z = - np.cos(rho)
+    # alpha = np.arctan2(Tx, Ty)
+    # rho = np.sqrt(Tx ** 2 + Ty ** 2)
+    # x = np.sin(alpha) * np.sin(rho)
+    # y = - np.cos(alpha) * np.sin(rho)
+    # z = - np.cos(rho)
 
     directions = np.stack([x, y, z], axis=-1, dtype=np.float32)
+    directions /= np.linalg.norm(directions, axis=-1, keepdims=True)
 
     # Apply camera pose to directions
     rays_d = np.sum(directions[..., None, :] * c2w[:3, :3], axis=-1)

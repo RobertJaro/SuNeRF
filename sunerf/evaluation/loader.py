@@ -7,14 +7,16 @@ from astropy import units as u
 from astropy.coordinates import SkyCoord
 from sunpy.coordinates import frames
 from sunpy.map import Map, all_coordinates_from_map, make_fitswcs_header
+from torch import nn
 from tqdm import tqdm
 
 from sunerf.data.date_util import normalize_datetime, unnormalize_datetime
+from sunerf.data.loader.base_loader import MapDataLoader
 from sunerf.data.ray_sampling import get_rays
 from sunerf.data.utils import get_azimuthal_equidistant_coordinates
 from sunerf.evaluation.util import convert_spherical_to_cartesian
 from sunerf.rendering.base_tracing import MultiResolutionRenderingModule
-from sunerf.train.coordinate_transformation import pose_spherical
+from sunerf.train.coordinate_transformation import pose_spherical, spherical_to_cartesian
 
 
 class SuNeRFLoader:
@@ -24,6 +26,7 @@ class SuNeRFLoader:
         self.device = device
 
         state = torch.load(state_path)
+        self.state = state
         data_config = state['data_config']
         self.ds_keys = list(data_config.keys())
         self.config = data_config
@@ -32,7 +35,7 @@ class SuNeRFLoader:
         rendering = state['rendering']
         self.rendering = rendering.to(device)
         model = rendering.fine_model if isinstance(rendering, MultiResolutionRenderingModule) else rendering.model
-        self.model = model.to(device)
+        self.model = nn.DataParallel(model).to(device) # wrap model for multi-gpu inference
         self.instrument_keys = list(self.rendering.rendering_modules.keys())
 
         self.seconds_per_dt = state['seconds_per_dt']
@@ -114,7 +117,7 @@ class SuNeRFLoader:
         ref_map = Map(mock_data, header)
 
         # convert to pose
-        target_pose = pose_spherical(-lon.to_value(u.rad), lat.to_value(u.rad), distance.to_value(u.solRad)).numpy()
+        target_pose = pose_spherical(lon.to_value(u.rad), lat.to_value(u.rad), distance.to_value(u.solRad) / self.Rs_per_ds).numpy()
         # load image coordinates
         img_coords = get_azimuthal_equidistant_coordinates(ref_map)
 
@@ -163,11 +166,12 @@ class SuNeRFLoader:
         return unnormalize_datetime(time, self.seconds_per_dt, self.ref_date)
 
     @torch.no_grad()
-    def load_coords(self, query_points_npy, batch_size=2048, progress=True):
+    def load_coords(self, query_points_npy, batch_size=2048, progress=False):
         target_shape = query_points_npy.shape[:-1]
         query_points = torch.from_numpy(query_points_npy).float()
 
-        flat_query_points = query_points.reshape(-1, 4)
+        nan_mask = ~torch.isnan(query_points).any(-1)
+        flat_query_points = query_points[nan_mask]
         n_batches = np.ceil(len(flat_query_points) / batch_size).astype(int)
 
         out_dict = {}
@@ -179,7 +183,13 @@ class SuNeRFLoader:
                 if k not in out_dict:
                     out_dict[k] = []
                 out_dict[k].append(v.detach().cpu())
-        output = {k: torch.cat(v).reshape(*target_shape, *v[0].shape[1:]).numpy() for k, v in out_dict.items()}
+
+        output = {}
+        for k in out_dict.keys():
+            v = out_dict[k][0]
+            out_v = torch.ones(query_points.shape[:-1] + v.shape[1:], dtype=v.dtype) * torch.nan
+            out_v[nan_mask] = torch.cat(out_dict[k])
+            output[k] = out_v.numpy()
 
         return output
 
@@ -223,12 +233,148 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.rho_scaling = 57.80811838603689  # from calibration
+        self.msb = 4.67E+20 # from metis calibration, ph/cm2/s/sr
+        self.sigma_ne = 7.95e-26  # cm2 cm2/sr
+        self.c0 = 1.0e2 # TODO: load from state
+        self.msb_norm = 1e-6
+
+    def convert_rho(self, model_rho):
+        # convert to electron density in cm^-3
+        physical_rho = model_rho / self.c0 * (self.msb * np.pi * self.sigma_ne / 2)
+        return physical_rho
+
+
+    @torch.no_grad()
+    def load_image(self, lat: u, lon: u,
+                   time: datetime,
+                   distance=(1 * u.AU).to(u.solRad),
+                   hpc_lat: u = 0 * u.arcsec, hpc_lon: u = 0 * u.arcsec,
+                   resolution=(256, 256) * u.pix, scale=[2400 / 256, 2400 / 256] * u.arcsec / u.pix,
+                   occ_min=None, occ_max=None,
+                   instrument_key=None, **kwargs):
+        obs = SkyCoord(lat=lat, lon=lon, radius=distance, frame=frames.HeliographicStonyhurst, obstime=time)
+        reference_coord = SkyCoord(hpc_lat, hpc_lon, obstime=time, observer=obs,
+                                   frame=frames.Helioprojective)
+        mock_data = np.zeros([int(r.to_value(u.pix)) for r in resolution])
+        header = make_fitswcs_header(mock_data, reference_coord, scale=scale)
+        ref_map = Map(mock_data, header)
+
+        # apply occulter mask
+        mask = _get_mask(ref_map, occ_min, occ_max)
+        ref_map.data[mask] = np.nan
+
+        return self.load_map(ref_map, **kwargs)
+
+    @torch.no_grad()
+    def load_map(self, ref_map, filter_occ=True, **kwargs):
+        map_loader = MapDataLoader(self.Rs_per_ds, 'inertial', azimuthal_equidistant=False)
+        map_data = map_loader.load(ref_map)  # image, pose, rays, time, observer
+        # convert to pose
+        target_pose = pose_spherical(map_data['observer']['longitude'].to_value(u.rad),
+                                     map_data['observer']['latitude'].to_value(u.rad),
+                                     map_data['observer']['radius'].to_value(u.solRad) / self.Rs_per_ds)
+        # load image coordinates
+        img_coords = all_coordinates_from_map(ref_map)
+        img_coords = np.stack([img_coords.Tx, img_coords.Ty], -1)
+
+        # occulter mask
+        if filter_occ:
+            mask = np.isnan(ref_map.data)
+            img_coords[mask] = np.nan
+
+        pose_out = self.load_pose(img_coords, target_pose, map_data['observer']['time'], model_outputs=['image', 'density'], **kwargs)
+
+        # create maps
+        tB_map = Map(pose_out['image'][..., 0], ref_map.meta)
+        pB_map = Map(pose_out['image'][..., 1], ref_map.meta)
+        density_map = Map(pose_out['density'], ref_map.meta)
+        #
+        return {'tB_map': tB_map, 'pB_map': pB_map, 'density_map': density_map}
+
+    def load_spherical_cube(self, radius, latitude, longitude, time, **kwargs):
+        spherical_coords = np.stack(np.meshgrid(
+            radius.to_value(u.R_sun),
+            latitude.to_value(u.rad),
+            longitude.to_value(u.rad),
+            self.normalize_datetime(time),
+            indexing='ij'
+        ), -1)
+        cartesian_coords = spherical_to_cartesian(spherical_coords[..., :3], np)
+        # normalize coordinates
+        cartesian_coords = cartesian_coords / self.Rs_per_ds
+        # append time
+        query_points = np.concatenate([cartesian_coords, spherical_coords[..., 3:4]], axis=-1)
+        # load the coordinates
+        model_out = self.load_coords(query_points, **kwargs)
+        rho = model_out['rho']
+        v = model_out['v']
+        return {'rho': rho, 'v': v, 'spherical_coords': spherical_coords}
+
+    def load_latitude(self, radius_range, time, latitude, Nr=128, Nphi=128, longitude_range=None, **kwargs):
+        longitude_range = [0, 2 * np.pi] * u.rad if longitude_range is None else longitude_range
+        spherical_coords = np.stack(np.meshgrid(
+            np.linspace(radius_range[0].to_value(u.R_sun), radius_range[1].to_value(u.R_sun), Nr),
+            latitude.to_value(u.rad),
+            np.linspace(longitude_range[0].to_value(u.rad), longitude_range[1].to_value(u.rad), Nphi, endpoint=False),
+            self.normalize_datetime(time),
+            indexing='ij'
+        ), -1)
+        cartesian_coords = spherical_to_cartesian(spherical_coords[..., :3], np)
+        # normalize coordinates
+        cartesian_coords = cartesian_coords / self.Rs_per_ds
+        # append time
+        query_points = np.concatenate([cartesian_coords, spherical_coords[..., 3:4]], axis=-1)
+        # load the coordinates
+        model_out = self.load_coords(query_points, **kwargs)
+        rho = model_out['rho']
+        v = model_out['v']
+        return {'rho': rho, 'v': v, 'spherical_coords': spherical_coords}
+
+
+    def load_longitude(self, radius_range, time, longitude, latitude_range=None, Nr=128, Ntheta=128, **kwargs):
+        latitude_range = [0, 2 * np.pi] *u.rad if latitude_range is None else latitude_range
+        spherical_coords = np.stack(np.meshgrid(
+            np.linspace(radius_range[0].to_value(u.R_sun), radius_range[1].to_value(u.R_sun), Nr),
+            np.linspace(latitude_range[0].to_value(u.rad), latitude_range[1].to_value(u.rad), Ntheta, endpoint=False),
+            longitude.to_value(u.rad),
+            self.normalize_datetime(time),
+            indexing='ij'
+        ), -1)
+        cartesian_coords = spherical_to_cartesian(spherical_coords[..., :3], np)
+        # normalize coordinates
+        cartesian_coords = cartesian_coords / self.Rs_per_ds
+        # append time
+        query_points = np.concatenate([cartesian_coords, spherical_coords[..., 3:4]], axis=-1)
+        # load the coordinates
+        model_out = self.load_coords(query_points, **kwargs)
+        rho = model_out['rho']
+        v = model_out['v']
+        return {'rho': rho, 'v': v, 'spherical_coords': spherical_coords}
+
+    def load_radius(self, radius, time, Ntheta=128, Nphi=256, **kwargs):
+        spherical_coords = np.stack(np.meshgrid(
+            radius.to_value(u.R_sun),
+            np.linspace(-np.pi / 2, np.pi / 2, Ntheta, endpoint=False),
+            np.linspace(0, 2 * np.pi, Nphi, endpoint=False),
+            self.normalize_datetime(time),
+            indexing='ij'
+        ), -1)
+        cartesian_coords = spherical_to_cartesian(spherical_coords[..., :3], np)
+        # normalize coordinates
+        cartesian_coords = cartesian_coords / self.Rs_per_ds
+        # append time
+        query_points = np.concatenate([cartesian_coords, spherical_coords[..., 3:4]], axis=-1)
+        # load the coordinates
+        model_out = self.load_coords(query_points, **kwargs)
+        rho = model_out['rho']
+        v = model_out['v']
+        return {'rho': rho, 'v': v, 'spherical_coords': spherical_coords}
 
     def load_coords(self, *args, **kwargs):
         output = super().load_coords(*args, **kwargs)
-        # unnormalize rho
-        output['rho'] = output['rho'] * self.rho_scaling
-        output['log_rho'] = output['log_rho'] * self.rho_scaling
+        # convert rho to physical units
+        output['rho'] = self.convert_rho(output['rho'])
+        output['log_rho'] = np.log(output['rho'])
         output['v'] = output['v'] * (self.Mm_per_ds / self.seconds_per_dt) * 1e3  # convert to km/s
 
         return output
@@ -263,6 +409,41 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
 
         return {'rho': rho_cube, 'v': v_cube, 'cartesian_coords': cartesian_coords}
 
+    def load_slice(self, radius_range, time, z, pixel_per_Rs, **kwargs):
+        max_radius = radius_range[1].to_value(u.R_sun)
+        #
+        cartesian_coords = np.stack(np.meshgrid(
+            np.linspace(-max_radius, max_radius, int((2 * max_radius + 1) * pixel_per_Rs)),
+            np.linspace(-max_radius, max_radius, int((2 * max_radius + 1) * pixel_per_Rs)),
+            z,
+            self.normalize_datetime(time),
+            indexing='ij'
+        ), -1)
+        # only load the points in the radius range
+        r = np.linalg.norm(cartesian_coords[..., :3], axis=-1)
+        mask = (r >= radius_range[0].to_value(u.R_sun)) & (r <= radius_range[1].to_value(u.R_sun))
+        sub_coords = cartesian_coords[mask]
+
+        # normalize coordinates
+        sub_coords[..., 0:3] = sub_coords[..., 0:3] / self.Rs_per_ds
+        # load the coordinates
+        model_out = self.load_coords(sub_coords, **kwargs)
+        rho = model_out['rho']
+        v = model_out['v']
+
+        rho_cube = np.zeros((*cartesian_coords.shape[:-1],))
+        rho_cube[mask] = rho.squeeze(-1)
+
+        v_cube = np.zeros((*cartesian_coords.shape[:-1], 3))
+        v_cube[mask] = v
+
+        return {'rho': rho_cube, 'v': v_cube, 'cartesian_coords': cartesian_coords}
+
+    def load_pose(self, *args, **kwargs):
+        output = super().load_pose(*args, **kwargs)
+        # convert image
+        output['image'] = output['image'] * self.msb_norm
+        return output
 
 class PlasmaSuNeRFLoader(SuNeRFLoader):
 
@@ -270,3 +451,20 @@ class PlasmaSuNeRFLoader(SuNeRFLoader):
         state = torch.load(state_path)
         self.log_T_range = state['log_T_range']
         super().__init__(state_path, *args, **kwargs)
+
+def _get_mask(s_map, occ_min, occ_max):
+    # mask occultor
+    img_coords = all_coordinates_from_map(s_map)
+    x = img_coords.Tx
+    y = img_coords.Ty
+
+    radius = np.sqrt((x ** 2 + y ** 2)) # in arcsec
+
+    mask = np.zeros(x.shape, dtype=bool)
+    if occ_min is not None:
+        occ_min_cond = (radius < s_map.rsun_obs * occ_min.to_value(u.R_sun))
+        mask[occ_min_cond] = True
+    if occ_max is not None:
+        occ_max_cond = (radius > s_map.rsun_obs * occ_max.to_value(u.R_sun))
+        mask[occ_max_cond] = True
+    return mask

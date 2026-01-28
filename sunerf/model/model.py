@@ -4,16 +4,18 @@ import numpy as np
 import torch
 from astropy import units as u
 from torch import nn
-from torch._C._nn import linear
+from torch.nn.functional import linear
 from torch.distributions import Normal
 from torch.nn import Identity
 
+from sunerf.train.coordinate_transformation import to_differential_rotation_frame, to_carrington_rotation_frame
+
 
 class SirenModel(nn.Module):
-    def __init__(self, in_dim, out_dim, dim=512, n_layers=8, w0=1., encoding_config=None, skip_layers=(2, 5)):
+    def __init__(self, in_dim, out_dim, dim=512, n_layers=8, w0=1., encoding_config=None, skip_layers=None):
         super().__init__()
 
-        encoding_config = {'type': 'default', 'w0': 30.} if encoding_config is None else encoding_config
+        encoding_config = {'type': 'default', 'w0': 1.} if encoding_config is None else encoding_config
         encoding_type = encoding_config.pop('type', 'default')
 
         if encoding_type == "default":
@@ -33,7 +35,7 @@ class SirenModel(nn.Module):
 
         self.num_layers = n_layers
         self.dim_hidden = dim
-        self.skip_layers = skip_layers
+        self.skip_layers = skip_layers if skip_layers is not None else []
 
         # initialize the input layer
         self.in_layer = SirenLayer(in_dim=posenc_dim, out_dim=dim, w0=w0)
@@ -51,7 +53,7 @@ class SirenModel(nn.Module):
         self.layers = nn.ModuleList(layers)
 
         # initialize the output layer
-        self.out_layer = SirenLayer(in_dim=dim, out_dim=out_dim, w0=w0, activation=nn.Identity())
+        self.out_layer = nn.Linear(dim, out_dim)
 
     def forward(self, inp):
         inp_encoded = self.posenc(inp)  # apply positional encoding
@@ -82,8 +84,7 @@ class SirenNet(nn.Module):
             w0=1.,
             w0_initial=30.,
             use_bias=True,
-            final_activation=None,
-            dropout=0.
+            final_activation=None
     ):
         super().__init__()
         self.num_layers = n_layers
@@ -100,8 +101,7 @@ class SirenNet(nn.Module):
                 out_dim=dim,
                 w0=layer_w0,
                 use_bias=use_bias,
-                is_first=is_first,
-                dropout=dropout
+                is_first=is_first
             )
 
             self.layers.append(layer)
@@ -266,28 +266,44 @@ class SirenPlasmaModel(SirenModel):
                 'ne': ne, 'sigma': sigma
                 }
 
-class RhoModel(SirenNet):
 
-    def __init__(self, Rs_per_ds, seconds_per_dt, **kwargs):
-        super().__init__(in_dim=4, out_dim=4, **kwargs)
+class RhoModel(nn.Module):
+
+    def __init__(self, Rs_per_ds, seconds_per_dt, static=False, **kwargs):
+        super().__init__()
         v = 300 * (u.km / u.s)
         v = v.to_value(u.solRad / u.s) / Rs_per_ds * seconds_per_dt  # normalize to model units
         self.v_radial = nn.Parameter(torch.tensor(v, dtype=torch.float32), requires_grad=False)
         v_scale = 10 * (u.km / u.s)
         v_scale = v_scale.to_value(u.solRad / u.s) / Rs_per_ds * seconds_per_dt  # normalize to model units
         self.v_scale = nn.Parameter(torch.tensor(v_scale, dtype=torch.float32), requires_grad=False)
+        self.seconds_per_dt = seconds_per_dt
 
-    def forward(self, x):
-        coords = x
+        self.static = static
+        in_dim = 4 if not static else 3
+        self.model = SirenModel(in_dim=in_dim, out_dim=4, **kwargs)
+        # self.background_model = SirenModel(in_dim=3, out_dim=1, **kwargs)
+
+
+    def forward(self, coords):
         radial_distance = torch.norm(coords[..., :3], dim=-1, keepdim=True)
         radial = coords[..., :3] / (radial_distance + 1e-8)
 
-        x = super().forward(x)
-        log_rho = x[..., 0:1] - 2 * torch.log(radial_distance)
+        carrington_frame_coords = to_carrington_rotation_frame(coords, self.seconds_per_dt)
+        background_coords = carrington_frame_coords[..., :3]
+
+        if self.static:
+            model_out = self.model(background_coords)
+        else:
+            # print(carrington_frame_coords.shape)
+            # combined_coords = torch.cat([coords, background_coords], dim=-1)
+            # print(f'{np.min(carrington_frame_coords.detach().cpu().numpy(), (0, 1))} -- {np.max(carrington_frame_coords.detach().cpu().numpy(), (0, 1))}')
+            model_out = self.model(carrington_frame_coords)
+        log_rho = model_out[..., 0:1] - 2 * torch.log(radial_distance)
         rho = torch.exp(log_rho)
 
         v = self.v_radial * radial
-        v = v + x[..., 1:] * self.v_scale
+        v = v + model_out[..., 1:] * self.v_scale
 
         result = {'log_rho': log_rho, 'rho': rho, 'v': v}
         return result
@@ -329,8 +345,7 @@ class SirenLayer(nn.Module):
             c=6.,
             is_first=False,
             use_bias=True,
-            activation=None,
-            dropout=0.
+            activation=None
     ):
         super().__init__()
         self.dim_in = in_dim
@@ -343,7 +358,6 @@ class SirenLayer(nn.Module):
         self.weight = nn.Parameter(weight)
         self.bias = nn.Parameter(bias) if use_bias else None
         self.activation = Sine(w0) if activation is None else activation
-        self.dropout = nn.Dropout(dropout)
 
     def init_(self, weight, bias, c, w0):
         dim = self.dim_in
@@ -357,12 +371,7 @@ class SirenLayer(nn.Module):
     def forward(self, x):
         out = linear(x, self.weight, self.bias)
         out = self.activation(out)
-        out = self.dropout(out)
         return out
-
-
-def cast_tuple(val, repeat=1):
-    return val if isinstance(val, tuple) else ((val,) * repeat)
 
 
 class Swish(nn.Module):
@@ -416,6 +425,7 @@ class PositionalEncoding(nn.Module):
         encoded = torch.cat(encoded_coordinates, -1)
         return encoded
 
+
 class GaussianPositionalEncoding(nn.Module):
 
     def __init__(self, d_input, num_freqs=32, scale=4):
@@ -431,6 +441,7 @@ class GaussianPositionalEncoding(nn.Module):
         encoded = torch.cat([x, torch.sin(encoded), torch.cos(encoded)], -1)
         return encoded
 
+
 class TimeSplitEncoding(nn.Module):
     def __init__(self, dim, w0_spatial=30.0, w0_time=1.0):
         super().__init__()
@@ -445,6 +456,7 @@ class TimeSplitEncoding(nn.Module):
         time_encoded = self.time_layer(time)
         encoded = torch.cat([spatial_encoded, time_encoded], dim=-1)
         return encoded
+
 
 class MultispectralEncoding(nn.Module):
 
@@ -467,7 +479,7 @@ class MultispectralEncoding(nn.Module):
     def forward(self, x):
         encoded_coordinates = []
         for i, layer in enumerate(self.layers):
-            coord = x[:, i:i + 1]
+            coord = x[..., i:i + 1]
             encoded = layer(coord)
             encoded_coordinates.append(encoded)
 

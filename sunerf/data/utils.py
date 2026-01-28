@@ -43,27 +43,3 @@ def get_azimuthal_equidistant_coordinates(s_map):
     coord_grid[..., 1] = coord_grid[..., 1] + s_map.reference_coordinate.Ty.to(u.arcsec)
 
     return coord_grid
-
-
-def loadAIAMap(file_path, resolution=1024, map_reproject=False):
-    """Load and preprocess AIA file to make them compatible to ITI.
-
-
-    Parameters
-    ----------
-    file_path: path to the FTIS file.
-    resolution: target resolution in pixels of 2.2 solar radii.
-    map_reproject: apply preprocessing to remove off-limb (map to heliographic map and transform back to original view).
-
-    Returns
-    -------
-    the preprocessed SunPy Map
-    """
-    s_map, _ = LoadMapEditor().call(file_path)
-    assert s_map.meta['QUALITY'] == 0, f'Invalid quality flag while loading AIA Map: {s_map.meta["QUALITY"]}'
-    s_map = NormalizeRadiusEditor(resolution).call(s_map)
-    s_map = AIAPrepEditor(calibration='auto').call(s_map)
-    if map_reproject:
-        s_map = transform(s_map, lat=s_map.heliographic_latitude,
-                          lon=s_map.heliographic_longitude, distance=1 * u.AU)
-    return s_map

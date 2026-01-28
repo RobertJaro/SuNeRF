@@ -263,16 +263,18 @@ class ThomsonImageCallback(BaseCallback):
         target_ratio = outputs['target_ratio']
         model_ratio = outputs['model_ratio']
 
-        model_image[np.isnan(target_image)] = np.nan
-        model_ratio[np.isnan(target_image).any(-1)] = np.nan
-
         fig, axs = plt.subplots(3, 2, figsize=(7, 9))
 
         # pB and tB images
         for i in range(2):
             ax = axs[i, 0]
-            v_max = np.nanmax(target_image[..., i])
-            v_min = np.nanmin(target_image[..., i])
+
+            if np.isnan(target_image[..., i]).all():
+                v_min = np.nanmin(model_image[..., i])
+                v_max = np.nanmax(model_image[..., i])
+            else:
+                v_min = np.nanmin(target_image[..., i])
+                v_max = np.nanmax(target_image[..., i])
             im = ax.imshow(target_image[..., i], cmap='plasma', vmin=v_min, vmax=v_max)
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("right", size="5%", pad=0.05)
@@ -288,7 +290,10 @@ class ThomsonImageCallback(BaseCallback):
 
         # ratio images
         ax = axs[2, 0]
-        v_max = np.nanmax(target_ratio[..., 0])
+        if np.isnan(target_ratio[..., 0]).all():
+            v_max = np.nanmax(model_ratio[..., 0])
+        else:
+            v_max = np.nanmax(target_ratio[..., 0])
         im = ax.imshow(target_ratio[..., 0], cmap='plasma', vmin=0, vmax=v_max)
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
@@ -363,6 +368,35 @@ class ThomsonImageCallback(BaseCallback):
         wandb.log({f'integrated_quantities.{self.ds_key}': fig})
         plt.close('all')
 
+class CorrectionImageCallback(BaseCallback):
+
+    def __init__(self, ds_key, image_shape):
+        super().__init__(ds_key)
+        self.image_shape = image_shape
+
+    @rank_zero_only
+    def on_validation_end(self, trainer, pl_module):
+        outputs = self.get_validation_outputs(pl_module)
+        if outputs is None:
+            return
+
+        # reshape
+        outputs = {k: v.view(*self.image_shape, *v.shape[1:]).cpu().numpy() for k, v in outputs.items()}
+
+        model_image = outputs['correction']
+
+        fig, ax = plt.subplots(1, 1, figsize=(7, 9))
+
+        im = ax.imshow(model_image[..., 0], cmap='viridis', norm='log')
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+        ax.set_title(f'Correction tB Additive Term')
+
+        fig.tight_layout()
+        wandb.log({f'correction.{self.ds_key}': fig})
+        plt.close('all')
+
 
 @rank_zero_only
 def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date, ds_key=None):
@@ -375,32 +409,54 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
         cs.append(c)
         cs.append(c)
 
-    norm = ImageNormalize(vmin=0, stretch=AsinhStretch(0.005), clip=True)
+    vmin, vmax = np.nanmin(images), np.nanmax(images)
+
+    def _imshow_log(ax, data2d, title):
+        good = np.isfinite(data2d) & (data2d > 0)
+        if not np.any(good):
+            ax.set_axis_off()
+            ax.set_title(title + " (no >0 finite)")
+            return None
+        cm = copy.deepcopy(get_cmap(cmap))
+        cm.set_bad('green', 1.)
+        masked = np.ma.array(data2d, mask=~good)
+        im = ax.imshow(masked, norm=LogNorm(vmin=vmin, vmax=vmax), cmap=cm, origin='lower')
+        ax.set_axis_off()
+        ax.set_title(title)
+        cb = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
+        cb.ax.tick_params(labelsize=8)
+        return im
 
     iter_list = list(enumerate(images))
     step = max(1, len(iter_list) // 10)
     for i, img in iter_list[::step]:
-        fig = plt.figure(figsize=(16, 8), dpi=100)
-        ax = plt.subplot(121, projection='3d')
-        # plot all viewpoints
+        # detect availability of pB
+        has_pb = (img.ndim >= 3) and (img.shape[-1] > 1)
+
+        fig = plt.figure(figsize=((16, 8) if not has_pb else (22, 8)), dpi=100)
+
+        # --- left: 3D overview (unchanged) ---
+        ax = plt.subplot(1, 2 + int(has_pb), 1, projection='3d')
+
         _ = ax.quiver(
             origins[..., 0].flatten(),
             origins[..., 1].flatten(),
             origins[..., 2].flatten(),
             dirs[..., 0].flatten(),
             dirs[..., 1].flatten(),
-            dirs[..., 2].flatten(), color=cs, length=50, normalize=False, pivot='middle',
+            dirs[..., 2].flatten(),
+            color=cs, length=50, normalize=False, pivot='middle',
             linewidth=2, arrow_length_ratio=0.1, alpha=0.8)
 
-        # plot current viewpoint
         _ = ax.quiver(
             origins[i:i + 1, ..., 0].flatten(),
             origins[i:i + 1, ..., 1].flatten(),
             origins[i:i + 1, ..., 2].flatten(),
             dirs[i:i + 1, ..., 0].flatten(),
             dirs[i:i + 1, ..., 1].flatten(),
-            dirs[i:i + 1, ..., 2].flatten(), length=50, normalize=False, color='red', pivot='middle', linewidth=5,
-            arrow_length_ratio=0.2)
+            dirs[i:i + 1, ..., 2].flatten(),
+            length=50, normalize=False, color='red', pivot='middle',
+            linewidth=5, arrow_length_ratio=0.2)
 
         d = (1.2 * u.AU).to(u.solRad).value
         ax.set_xlim(-d, d)
@@ -408,17 +464,19 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
         ax.set_zlim(-d, d)
         ax.scatter(0, 0, 0, marker='o', color='yellow')
 
-        ax = plt.subplot(122)
-        # plot corresponding image
-        cmap = copy.deepcopy(get_cmap(cmap))
-        cmap.set_bad('green', 1.)
-        masked_img = np.ma.array(img[..., 0], mask=np.isnan(img[..., 0]))
-        ax.imshow(masked_img, norm=norm, cmap=cmap, origin='lower')
-        ax.set_axis_off()
-        ax.set_title('Time: %s' % unnormalize_datetime(times[i], seconds_per_dt, ref_date).isoformat(' '))
+        tstr = unnormalize_datetime(times[i], seconds_per_dt, ref_date).isoformat(' ')
+
+        # --- right: images ---
+        ax = plt.subplot(1, 2 + int(has_pb), 2)
+        _imshow_log(ax, img[..., 0], f"tB | Time: {tstr}")
+
+        if has_pb:
+            ax = plt.subplot(1, 2 + int(has_pb), 3)
+            _imshow_log(ax, img[..., 1], f"pB | Time: {tstr}")
 
         wandb.log({f'Overview.{ds_key}': fig})
         plt.close(fig)
+
 
 
 def plot_ray_sampling(

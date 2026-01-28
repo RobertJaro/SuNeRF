@@ -1,6 +1,7 @@
 import torch
 import wandb
 import yaml
+from lightning.pytorch.utilities.distributed import rank_zero_only
 from torch import nn
 
 
@@ -64,7 +65,40 @@ class NormalTimeShuffler(nn.Module):
         else:
             new_gamma = torch.zeros_like(self.scaling)
             self.scaling.copy_(new_gamma)
+        @rank_zero_only
+        def _log():
+            wandb.log({'time_random': self.scaling.detach().cpu().numpy()}, commit=False)
+        _log()
+
+class RotatedTimeShuffler(nn.Module):
+    def __init__(self, start=50, end=1e-2, iterations=1e5, instruments=None):
+        super().__init__()
+        self.end = end
+        self.scaling = nn.Parameter(torch.tensor(start, dtype=torch.float32), requires_grad=False)
+        self.gamma = torch.tensor((end / start) ** (1 / iterations), dtype=torch.float32)
+        self.instruments = instruments
+
+    def forward(self, batch):
+        if self.scaling == 0:
+            return batch
+        for ds_key in batch.keys():
+            if self.instruments is None or ds_key in self.instruments:
+                self._shuffle_times(batch[ds_key])
+        return batch
+
+    def _shuffle_times(self, batch):
+        time = batch['time']
+        time += torch.randn_like(time) * self.scaling
+
+    def on_train_batch_end(self, *args, **kwargs):
+        if self.scaling > self.end:
+            new_gamma = self.scaling * self.gamma
+            self.scaling.copy_(new_gamma)
+        else:
+            new_gamma = torch.zeros_like(self.scaling)
+            self.scaling.copy_(new_gamma)
         wandb.log({'time_random': self.scaling.detach().cpu().numpy()}, commit=False)
+
 
 
 def load_yaml_config(yaml_config_file, overwrite_args=None):

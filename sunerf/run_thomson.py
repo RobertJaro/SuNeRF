@@ -12,7 +12,7 @@ from pytorch_lightning.utilities import rank_zero_only
 from sunerf.data.loader.thomson_instrument import ThomsonDataModule
 from sunerf.model.thomson import ThomsonSuNeRFModule, save_thomson_sunerf
 from sunerf.train.callback import ThomsonImageCallback, LatitudeSliceCallback, LongitudeSliceCallback, CubeCallback, \
-    VelocitySliceCallback
+    VelocitySliceCallback, CorrectionImageCallback
 from sunerf.train.util import load_yaml_config
 
 if __name__ == '__main__':
@@ -34,6 +34,7 @@ if __name__ == '__main__':
     data_config = config['data']
     instruments = config['instruments']
     model_config = config['model'] if 'model' in config else {}
+    shuffle_config = config['shuffle'] if 'shuffle' in config else None
     sampling_config = config['sampling'] if 'sampling' in config else {}
     lambda_config = config['lambda'] if 'lambda' in config else {}
     module_config = config['module'] if 'module' in config else {}
@@ -81,7 +82,7 @@ if __name__ == '__main__':
                                  validation_dataset_mapping=data_module.validation_dataset_mapping,
                                  model_config=model_config,
                                  sampling_config=sampling_config, **module_config,
-                                 lambda_config=lambda_config)
+                                 lambda_config=lambda_config, shuffle_config=shuffle_config)
 
     # initialize callbacks
     checkpoint_callback = ModelCheckpoint(dirpath=base_path,
@@ -124,6 +125,9 @@ if __name__ == '__main__':
                                              rho_normalization=rho_normalization,
                                              Rs_per_ds=data_module.Rs_per_ds,
                                              seconds_per_dt=data_module.seconds_per_dt)
+        elif callback_type.lower() == 'correction_image':
+            callback = CorrectionImageCallback(ds_key=ds_key,
+                                               image_shape=data_module.validation_datasets[ds_key].image_shape)
         else:
             raise ValueError(f'Unknown callback type {callback_type}')
         callbacks.append(callback)

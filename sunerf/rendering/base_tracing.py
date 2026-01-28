@@ -216,6 +216,10 @@ class BasicRenderingModule(nn.Module):
             ray_idx += n_rays
         return render_out
 
+    def on_train_batch_end(self, *args, **kwargs):
+        if self.shuffler is not None:
+            self.shuffler.on_train_batch_end(*args, **kwargs)
+
 
 def cumprod_exclusive(tensor: torch.Tensor, dim=1) -> torch.Tensor:
     """

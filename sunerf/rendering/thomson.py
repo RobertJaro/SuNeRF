@@ -6,7 +6,7 @@ from sunerf.train.util import asin_safe
 
 class ThomsonScattering(nn.Module):
 
-    def __init__(self, Rs_per_ds, scaling_config=None, **kwargs):
+    def __init__(self, Rs_per_ds, **kwargs):
         super().__init__(**kwargs)
         c_0 = 1.0e2
         solar_radius = 1 / Rs_per_ds
@@ -14,11 +14,6 @@ class ThomsonScattering(nn.Module):
         self.limb_darkening_coeff = nn.Parameter(torch.tensor(0.63, dtype=torch.float32), requires_grad=False)
         self.C_0 = nn.Parameter(torch.tensor(c_0, dtype=torch.float32), requires_grad=False)
         self.solar_radius = nn.Parameter(torch.tensor(solar_radius, dtype=torch.float32), requires_grad=False)
-        scaling_config = {'type': 'constant', 'value': 1.0} if scaling_config is None else scaling_config
-        if scaling_config['type'] == 'constant':
-            self.scaling = nn.Parameter(torch.tensor(scaling_config['value'], dtype=torch.float32), requires_grad=False)
-        else:
-            raise NotImplementedError(f"Scaling type {scaling_config['type']} not implemented.")
 
     def forward(self, rho, z_vals, rays_d, rays_o, query_points, **kwargs):
         r"""
@@ -57,8 +52,8 @@ class ThomsonScattering(nn.Module):
         z = z_vals * torch.norm(rays_d[..., None, :], dim=-1)  # distance between observer and scattering point Q
 
         # chi = scattering angle between line of sight (OS) and QS
-        norm = r.pow(2).sum(-1) + 1e-8
-        sin_chi2 = torch.cross(r, rays_d[..., None, :], dim=-1).pow(2).sum(-1) / norm
+        d_hat = rays_d / (torch.norm(rays_d, dim=-1, keepdim=True) + 1e-8)
+        sin_chi2 = torch.cross(r, d_hat[..., None, :], dim=-1).pow(2).sum(-1) / (r.pow(2).sum(-1) + 1e-8)
 
         # Alternative angle calculation
         # sin_chi2 = torch.cross(rays_o, rays_d).pow(2).sum(-1)[:, None] / r.pow(2).sum(-1)
@@ -92,9 +87,8 @@ class ThomsonScattering(nn.Module):
         # intensity (total and polarised) from all electrons
         # for one electron * electron density * weighted by line element ds- separation between sampling points
         rho = rho[..., 0]  # squeeze last dimension
-        # TODO clarify z ** -2
-        point_tB = self.C_0 * rho * intensity_tB #* (z ** -2)
-        point_pB = self.C_0 * rho * intensity_pB #* (z ** -2)
+        point_tB = self.C_0 * rho * intensity_tB
+        point_pB = self.C_0 * rho * intensity_pB
 
         # integrate all intensity contributions along LOS
         image_tB = (point_tB * dists).sum(1)
@@ -114,7 +108,6 @@ class ThomsonScattering(nn.Module):
         weights = weights / (weights.sum(1, keepdim=True) + 1e-10)
 
         image = torch.stack([image_tB, image_pB], dim=-1)
-        image = image * self.scaling
 
         distance = r.pow(2).sum(-1).pow(0.5)
 
