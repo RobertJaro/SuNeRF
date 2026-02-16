@@ -39,33 +39,38 @@ if __name__ == '__main__':
 
     min_time = min(observer_times)
     max_time = max(observer_times)
+    mid_time = min_time + (max_time - min_time) / 2
 
-    time = datetime(2024, 9, 16, 15, 8)
+    # time = datetime(2024, 9, 16, 15, 8)
     lon = -90 * u.deg
     lat = 0 * u.deg
     distance = 1.4373074e+11 * u.m
 
-    n_points = 50
-    # points_1 = zip(np.ones(n_points) * u.AU,
-    #                np.zeros(n_points) * u.deg,
-    #                np.linspace(135 - 90, 135 + 90, n_points) * u.deg,
-    #                [mid_time] * n_points)
-    # points_2 = zip(np.ones(n_points) * u.AU,
-    #                np.linspace(0, 90, n_points) * u.deg,
-    #                np.linspace(135 + 90, 135 + 90, n_points) * u.deg,
-    #                [mid_time] * n_points)
+    n_points = 20
+    points_1 = zip(np.ones(n_points) * u.AU,
+                   np.ones(n_points) * lat,
+                   np.linspace(lon, lon + 360 * u.deg, n_points),
+                   [mid_time] * n_points)
+    points_2 = zip(np.ones(n_points) * u.AU,
+                   np.linspace(lat, lat + 80 * u.deg, n_points),
+                   np.ones(n_points) * lon,
+                   [mid_time] * n_points)
     points_3 = zip(np.ones(n_points) * u.AU,
+                   np.linspace(lat + 80 * u.deg, lat, n_points),
+                   np.ones(n_points) * lon,
+                   pd.date_range(start=mid_time, end=min_time, periods=n_points))
+    points_4 = zip(np.ones(n_points) * u.AU,
                    np.ones(n_points) * lat,
                    np.ones(n_points) * lon,
                    pd.date_range(start=min_time, end=max_time, periods=n_points))
-    points = list(points_3) #+ list(points_1) + list(points_2) + list(points_3)
+    points = list(points_1) + list(points_2) + list(points_3) + list(points_4)
 
     brightness_norm = LogNorm()
     density_norm = LogNorm()
 
     for i, (d, lat, lon, time) in tqdm(enumerate(points), total=len(points)):
-        obs_coord = SkyCoord(distance=d, lat=lat, lon=lon, frame=frames.HeliocentricInertial, obstime=time, observer='self')
-        lon = obs_coord.transform_to(frames.HeliographicCarrington).lon
+        obs_coord = SkyCoord(radius=d, lat=lat, lon=lon, frame=frames.HeliographicCarrington, obstime=time, observer='self')
+        lon = obs_coord.transform_to(frames.HeliocentricInertial).lon
         model_out = sunerf_loader.load_image(lat, lon, time,
                                              distance=d, resolution=(256, 256) * u.pix,
                                              scale=[30000 / 256, 30000 / 256] * u.arcsec / u.pix,

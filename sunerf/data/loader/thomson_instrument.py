@@ -121,9 +121,9 @@ class ThomsonDataModule(BaseDataModule):
 
 class GenericThomsonDataset(TensorsDataset):
     def __init__(self, data_path_pB, data_path_tB, scaling, ds_key, instrument_key,
-                 Rs_per_ds, seconds_per_dt, image_norm=512, ref_date=None,
+                 Rs_per_ds, seconds_per_dt, image_norm=512, hpc_norm=1e4, ref_date=None,
                  batch_size=int(2 ** 10), debug=False, test=False, noise_level=False,
-                 reference_frame='heliographic', azimuthal_equidistant=True,
+                 reference_frame='inertial', azimuthal_equidistant=True,
                  **kwargs):
         self.scaling = scaling
         # select files with min diff in dates
@@ -177,19 +177,23 @@ class GenericThomsonDataset(TensorsDataset):
         ref_date = min(times) if ref_date is None else ref_date
         self.ref_date = ref_date
         self.times = times
-        times = np.array([normalize_datetime(t, seconds_per_dt, ref_date) for t in times])
-        self.normalized_times = times
-        times_arr = np.ones((*data_dict['image'].shape[:-1], 1), dtype=np.float32) * times[:, None, None, None]
+        normalized_times = np.array([normalize_datetime(t, seconds_per_dt, ref_date) for t in times])
+        self.normalized_times = normalized_times
+        times_arr = np.ones((*data_dict['image'].shape[:-1], 1), dtype=np.float32) * normalized_times[:, None, None, None]
         data_dict['time'] = times_arr
+
+        # add hpc coordinates
+        hpc_coords = data_dict['hpc_coords']
+        hpc_coords /= hpc_norm
+        data_dict['hpc_coords'] = hpc_coords
 
         # add image coordinates
         ny, nx = image_stack.shape[1], image_stack.shape[2]
         image_coords = np.stack(np.mgrid[:ny, :nx], axis=-1).astype(np.float32)
-
         # center: y uses ny, x uses nx
         image_coords[..., 0] -= 0.5 * (ny - 1)
         image_coords[..., 1] -= 0.5 * (nx - 1)
-
+        # normalize
         image_coords /= image_norm
         image_coords = image_coords[None, :, :, :].repeat(image_stack.shape[0], axis=0)  # repeat over time
         data_dict['image_coords'] = image_coords
@@ -197,13 +201,13 @@ class GenericThomsonDataset(TensorsDataset):
         if not test:
             cmap = cm.soholasco2.copy()
             cmap.set_bad(color='green')
-            log_overview(data_dict["image"], data_dict['pose'], times, cmap, seconds_per_dt, Rs_per_ds, ref_date, ds_key=ds_key)
+            log_overview(data_dict["image"], data_dict['pose'], normalized_times, cmap, seconds_per_dt, Rs_per_ds, ref_date, ds_key=ds_key)
             print('----- Data Overview -----')
             print(
                 f'Image shape: {data_dict["image"].shape}; MIN: {np.nanmin(data_dict["image"])}; MAX: {np.nanmax(data_dict["image"])}')
             print(f'Time shape: {times_arr.shape}; MIN: {np.nanmin(times_arr)}; MAX: {np.nanmax(times_arr)}')
 
-        tensors = {k: v.reshape((-1, *v.shape[3:])) for k, v in data_dict.items() if k in ['image', 'rays', 'time', 'image_coords']}
+        tensors = {k: v.reshape((-1, *v.shape[3:])) for k, v in data_dict.items() if k in ['image', 'rays', 'time', 'image_coords', 'hpc_coords']}
         # set all values where image (tB) is NaN to NaN --> skip for training
         nan_mask = np.isnan(tensors['image'][..., 0])
         for k, v in tensors.items():
@@ -232,7 +236,7 @@ class GenericThomsonDataset(TensorsDataset):
 class HAOThomsonDataset(GenericThomsonDataset):
 
     def __init__(self, **kwargs):
-        super().__init__(scaling=5e-5, **kwargs)
+        super().__init__(scaling=5e-5, reference_frame='heliographic', azimuthal_equidistant=True, **kwargs)
 
 class COR2Dataset(GenericThomsonDataset):
 

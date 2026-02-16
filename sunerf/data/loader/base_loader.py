@@ -132,6 +132,8 @@ class MapDataLoader:
 
         all_rays = np.stack(get_rays(x, y, pose), -2)
 
+        hpc_coords = np.stack([x.to_value(u.arcsec), y.to_value(u.arcsec)], -1)
+
         if self.max_radius is not None:
             radius = np.sqrt(x ** 2 + y ** 2) / s_map.rsun_obs.to(u.arcsec) * u.Rsun
             mask = radius > (self.max_radius * u.Rsun)
@@ -139,7 +141,7 @@ class MapDataLoader:
             all_rays[mask] = np.nan
             image[mask] = np.nan
 
-        return {'image': image, 'pose': pose, 'rays': all_rays, 'time': time, 'observer': observer}
+        return {'image': image, 'pose': pose, 'rays': all_rays, 'time': time, 'observer': observer, 'hpc_coords': hpc_coords}
 
 
 class BatchesDataset(Dataset):

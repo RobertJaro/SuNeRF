@@ -47,16 +47,18 @@ if __name__ == '__main__':
     observers = sunerf_loader.observers
 
     ref_paths = sorted(glob.glob(args.ref_map_path))
-    ref_paths = ref_paths[::10]
+    n_samples = 20
+    ref_paths = ref_paths[::max(1, len(ref_paths) // n_samples)]
 
     ##########################################################
     # plot settings
-    min_radius = 2.0
-    max_radius = 5
-    radii = np.linspace(min_radius, max_radius, 5)
+    min_radius = 4
+    max_radius = 15
+    # radii = np.linspace(min_radius, max_radius, 5)
+    radii = [2.5, 5, 10, 15]
     # plotting norms - define based on first plot
-    density_norm = LogNorm(vmin=5e-13, vmax=1e-8)
-    brightness_norm = LogNorm(vmin=1e-12, vmax=2e-8)
+    density_norm = LogNorm()
+    brightness_norm = LogNorm() #LogNorm(vmin=1e-11, vmax=1e-6)
     velocity_norm = Normalize(vmin=100, vmax=2000)
 
     ##########################################################

@@ -374,28 +374,75 @@ class CorrectionImageCallback(BaseCallback):
         super().__init__(ds_key)
         self.image_shape = image_shape
 
+        # Ordered list of fields to visualize
+        self.correction_keys = [
+            "correction.f_corona",
+            "correction.transmission",
+            "correction.tB_add",
+            "correction.pB_add",
+            "correction.tB_mul",
+            "correction.pB_mul",
+            "correction.img",
+            "correction.calibration_gain",
+            "correction.calibration_offset",
+        ]
+
+        self.title_map = {
+            "correction.f_corona": "F-Corona",
+            "correction.transmission": "Transmission",
+            "correction.tB_add": "tB Additive",
+            "correction.pB_add": "pB Additive",
+            "correction.tB_mul": "tB Multiplicative",
+            "correction.pB_mul": "pB Multiplicative",
+            "correction.img": "Input Image",
+            "correction.calibration_gain": "Calibration Gain",
+            "correction.calibration_offset": "Calibration Offset",
+        }
+
     @rank_zero_only
     def on_validation_end(self, trainer, pl_module):
         outputs = self.get_validation_outputs(pl_module)
         if outputs is None:
             return
 
-        # reshape
-        outputs = {k: v.view(*self.image_shape, *v.shape[1:]).cpu().numpy() for k, v in outputs.items()}
+        # reshape tensors → (H, W, C, ...)
+        outputs = {
+            k: v.view(*self.image_shape, *v.shape[1:]).detach().cpu().numpy()
+            for k, v in outputs.items()
+        }
 
-        model_image = outputs['correction']
+        keys_present = [k for k in self.correction_keys if k in outputs]
+        if not keys_present:
+            return
 
-        fig, ax = plt.subplots(1, 1, figsize=(7, 9))
+        n = len(keys_present)
+        fig, axes = plt.subplots(1, n, figsize=(6 * n, 8), squeeze=False)
+        axes = axes[0]
 
-        im = ax.imshow(model_image[..., 0], cmap='viridis', norm='log')
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
-        ax.set_title(f'Correction tB Additive Term')
+        for ax, k in zip(axes, keys_present):
+            img = outputs[k]
+
+            # channel handling
+            img2d = img[..., 0] if (img.ndim >= 3 and img.shape[-1] >= 1) else img
+
+            # robust log scaling check
+            use_log = np.all(img2d > 0) and np.nanmax(img2d) / np.nanmin(img2d) > 1e2
+            norm = "log" if use_log else None
+
+            im = ax.imshow(img2d, cmap="viridis", norm=norm)
+
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            plt.colorbar(im, cax=cax)
+
+            ax.set_title(self.title_map.get(k, k))
+            ax.set_axis_off()
 
         fig.tight_layout()
-        wandb.log({f'correction.{self.ds_key}': fig})
-        plt.close('all')
+        wandb.log({f"correction.{self.ds_key}": fig})
+        plt.close(fig)
+
+
 
 
 @rank_zero_only

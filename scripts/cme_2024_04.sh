@@ -3,7 +3,7 @@
 #PBS -N SuNeRF
 #PBS -A P22100000
 #PBS -q main
-#PBS -l select=1:ncpus=32:ngpus=4:mem=128gb
+#PBS -l select=1:ncpus=16:ngpus=4:mem=64gb:gpu_type=h100
 #PBS -l job_priority=economy
 #PBS -l walltime=12:00:00
 
@@ -24,7 +24,6 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 #python -m sunerf.data.coronagraph.prep_coronagraph --data_path "/glade/work/rjarolim/data/sunerf-cme/2024_10/cor/COR2_prep/pB/*.fts" --out_path "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/pB" --occ_min 3000 --occ_max 15000 --resize 512 512
 #python -m sunerf.data.coronagraph.prep_coronagraph --data_path "/glade/work/rjarolim/data/sunerf-cme/2024_10/cor/COR2_prep/tB/*.fts" --out_path "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/tB" --occ_min 3000 --occ_max 15000 --resize 512 512
 
-# SOHO/LASCO C2
 #python -m sunerf.data.coronagraph.prep_coronagraph --data_path "/glade/work/rjarolim/data/sunerf-cme/2024_10/lasco/C2_prep_fixed/*.fts" --out_path "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/lasco_c2" --occ_min 2100 --occ_max 8000 --resize 512 512 --clip_max 1e+5
 
 # SOHO/LASCO C3
@@ -49,16 +48,17 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 # Train
 #python -m sunerf.run_thomson --config "config/cme/202409_combined.yaml"
 
+python -m sunerf.run_thomson --config "config/cme/202409_cor2_lasco.yaml"
 python -m sunerf.run_thomson --config "config/cme/202409_cor2_metis.yaml"
-#python -m sunerf.run_thomson --config "config/cme/202409_cor2_lasco.yaml"
+#python -m sunerf.run_thomson --config "config/cme/202409_cor2_metis_nophysics.yaml"
+
 
 # static
 #python -m sunerf.run_thomson --config "config/cme/202409_metis_static.yaml"
-#python -m sunerf.run_thomson --config "config/cme/202409_cor2_static.yaml"
+python -m sunerf.run_thomson --config "config/cme/202409_cor2_static.yaml"
 
 # single instrument - time evolving
-#python -m sunerf.run_thomson --config "config/cme/202409_cor2.yaml"
-
+python -m sunerf.run_thomson --config "config/cme/202409_cor2.yaml"
 
 #################################################
 # Evaluation
@@ -92,7 +92,8 @@ python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjaro
 python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v01/save_state.snf" --longitudes 0 15 30 45 60 75 90
 python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v01/save_state.snf"
 
-
+python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_nophysics_v02/save_state.snf" --longitudes 0 15 30 45 60 75 90
+python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_nophysics_v02/save_state.snf"
 
 # Metis static
 python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_metis_static_v01/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/metis/pB/*"
@@ -106,8 +107,8 @@ python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjaro
 
 
 # COR2
-python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_v02/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/pB/*"
-python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_v03/save_state.snf"
-python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_v02/save_state.snf" --longitudes 0 15 30 45 60 75 90
-python -m sunerf.evaluation.cme.plot_radius_map --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_v02/save_state.snf" --radius 3 6 9 12
-python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_v02/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/metis/pB/*"
+python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_v01/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/pB/*"
+python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_v01/save_state.snf" --longitudes 0 30 60 90 120 150 180 --time_range "2024-09-22T00:00" "2024-10-01T00:00"
+python -m sunerf.evaluation.cme.plot_radius_map --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_v01/save_state.snf" --radius 6 9 12 15
+python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_v01/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/metis/pB/*"
+python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_v01/save_state.snf"

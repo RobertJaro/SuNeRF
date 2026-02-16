@@ -6,19 +6,21 @@ import numpy as np
 import pandas as pd
 from astropy import units as u
 from astropy.coordinates import SkyCoord
+from dateutil.parser import parse
 from matplotlib import pyplot as plt
 from matplotlib.colors import LogNorm, Normalize
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 from sunpy.coordinates import frames
-from sunpy.visualization.colormaps import cm
 from tqdm import tqdm
 
 from sunerf.evaluation.loader import ThomsonSuNeRFLoader
 
-def inertial_to_carrington(longitude, time):
-    coord = SkyCoord(lon=longitude, lat=0 * u.deg, distance=1 * u.AU, frame=frames.HeliocentricInertial, obstime=time, observer='self')
-    carrington_coord = coord.transform_to(frames.HeliographicCarrington)
+
+def carrington_to_inertial(longitude, time):
+    coord = SkyCoord(lon=longitude, lat=0 * u.deg, radius=1 * u.AU, frame=frames.HeliographicCarrington, obstime=time,
+                     observer='self')
+    carrington_coord = coord.transform_to(frames.HeliocentricInertial)
     return carrington_coord.lon
+
 
 if __name__ == '__main__':
     # parse arguments
@@ -26,6 +28,8 @@ if __name__ == '__main__':
     parser.add_argument('--sunerf_path', type=str, required=True, help='Path to SuNeRF save state')
     parser.add_argument('--out_path', type=str, help='Path to output directory', default=None)
     parser.add_argument('--longitudes', type=float, nargs='+', help='Slices longitudes in degrees', default=None)
+    parser.add_argument('--time_range', type=str, nargs=2, help='Time range for visualization in ISO format (e.g., 2024-09-26T00:00:00 2024-09-28T00:00:00)')
+    parser.add_argument('-radius_range', type=float, nargs=2, help='Radius range for visualization in Rsun', default=[4, 15])
 
     args = parser.parse_args()
 
@@ -44,25 +48,29 @@ if __name__ == '__main__':
     # min_time = min(observer_times)
     # max_time = max(observer_times)
 
-    min_time = datetime(2024, 9, 26, 0, 0)
-    max_time = datetime(2024, 9, 28, 0, 0)
+    # min_time = datetime(2024, 9, 26, 0, 0)
+    # max_time = datetime(2024, 9, 28, 0, 0)
+    # min_time = datetime(2010, 4, 2, 0, 0)
+    # max_time = datetime(2010, 4, 3, 0, 0)
+    min_time = parse(args.time_range[0])
+    max_time = parse(args.time_range[1])
     t_points = 30
 
-    min_radius = 2.5
-    max_radius = 15
+    min_radius = args.radius_range[0]
+    max_radius = args.radius_range[1]
 
     longitudes = args.longitudes * u.deg
-
 
     times = pd.date_range(start=min_time, end=max_time, periods=t_points)
 
     density_norm = LogNorm()
-    velocity_norm = Normalize(vmin=100, vmax=1000)
+    velocity_norm = Normalize()
 
     for i, time in tqdm(enumerate(times), total=len(times)):
-        carr_longitudes = u.Quantity([inertial_to_carrington(lon, time) for lon in longitudes])
+        carr_longitudes = u.Quantity([carrington_to_inertial(lon, time) for lon in longitudes])
         out = sunerf_loader.load_spherical_cube(radius=np.linspace(min_radius, max_radius, 100) * u.Rsun,
-                                                longitude=carr_longitudes, latitude=np.linspace(0, 360, 180, endpoint=False) * u.deg,
+                                                longitude=carr_longitudes,
+                                                latitude=np.linspace(0, 360, 180, endpoint=False) * u.deg,
                                                 time=time)
         ##########################################################
 
@@ -83,7 +91,6 @@ if __name__ == '__main__':
             r = out["spherical_coords"][:, :, j, 0, 0]  # (r, theta, phi, time, 3) -> (r, theta)
             theta = out["spherical_coords"][:, :, j, 0, 1]  # (r, theta, phi, time, 3) -> (r, theta)
             velocity = out["v"][:, :, j, 0]  # (r, theta, phi, time, 3) -> (r, theta, 3)
-
 
             # --- Polar plot - density ---
             ax = axd[f"rho{j}"]
@@ -113,4 +120,3 @@ if __name__ == '__main__':
         img_path = os.path.join(args.out_path, f"{time.isoformat('T', timespec='seconds')}.jpg")
         fig.savefig(img_path, dpi=150)
         plt.close('all')
-

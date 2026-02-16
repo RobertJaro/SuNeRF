@@ -44,7 +44,7 @@ if __name__ == '__main__':
 
     times = pd.date_range(start=min_time, end=max_time, periods=n_points)
 
-    rho_norm = LogNorm(vmin=1e-12, vmax=1e-6)
+    rho_norm = LogNorm()#vmin=1e-8, vmax=2e-6)
     velocity_norm = Normalize(vmin=100, vmax=2000)
 
     for i, time in tqdm(enumerate(times), total=len(times)):

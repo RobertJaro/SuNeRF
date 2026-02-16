@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-v2/3view_v01"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-v2/3view_v01'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/3view_v01"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/3view_v01'
 
 instruments:
   - type: 'default'
@@ -8,6 +8,8 @@ instruments:
 
 model:
   dim: 512
+  encoding_config: {type: multi_spectral, weights: [30, 30, 30, 1]}
+  use_carrington_projection: False
 
 data:
   train_datasets:
@@ -76,6 +78,3 @@ lambda:
   radial: 1.0e-2
   continuity: 1.0e-2
   velocity: 1.0e-2
-
-training:
-  log_every_n_steps: 5000

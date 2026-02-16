@@ -8,7 +8,7 @@ class ThomsonScattering(nn.Module):
 
     def __init__(self, Rs_per_ds, **kwargs):
         super().__init__(**kwargs)
-        c_0 = 1.0e2
+        c_0 = 1.0e-3
         solar_radius = 1 / Rs_per_ds
         #
         self.limb_darkening_coeff = nn.Parameter(torch.tensor(0.63, dtype=torch.float32), requires_grad=False)
@@ -75,10 +75,6 @@ class ThomsonScattering(nn.Module):
 
         intensity_pB = sin_chi2 * ((1 - u_const) * A + u_const * B)  # I_p in Paper
         intensity_tB = 2 * intensity_T - intensity_pB  # I_tot in paper
-
-        # Intensities being negative is unphysical
-        intensity_pB[intensity_pB < 0] = 0
-        intensity_tB[intensity_tB < 0] = 0
 
         # remove nan values (where omega close to 0)
         intensity_tB = torch.nan_to_num(intensity_tB, nan=0.0, posinf=0.0, neginf=0.0)

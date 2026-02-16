@@ -1,11 +1,11 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_v01"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/202409_cor2_v01'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_stereo_a_v02"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2010_03_cor2_stereo_a_v02'
 
 instruments:
   - type: 'default'
-    key: 'COR2'
+    key: 'STEREO_A_COR2'
     scaling: {type: 'log'}
-    correction: { corrections: [ 'f_corona' ] }
+    correction: { corrections: ['f_corona'] }
     calibration: False
 
 model:
@@ -16,23 +16,23 @@ model:
 data:
   train_datasets:
     - type: 'COR'
-      key: 'COR2'
-      instrument_key: 'COR2'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/pB/*"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/tB/*"
+      key: 'STEREO_A_COR2'
+      instrument_key: 'STEREO_A_COR2'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/tB/*"
       batch_size: 1024
       debug: False
     - type: 'random'
       name: 'continuity'
-      radius_range: [ 2.5, 15.0 ]
+      radius_range: [ 2.5, 17.0 ]
       unit: 'solRad'
       batch_size: 4096
   valid_datasets:
     - type: 'COR'
-      key: 'COR2'
-      instrument_key: 'COR2'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/pB/20240915_000745_1P4c2A.fts"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/tB/20240915_000745_1B4c2A.fts"
+      key: 'STEREO_A_COR2'
+      instrument_key: 'STEREO_A_COR2'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/20100403_110815_1P4c2A.fts"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/tB/20100403_110815_1B4c2A.fts"
     - type: 'series'
       name: 'series'
       batch_size: 16384
@@ -47,10 +47,10 @@ data:
 callbacks:
   # image callbacks
   - type: 'thomson_image'
-    ds_key: 'COR2'
+    ds_key: 'STEREO_A_COR2'
   # correction images
   - type: 'correction_image'
-    ds_key: 'COR2'
+    ds_key: 'STEREO_A_COR2'
   - type: 'velocity_slice'
     name: 'velocity_slice'
     ds_key: 'series'
@@ -59,7 +59,7 @@ callbacks:
 logging:
   entity: "robert_jarolim"
   project: "sunerf-cme-obs"
-  name: "2024-10 - COR2"
+  name: "2010-03 - COR2 - STEREO A"
 
 sampling:
   type: "spherical"
@@ -69,9 +69,9 @@ sampling:
 lambda:
   image: 1.0
   ratio: 10.0
-  radial: 0 #1.0e-4
-  continuity: 0 #1.0e-4
-  velocity: 0 #1.0e-4
+  radial: 1.0e-4
+  continuity: 1.0e-4
+  velocity: 1.0e-4
 
 training:
-  log_every_n_steps: 1000
+  log_every_n_steps: 2000

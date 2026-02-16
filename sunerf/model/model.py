@@ -4,11 +4,11 @@ import numpy as np
 import torch
 from astropy import units as u
 from torch import nn
-from torch.nn.functional import linear
 from torch.distributions import Normal
 from torch.nn import Identity
+from torch.nn.functional import linear
 
-from sunerf.train.coordinate_transformation import to_differential_rotation_frame, to_carrington_rotation_frame
+from sunerf.train.coordinate_transformation import to_carrington_rotation_frame
 
 
 class SirenModel(nn.Module):
@@ -269,41 +269,36 @@ class SirenPlasmaModel(SirenModel):
 
 class RhoModel(nn.Module):
 
-    def __init__(self, Rs_per_ds, seconds_per_dt, static=False, **kwargs):
+    def __init__(self, Rs_per_ds, seconds_per_dt, static=False, use_carrington_projection=True, **kwargs):
         super().__init__()
         v = 300 * (u.km / u.s)
         v = v.to_value(u.solRad / u.s) / Rs_per_ds * seconds_per_dt  # normalize to model units
         self.v_radial = nn.Parameter(torch.tensor(v, dtype=torch.float32), requires_grad=False)
-        v_scale = 10 * (u.km / u.s)
+        v_scale = 100 * (u.km / u.s)
         v_scale = v_scale.to_value(u.solRad / u.s) / Rs_per_ds * seconds_per_dt  # normalize to model units
         self.v_scale = nn.Parameter(torch.tensor(v_scale, dtype=torch.float32), requires_grad=False)
         self.seconds_per_dt = seconds_per_dt
 
         self.static = static
+        self.use_carrington_projection = use_carrington_projection
         in_dim = 4 if not static else 3
         self.model = SirenModel(in_dim=in_dim, out_dim=4, **kwargs)
-        # self.background_model = SirenModel(in_dim=3, out_dim=1, **kwargs)
-
 
     def forward(self, coords):
         radial_distance = torch.norm(coords[..., :3], dim=-1, keepdim=True)
         radial = coords[..., :3] / (radial_distance + 1e-8)
 
-        carrington_frame_coords = to_carrington_rotation_frame(coords, self.seconds_per_dt)
-        background_coords = carrington_frame_coords[..., :3]
+        if self.use_carrington_projection:
+            coords = to_carrington_rotation_frame(coords, self.seconds_per_dt)
 
         if self.static:
-            model_out = self.model(background_coords)
+            model_out = self.model(coords[..., :3])
         else:
-            # print(carrington_frame_coords.shape)
-            # combined_coords = torch.cat([coords, background_coords], dim=-1)
-            # print(f'{np.min(carrington_frame_coords.detach().cpu().numpy(), (0, 1))} -- {np.max(carrington_frame_coords.detach().cpu().numpy(), (0, 1))}')
-            model_out = self.model(carrington_frame_coords)
+            model_out = self.model(coords)
         log_rho = model_out[..., 0:1] - 2 * torch.log(radial_distance)
         rho = torch.exp(log_rho)
 
-        v = self.v_radial * radial
-        v = v + model_out[..., 1:] * self.v_scale
+        v = self.v_radial * radial + self.v_scale * model_out[..., 1:4]
 
         result = {'log_rho': log_rho, 'rho': rho, 'v': v}
         return result
@@ -477,6 +472,7 @@ class MultispectralEncoding(nn.Module):
         self.d_output = sum(num_dims)
 
     def forward(self, x):
+        assert x.shape[-1] == len(self.layers), f'Input dimension {x.shape[-1]} must match number of layers {len(self.layers)}'
         encoded_coordinates = []
         for i, layer in enumerate(self.layers):
             coord = x[..., i:i + 1]

@@ -80,7 +80,7 @@ def pose_spherical(longitude, latitude, r):
 #     c2w = torch.Tensor(np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]])) @ c2w
 #     if shift is not None:
 #         c2w = trans_shift(*shift) @ c2w
-#     return c2w
+#     return c2w.float().numpy()
 
 
 def spherical_to_cartesian(v, f=np):
@@ -162,7 +162,7 @@ def to_carrington_rotation_frame(coords, seconds_per_dt):
     omega_carrington = carrington_rotation_rate()
     lon_shift = omega_carrington * time * seconds_per_dt
     spherical_coords_shift = torch.cat([spherical_coords[..., 0:1], spherical_coords[..., 1:2],
-                                        lon + lon_shift], dim=-1)
+                                        lon - lon_shift], dim=-1)
     cartesian_coords_shift = spherical_to_cartesian(spherical_coords_shift, torch)
     coords_shift = torch.cat([cartesian_coords_shift, time], dim=-1)
     return coords_shift

@@ -1,20 +1,23 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_lasco_v02"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/202409_cor2_lasco_v02'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_lasco_v01"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/202409_cor2_lasco_v01'
 
 instruments:
   - type: 'default'
     key: 'COR2'
     scaling: {type: 'log'}
-    correction: True
+    correction: { corrections: [ 'f_corona', 'calibration' ] }
     calibration: False
   - type: 'default'
     key: 'C2'
     scaling: {type: 'log'}
-    correction: True
-    calibration: True
+    correction: { corrections: [ 'f_corona' ] }
+    calibration: False
+    alignment: True
 
 model:
   dim: 128
+  static: False
+  encoding_config: { type: multi_spectral, weights: [ 10, 10, 10, 1.0e-3 ], num_dims: [32, 32, 32, 4] }
 
 data:
   train_datasets:
@@ -34,27 +37,27 @@ data:
       debug: False
     - type: 'random'
       name: 'continuity'
-      radius_range: [ 1.5, 17.0 ]
+      radius_range: [ 2.5, 17.0 ]
       unit: 'solRad'
       batch_size: 4096
   valid_datasets:
     - type: 'COR'
-      key: 'COR2_sample'
+      key: 'COR2'
       instrument_key: 'COR2'
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/pB/20240915_000745_1P4c2A.fts"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/tB/20240915_000745_1B4c2A.fts"
     - type: 'LASCO'
-      key: 'C2_sample'
+      key: 'C2'
       instrument_key: 'C2'
       data_path_pB: null
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/lasco_c2/25963828_patched.fts"
     - type: 'series'
       name: 'series'
       batch_size: 16384
-      radius_range: [ 1.5, 15.0 ]
+      radius_range: [ 2.5, 15.0 ]
   debug: False
   Rs_per_ds: 15
-  seconds_per_dt: 2356585.92
+  seconds_per_dt: 86400
   batch_size: 4096
   validation_batch_size: 4096
   num_workers: 16
@@ -62,14 +65,14 @@ data:
 callbacks:
   # image callbacks
   - type: 'thomson_image'
-    ds_key: 'COR2_sample'
+    ds_key: 'COR2'
   - type: 'thomson_image'
-    ds_key: 'C2_sample'
+    ds_key: 'C2'
   # correction images
   - type: 'correction_image'
-    ds_key: 'COR2_sample'
+    ds_key: 'COR2'
   - type: 'correction_image'
-    ds_key: 'C2_sample'
+    ds_key: 'C2'
   - type: 'velocity_slice'
     name: 'velocity_slice'
     ds_key: 'series'
@@ -88,9 +91,9 @@ sampling:
 lambda:
   image: 1.0
   ratio: 10.0
-  radial: 1.0e-2
+  radial: 1.0e-4
   continuity: 1.0e-4
   velocity: 1.0e-4
 
 training:
-  log_every_n_steps: 1000
+  log_every_n_steps: 2000

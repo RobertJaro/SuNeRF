@@ -1,20 +1,24 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_nophysics_v01"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/202409_cor2_metis_v01'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_nophysics_v02"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/202409_cor2_metis_v02'
 
 instruments:
   - type: 'default'
     key: 'Metis'
     scaling: {type: 'log'}
-    correction: True
-    calibration: { start_value: 0.8 }
+    correction: { corrections: [ 'f_corona' ] }
+    calibration: True
+    alignment: False
   - type: 'default'
     key: 'COR2'
     scaling: {type: 'log'}
-    correction: True
+    correction: { corrections: [ 'f_corona' ] }
     calibration: False
+    alignment: False
 
 model:
   dim: 128
+  static: False
+  encoding_config: { type: multi_spectral, weights: [ 30, 30, 30, 0.01 ] }
 
 data:
   train_datasets:
@@ -34,12 +38,12 @@ data:
       debug: False
   valid_datasets:
     - type: 'COR'
-      key: 'COR2_sample'
+      key: 'COR2'
       instrument_key: 'COR2'
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/pB/20240915_000745_1P4c2A.fts"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/tB/20240915_000745_1B4c2A.fts"
     - type: 'Metis'
-      key: 'Metis_sample'
+      key: 'Metis'
       instrument_key: 'Metis'
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/metis/pB/solo_L2_metis-vl-pb_20240915T003001_V01.fits"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/metis/tB/solo_L2_metis-vl-tb_20240915T003001_V01.fits"
@@ -57,14 +61,14 @@ data:
 callbacks:
   # image callbacks
   - type: 'thomson_image'
-    ds_key: 'COR2_sample'
+    ds_key: 'COR2'
   - type: 'thomson_image'
-    ds_key: 'Metis_sample'
+    ds_key: 'Metis'
   # correction images
   - type: 'correction_image'
-    ds_key: 'COR2_sample'
+    ds_key: 'COR2'
   - type: 'correction_image'
-    ds_key: 'Metis_sample'
+    ds_key: 'Metis'
   - type: 'velocity_slice'
     name: 'velocity_slice'
     ds_key: 'series'
@@ -85,4 +89,4 @@ lambda:
   ratio: 10.0
 
 training:
-  log_every_n_steps: 1000
+  log_every_n_steps: 2000
