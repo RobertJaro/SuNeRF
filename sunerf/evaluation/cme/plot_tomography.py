@@ -29,7 +29,7 @@ if __name__ == '__main__':
     parser.add_argument('--out_path', type=str, help='Path to output directory', default=None)
     parser.add_argument('--longitudes', type=float, nargs='+', help='Slices longitudes in degrees', default=None)
     parser.add_argument('--time_range', type=str, nargs=2, help='Time range for visualization in ISO format (e.g., 2024-09-26T00:00:00 2024-09-28T00:00:00)')
-    parser.add_argument('-radius_range', type=float, nargs=2, help='Radius range for visualization in Rsun', default=[4, 15])
+    parser.add_argument('--radius_range', type=float, nargs=2, help='Radius range for visualization in Rsun', default=[4, 15])
 
     args = parser.parse_args()
 

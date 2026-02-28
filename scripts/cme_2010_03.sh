@@ -45,8 +45,17 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 #python -m sunerf.data.coronagraph.clean_invalid --invalid_files "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/invalid_files.txt" --base_path "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/**/*" --dry_run
 
 #################################################
+# compute correction masks
+python -m sunerf.data.coronagraph.compute_correction --input "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/tB/*" --output "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2_tB_correction.npy" --percentile 5
+python -m sunerf.data.coronagraph.compute_correction --input "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/*" --output "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2_pB_correction.npy" --percentile 5
+python -m sunerf.data.coronagraph.compute_correction --input "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/tB/*" --output "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2_tB_correction.npy" --percentile 5
+python -m sunerf.data.coronagraph.compute_correction --input "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/pB/*" --output "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2_pB_correction.npy" --percentile 5
+
+
+#################################################
 # Train
 python -m sunerf.run_thomson --config "config/cme/2010_03_cor2.yaml"
+python -m sunerf.run_thomson --config "config/cme/2010_03_cor2_correction.yaml"
 #python -m sunerf.run_thomson --config "config/cme/2010_03_cor2_stereo_a.yaml"
 
 
@@ -54,20 +63,23 @@ python -m sunerf.run_thomson --config "config/cme/2010_03_cor2.yaml"
 # Evaluation
 
 # ref series
-python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_v01/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/*" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_v01/ref_series_stereo_a"
-python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_v01/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/pB/*" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_v01/ref_series_stereo_b"
+python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/*" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/ref_series_stereo_a"
+python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/pB/*" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/ref_series_stereo_b"
 # tomography
-python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_v01/save_state.snf" --longitudes 0 30 60 90 120 150 180 --time_range "2010-04-02T00:00" "2010-04-03T00:00"
+python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/save_state.snf" --longitudes 0 30 60 90 120 150 180 --time_range "2010-04-02T00:00" "2010-04-03T00:00"
+python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/save_state.snf" --longitudes 0 30 60 90 120 150 180 --time_range "2010-04-02T00:00" "2010-04-10T00:00"
 # radius map
-python -m sunerf.evaluation.cme.plot_radius_map --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_v01/save_state.snf" --radius 5 8 12 15
+python -m sunerf.evaluation.cme.plot_radius_map --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/save_state.snf" --radius 5 8 12 15
 # video
-python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_v01/save_state.snf"
+python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/save_state.snf"
+python -m sunerf.evaluation.cme.video_polar --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/save_state.snf"
+python -m sunerf.evaluation.cme.video_fixed_rotation --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/save_state.snf"
 
 
-
-python -m sunerf.evaluation.cme.plot_radius_map --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_v06/save_state.snf" --radius 5 8 12 15
+python -m sunerf.evaluation.cme.plot_radius_map --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_v05/save_state.snf" --radius 5 8 12 15
 
 
 # STEREO A only
-python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_stereo_a_v04/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/*" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_stereo_a_v04/ref_series_stereo_a"
-python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_stereo_a_v04/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/pB/*" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_stereo_a_v04/ref_series_stereo_b"
+python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_stereo_a_v08/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/*" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_stereo_a_v08/ref_series_stereo_a"
+python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_stereo_a_v08/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/pB/*" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_stereo_a_v08/ref_series_stereo_b"
+python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_stereo_a_v08/save_state.snf"

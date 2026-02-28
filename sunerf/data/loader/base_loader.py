@@ -132,7 +132,8 @@ class MapDataLoader:
 
         all_rays = np.stack(get_rays(x, y, pose), -2)
 
-        hpc_coords = np.stack([x.to_value(u.arcsec), y.to_value(u.arcsec)], -1)
+        distance = np.ones_like(x.to_value(u.arcsec)) * s_map.dsun.to_value(u.solRad)
+        hpc_coords = np.stack([x.to_value(u.arcsec), y.to_value(u.arcsec), distance], -1)
 
         if self.max_radius is not None:
             radius = np.sqrt(x ** 2 + y ** 2) / s_map.rsun_obs.to(u.arcsec) * u.Rsun

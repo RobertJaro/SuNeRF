@@ -10,7 +10,8 @@ from sunerf.model.sunerf import BaseSuNeRFModule
 from sunerf.model.util import jacobian
 from sunerf.rendering.base_tracing import BasicRenderingModule
 from sunerf.rendering.thomson import ThomsonScattering
-from sunerf.train.correction import CorrectionModule, CalibrationModule, AlignmentModule
+from sunerf.train.correction import CorrectionModule, CalibrationModule, AlignmentModule, StarBackgroundModule
+from sunerf.train.render_mode import RenderMode
 from sunerf.train.scaling import ImageAsinhScaling, ImageLinearScaling, ImageLogScaling
 
 
@@ -28,6 +29,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         correction_modules = {}
         calibration_modules = {}
         alignment_modules = {}
+        background_modules = {}
         for instrument_config in instruments:
             instrument_config = instrument_config.copy()
             instrument_key = instrument_config.pop('key')
@@ -35,6 +37,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             correction = instrument_config.pop('correction', False)
             calibration = instrument_config.pop('calibration', False)
             alignment = instrument_config.pop('alignment', False)
+            background = instrument_config.pop('background', False)
             # rendering module
             rendering_config = instrument_config.pop('rendering', {})
             if instrument_type == 'default':
@@ -64,6 +67,10 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             if alignment:
                 alignment_config = {} if isinstance(alignment, bool) else alignment
                 alignment_modules[instrument_key] = AlignmentModule(**alignment_config)
+            # star background
+            if background:
+                background_config = {} if isinstance(background, bool) else background
+                background_modules[instrument_key] = StarBackgroundModule(**background_config)
 
         model_config = {} if model_config is None else model_config
         model = RhoModel(Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt, **model_config)
@@ -87,7 +94,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         # check lambda config
         available_lambdas = ['image', 'ratio', 'continuity', 'radial', 'velocity', 'target_velocity',
                              'f_corona', 'transmission', 'calibration_gain', 'calibration_offset', 'calibration_scalar',
-                             'pB_mul', 'tB_mul', 'pB_add', 'tB_add']
+                             'pB_mul', 'tB_mul', 'pB_add', 'tB_add', 'star_background']
         for k in lambda_config:
             if k not in available_lambdas:
                 raise ValueError(f"Unknown lambda_config key: {k}")
@@ -118,6 +125,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         self.calibration_modules = nn.ModuleDict(calibration_modules)
         self.scaling_modules = nn.ModuleDict(scaling_modules)
         self.alignment_modules = nn.ModuleDict(alignment_modules)
+        self.background_modules = nn.ModuleDict(background_modules)
         self.mse_loss = nn.MSELoss()
 
         # solar wind
@@ -129,7 +137,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         self.velocity_avg = nn.Parameter(torch.tensor(velocity_avg, dtype=torch.float32), requires_grad=False)
 
         # radial weighting
-        self.min_radius_weight = nn.Parameter(torch.tensor(3.0 / Rs_per_ds, dtype=torch.float32), requires_grad=False)
+        self.min_radius_weight = nn.Parameter(torch.tensor(1.0 / Rs_per_ds, dtype=torch.float32), requires_grad=False)
         self.max_radius_weight = nn.Parameter(torch.tensor(10.0 / Rs_per_ds, dtype=torch.float32), requires_grad=False)
 
         print(f'Velocity min: {velocity_min}, max: {velocity_max}')
@@ -163,9 +171,19 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             image_coords = batch[k]['image_coords']
             hpc_coords = batch[k]['hpc_coords']
             time = batch[k]['time']
+            rays_d = batch[k]['rays'][..., 1, :]
 
             model_image = model_out[k]['image']
             target_image = dataset_batch[k]['image']
+
+            if instrument_key in self.background_modules:
+                background = self.background_modules[instrument_key](rays_d)
+                model_image = model_image + background
+
+                if self.lambdas['star_background']['value'] > 0.0:
+                    # L1 loss to encourage sparse star background
+                    star_background_loss = torch.abs(background)
+                    correction_losses.append({'star_background': star_background_loss})
 
             if instrument_key in self.correction_modules:
                 model_image, correction = self.correction_modules[instrument_key](model_image, image_coords, hpc_coords,
@@ -175,11 +193,17 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             if instrument_key in self.calibration_modules:
                 model_image = self.calibration_modules[instrument_key](model_image)
 
+            tB_nan_mask = ~torch.isnan(target_image[..., 0])
             pB_nan_mask = ~torch.isnan(target_image[..., 1])
+            ratio_nan_mask = tB_nan_mask & pB_nan_mask
 
             # compute polarization ratios
-            ratio_target_image = target_image[pB_nan_mask, 1] / (target_image[pB_nan_mask, 0] + 1e-8)
-            ratio_model_image = model_image[pB_nan_mask, 1] / (model_image[pB_nan_mask, 0] + 1e-8)
+            ratio_target_image = target_image[ratio_nan_mask, 1] / (target_image[ratio_nan_mask, 0] + 1e-8)
+            ratio_model_image = model_image[ratio_nan_mask, 1] / (model_image[ratio_nan_mask, 0] + 1e-8)
+
+            # clip ratios to prevent extreme values from dominating the loss
+            ratio_target_image = torch.clamp(ratio_target_image, 0.0, 1.0)
+            ratio_model_image = torch.clamp(ratio_model_image, 0.0, 1.0)
 
             # scale images
             image_scaling = self.scaling_modules[instrument_key]
@@ -188,7 +212,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
             # backpropagation
             # optimize model
-            tB_image_diff = (scaled_model_image[..., 0] - scaled_target_image[..., 0]).pow(2)
+            tB_image_diff = (scaled_model_image[tB_nan_mask, 0] - scaled_target_image[tB_nan_mask, 0]).pow(2)
             pB_image_diff = (scaled_model_image[pB_nan_mask, 1] - scaled_target_image[pB_nan_mask, 1]).pow(2)
             ratio_diff = (ratio_model_image - ratio_target_image).pow(2)
 
@@ -196,7 +220,8 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             instrument_pB_image_diff.append(pB_image_diff)
             instrument_ratio_diff.append(ratio_diff)
 
-        tB_image_loss = torch.cat(instrument_tB_image_diff).mean()
+        tB_image_loss = torch.cat(instrument_tB_image_diff)
+        tB_image_loss = torch.zeros((1,), dtype=torch.float32, device=instrument_pB_image_diff.device) if tB_image_loss.shape[0] == 0 else tB_image_loss.mean()
         #
         pB_image_loss = torch.cat(instrument_pB_image_diff)
         pB_image_loss = torch.zeros_like(tB_image_loss) if pB_image_loss.shape[0] == 0 else pB_image_loss.mean()
@@ -376,68 +401,151 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         loss = continuity_eq.pow(2)
         return loss
 
-    def validation_step(self, batch, batch_nb, *args):
+    def validation_step(self, batch, batch_idx, *args):
+        """
+        Validation routing is fully controlled by batch['render_mode'] (injected by wrapper dataset).
+        """
         dataloader_idx = args[0] if len(args) > 0 else 0
         dataset_key = self.validation_dataset_mapping[dataloader_idx]
 
-        if 'instrument' in batch:
-            instrument_key = batch['instrument']
-            image_coords = batch['image_coords']
-            hpc_coords = batch['hpc_coords']
-            image = batch['image']
-            time = batch['time']
+        if "render_mode" not in batch:
+            raise KeyError(
+                "Missing 'render_mode' in validation batch. Wrap validation datasets with RenderModeDataset."
+            )
 
-            if instrument_key in self.alignment_modules:
-                b_rays = batch['rays']
-                aligned_rays = self.alignment_modules[instrument_key](b_rays, time)
-                batch['rays'] = aligned_rays
+        mode = RenderMode(int(batch["render_mode"].view(-1)[0].item()))
 
-            rendering_out = self.rendering({dataset_key: batch})
+        if mode == RenderMode.INSTRUMENT:
+            return self._val_instrument(batch, dataset_key)
 
-            model_out = rendering_out['model_out']
-            model_out = model_out[dataset_key]
+        if mode == RenderMode.BACKGROUND:
+            return self._val_background_only(batch)
 
-            model_image = model_out['image']
+        if mode == RenderMode.REFERENCE:
+            return self._val_reference(batch)
 
-            if instrument_key in self.correction_modules:
-                model_image, corrections = self.correction_modules[instrument_key](model_image, image_coords,
-                                                                                   hpc_coords, time)
-            else:
-                corrections = None
-            if instrument_key in self.calibration_modules:
-                model_image = self.calibration_modules[instrument_key](model_image)
+        if mode == RenderMode.QUERY_POINTS:
+            return self._val_query_points(batch)
 
-            target_ratio = image[..., 1:2] / (image[..., 0:1] + 1e-8)
-            model_ratio = model_image[..., 1:2] / (model_image[..., 0:1] + 1e-8)
+        raise ValueError(f"Unknown render_mode={mode}")
 
-            image_scaling = self.scaling_modules[instrument_key]
-            target_image = image_scaling(image)
-            model_image = image_scaling(model_image)
+    def _val_instrument(self, batch, dataset_key: str):
+        instrument_key = batch["instrument"]
+        image_coords = batch["image_coords"]
+        hpc_coords = batch["hpc_coords"]
+        image = batch["image"]
+        time = batch["time"]
+        rays_d = batch["rays"][..., 1, :]
 
-            result = {'target_image': target_image,
-                      'model_image': model_image,
-                      'model_ratio': model_ratio,
-                      'target_ratio': target_ratio,
-                      'density': model_out['density'],
-                      'distance_from_sun': model_out['distance_from_sun'],
-                      'distance_from_obs': model_out['distance_from_obs'],
-                      'distance': model_out['distance']}
-            if corrections is not None:
-                for k, v in corrections.items():
-                    result[f'correction.{k}'] = v
-            return result
-        elif 'rho' in batch:
-            query_points = batch['query_points']
-            spherical_coords = batch['spherical_coords']
-            rho_true = batch['rho']
-            model_out = self.model(query_points)
+        # alignment (optional)
+        if instrument_key in self.alignment_modules:
+            b_rays = batch["rays"]
+            batch["rays"] = self.alignment_modules[instrument_key](b_rays, time)
+            rays_d = batch["rays"][..., 1, :]
 
-            return {'rho_true': rho_true, 'rho_pred': model_out['rho'], 'v_pred': model_out['v'],
-                    'spherical_coords': spherical_coords, 'query_points': query_points}
-        else:
-            query_points = batch['query_points']
-            model_out = self.model(query_points)
-            return {'rho_pred': model_out['rho'], 'v_pred': model_out['v'], 'query_points': query_points}
+        rendering_out = self.rendering({dataset_key: batch})
+        model_out = rendering_out["model_out"][dataset_key]
+        model_image = model_out["image"]
+
+        # background (optional)
+        background = None
+        if instrument_key in self.background_modules:
+            background = self.background_modules[instrument_key](rays_d)
+            model_image = model_image + background
+
+        # correction (optional)
+        corrections = None
+        if instrument_key in self.correction_modules:
+            model_image, corrections = self.correction_modules[instrument_key](
+                model_image, image_coords, hpc_coords, time
+            )
+
+        # calibration (optional)
+        if instrument_key in self.calibration_modules:
+            model_image = self.calibration_modules[instrument_key](model_image)
+
+        # ratios (safe for NaNs)
+        target_ratio = image[..., 1:2] / (image[..., 0:1] + 1e-8)
+        model_ratio = model_image[..., 1:2] / (model_image[..., 0:1] + 1e-8)
+
+        # clip ratios to prevent extreme values from dominating the loss
+        target_ratio = torch.clamp(target_ratio, 0.0, 1.0)
+        model_ratio = torch.clamp(model_ratio, 0.0, 1.0)
+
+        # scale images consistently
+        image_scaling = self.scaling_modules[instrument_key]
+        target_image = image_scaling(image)
+        model_image = image_scaling(model_image)
+
+        result = {
+            "target_image": target_image,
+            "model_image": model_image,
+            "model_ratio": model_ratio,
+            "target_ratio": target_ratio,
+            "density": model_out.get("density", None),
+            "distance_from_sun": model_out.get("distance_from_sun", None),
+            "distance_from_obs": model_out.get("distance_from_obs", None),
+            "distance": model_out.get("distance", None),
+        }
+
+        # attach corrections/background if present
+        if corrections is not None:
+            for k, v in corrections.items():
+                result[f"correction.{k}"] = v
+        if background is not None:
+            result["background"] = background
+
+        # prune None values (keeps callbacks simpler)
+        return {k: v for k, v in result.items() if v is not None}
+
+    def _val_query_points(self, batch):
+        query_points = batch["query_points"]
+        model_out = self.model(query_points)
+        result = {
+            "rho_pred": model_out["rho"],
+            "v_pred": model_out["v"],
+            "query_points": query_points,
+        }
+        if "spherical_coords" in batch:
+            result["spherical_coords"] = batch["spherical_coords"]
+        # include meta if present (optional, helpful for plotting)
+        for k in list(batch.keys()):
+            if k.startswith("meta."):
+                result[k] = batch[k]
+        return result
+
+    def _val_reference(self, batch):
+        query_points = batch["query_points"]
+        rho_true = batch["rho"]
+        model_out = self.model(query_points)
+        result = {
+            "rho_true": rho_true,
+            "rho_pred": model_out["rho"],
+            "v_pred": model_out["v"],
+            "query_points": query_points,
+        }
+        if "spherical_coords" in batch:
+            result["spherical_coords"] = batch["spherical_coords"]
+        for k in list(batch.keys()):
+            if k.startswith("meta."):
+                result[k] = batch[k]
+        return result
+
+    def _val_background_only(self, batch):
+        instrument_key = batch["instrument"]
+        rays_d = batch["rays"][..., 1, :]
+
+        if instrument_key in self.alignment_modules:
+            b_rays = batch["rays"]
+            time = batch["time"]
+            batch["rays"] = self.alignment_modules[instrument_key](b_rays, time)
+            rays_d = batch["rays"][..., 1, :]
+
+        if instrument_key in self.background_modules:
+            background = self.background_modules[instrument_key](rays_d)
+            return {"background": background}
+
+        return {}
 
     def on_train_batch_end(self, *args, **kwargs):
         # update lambda values

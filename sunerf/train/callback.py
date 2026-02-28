@@ -8,7 +8,7 @@ from astropy import units as u
 from astropy.visualization import ImageNormalize, AsinhStretch
 from matplotlib import pyplot as plt
 from matplotlib.cm import get_cmap
-from matplotlib.colors import Normalize, LogNorm
+from matplotlib.colors import Normalize, LogNorm, TwoSlopeNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from pytorch_lightning import Callback
 from skimage.metrics import structural_similarity
@@ -374,7 +374,6 @@ class CorrectionImageCallback(BaseCallback):
         super().__init__(ds_key)
         self.image_shape = image_shape
 
-        # Ordered list of fields to visualize
         self.correction_keys = [
             "correction.f_corona",
             "correction.transmission",
@@ -385,6 +384,7 @@ class CorrectionImageCallback(BaseCallback):
             "correction.img",
             "correction.calibration_gain",
             "correction.calibration_offset",
+            "correction.leakage",
         ]
 
         self.title_map = {
@@ -397,6 +397,20 @@ class CorrectionImageCallback(BaseCallback):
             "correction.img": "Input Image",
             "correction.calibration_gain": "Calibration Gain",
             "correction.calibration_offset": "Calibration Offset",
+            "correction.leakage": "Leakage",
+        }
+
+        self.additive_fields = {
+            "correction.tB_add",
+            "correction.pB_add",
+            "correction.calibration_offset",
+        }
+
+        self.multiplicative_fields = {
+            "correction.tB_mul",
+            "correction.pB_mul",
+            "correction.calibration_gain",
+            "correction.transmission",
         }
 
     @rank_zero_only
@@ -405,7 +419,6 @@ class CorrectionImageCallback(BaseCallback):
         if outputs is None:
             return
 
-        # reshape tensors → (H, W, C, ...)
         outputs = {
             k: v.view(*self.image_shape, *v.shape[1:]).detach().cpu().numpy()
             for k, v in outputs.items()
@@ -420,16 +433,58 @@ class CorrectionImageCallback(BaseCallback):
         axes = axes[0]
 
         for ax, k in zip(axes, keys_present):
+
             img = outputs[k]
-
-            # channel handling
             img2d = img[..., 0] if (img.ndim >= 3 and img.shape[-1] >= 1) else img
+            img2d = np.asarray(img2d)
 
-            # robust log scaling check
-            use_log = np.all(img2d > 0) and np.nanmax(img2d) / np.nanmin(img2d) > 1e2
-            norm = "log" if use_log else None
+            vmin = np.nanmin(img2d)
+            vmax = np.nanmax(img2d)
 
-            im = ax.imshow(img2d, cmap="viridis", norm=norm)
+            # ------------------------------------------------
+            # 1) Additive corrections → centered at 0
+            # ------------------------------------------------
+            if k in self.additive_fields:
+                vmin_plot = max(np.nanmin(img2d), 1e-12)
+                vmax_plot = np.nanmax(img2d)
+                norm = LogNorm(vmin=vmin_plot, vmax=vmax_plot)
+                cmap = "Reds"
+
+            # ------------------------------------------------
+            # 2) Multiplicative corrections → centered at 1
+            # ------------------------------------------------
+            elif k in self.multiplicative_fields:
+                deviation = img2d - 1.0
+                vmax_abs = np.nanmax(np.abs(deviation))
+                norm = TwoSlopeNorm(vcenter=1.0,
+                                    vmin=1.0 - vmax_abs,
+                                    vmax=1.0 + vmax_abs)
+                cmap = "RdBu_r"
+
+            # ------------------------------------------------
+            # 3) F-corona → positive, log scale
+            # ------------------------------------------------
+            elif k == "correction.f_corona":
+                vmin_plot = max(np.nanmin(img2d), 1e-12)
+                vmax_plot = np.nanmax(img2d)
+                norm = LogNorm(vmin=vmin_plot, vmax=vmax_plot)
+                cmap = "Reds"
+
+            # ------------------------------------------------
+            # 4) Leakage → bounded [0,1], Reds
+            # ------------------------------------------------
+            elif k == "correction.leakage":
+                norm = Normalize(vmin=0.0, vmax=0.1)
+                cmap = "Reds"
+
+            # ------------------------------------------------
+            # 5) Fallback
+            # ------------------------------------------------
+            else:
+                norm = Normalize(vmin=vmin, vmax=vmax)
+                cmap = "viridis"
+
+            im = ax.imshow(img2d, cmap=cmap, norm=norm)
 
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("right", size="5%", pad=0.05)
@@ -746,3 +801,408 @@ class LongitudeSliceCallback(BaseCallback):
         wandb.log(
             {f"{self.name} - Longitude={np.rad2deg(self.longitude).astype(int):03d} deg - Slice": wandb.Image(fig)})
         plt.close('all')
+
+class RadialSlicesCallback(BaseCallback):
+    """
+    time × radius panels (latitude vs longitude),
+    plus a dedicated last column for colorbars (one per time row).
+
+    Layout:
+      - Nt rows (time)
+      - Nr columns (r slices) + 1 extra column (colorbars)
+      - one colorbar per row in the last column
+      - uses constrained_layout
+    """
+
+    def __init__(self, cube_shape, radii, **kwargs):
+        """
+        Parameters
+        ----------
+        cube_shape : tuple
+            (Nr, Nlat, Nlon, Nt)
+        radii : array-like
+            Radii in R_sun corresponding to the Nr slices.
+        """
+        super().__init__(**kwargs)
+        self.cube_shape = cube_shape
+        self.radii = np.asarray(radii, dtype=np.float32)
+
+        if len(self.radii) != cube_shape[0]:
+            raise ValueError(
+                f"Number of radii ({len(self.radii)}) does not match Nr ({cube_shape[0]})."
+            )
+
+    @rank_zero_only
+    def on_validation_end(self, trainer, pl_module):
+        out = self.get_validation_outputs(pl_module)
+        if out is None:
+            return
+
+        Nr, Nlat, Nlon, Nt = self.cube_shape
+
+        rho = out["rho_pred"].detach().cpu().numpy().reshape(-1)
+        rho = rho.reshape(Nr, Nlat, Nlon, Nt)
+
+        sph = out["spherical_coords"].detach().cpu().numpy().reshape(-1, 3)
+        sph = sph.reshape(Nr, Nlat, Nlon, Nt, 3)
+
+        lat = sph[0, :, 0, 0, 1]
+        lon = sph[0, 0, :, 0, 2]
+
+        extent = [
+            np.rad2deg(lon.min()),
+            np.rad2deg(lon.max()),
+            np.rad2deg(lat.min()),
+            np.rad2deg(lat.max()),
+        ]
+
+        norm = LogNorm(vmin=np.nanmin(rho), vmax=np.nanmax(rho))
+
+        fig = plt.figure(
+            figsize=(3.2 * (Nr + 1), 2.6 * Nt),
+            constrained_layout=True,
+            dpi=180,
+        )
+
+        # mosaic with dedicated colorbar column
+        layout = []
+        for it in range(Nt):
+            row = [f"rho_t{it}_r{ir}" for ir in range(Nr)] + [f"cbar_t{it}"]
+            layout.append(row)
+
+        per_subplot_kw = {
+            **{f"rho_t{it}_r{ir}": {} for it in range(Nt) for ir in range(Nr)},
+            **{f"cbar_t{it}": {} for it in range(Nt)},
+        }
+
+        axd = fig.subplot_mosaic(
+            layout,
+            per_subplot_kw=per_subplot_kw,
+            width_ratios=[1.0] * Nr + [0.05],
+        )
+
+        for it in range(Nt):
+            mappable_row = None
+
+            for ir in range(Nr):
+                ax = axd[f"rho_t{it}_r{ir}"]
+
+                img = rho[ir, :, :, it]
+
+                mappable_row = ax.imshow(
+                    img,
+                    origin="lower",
+                    extent=extent,
+                    norm=norm,
+                    cmap="inferno",
+                )
+
+                if it == 0:
+                    ax.set_title(f"{self.radii[ir]:.2f} R$_\\odot$")
+
+                if ir == 0:
+                    ax.set_ylabel(f"t#{it}")
+
+                ax.set_xlabel("Longitude (deg)")
+                ax.set_ylabel("Latitude (deg)")
+
+            # dedicated colorbar axis
+            cax = axd[f"cbar_t{it}"]
+
+            fig.colorbar(
+                mappable_row,
+                cax=cax,
+                orientation="vertical",
+                label="Density",
+            )
+
+        wandb.log({f"radial_slices.{self.name}": wandb.Image(fig)})
+        plt.close(fig)
+
+
+
+
+class LongitudeSlicesCallback(BaseCallback):
+    """
+    time × longitude polar density panels, plus a dedicated last column for colorbars.
+
+    Layout:
+      - Nt rows (time)
+      - Nlon columns (longitude slices) + 1 extra column (colorbars)
+      - one colorbar per row (i.e., per time) in the last column
+
+    Notes:
+      - Uses constrained_layout=True and allocates explicit "cbar" axes via subplot_mosaic.
+      - Colorbars sit in the dedicated last column (all the way to the right).
+    """
+
+    def __init__(self, cube_shape, longitude_deg=(0, 30, 60, 90, 120, 150), **kwargs):
+        super().__init__(**kwargs)
+        self.cube_shape = cube_shape
+        self.longitude_deg = np.asarray(longitude_deg, dtype=np.float32)
+
+    @rank_zero_only
+    def on_validation_end(self, trainer, pl_module):
+        out = self.get_validation_outputs(pl_module)
+        if out is None:
+            return
+
+        Nr, Nlat, Nlon, Nt = self.cube_shape
+
+        rho = out["rho_pred"].detach().cpu().numpy().reshape(-1)
+        rho = rho.reshape(Nr, Nlat, Nlon, Nt)
+
+        sph = out["spherical_coords"].detach().cpu().numpy().reshape(-1, 3)
+        sph = sph.reshape(Nr, Nlat, Nlon, Nt, 3)
+
+        longitudes_deg = (
+            self.longitude_deg
+            if len(self.longitude_deg) == Nlon
+            else np.rad2deg(sph[0, 0, :, 0, 2])
+        )
+
+        density_norm = LogNorm()
+
+        fig = plt.figure(
+            figsize=(4.1 * (Nlon + 1), 3.5 * Nt),
+            constrained_layout=True,
+            dpi=180,
+        )
+
+        # --- mosaic: add last column for colorbars (one cbar axis per row) ---
+        layout = []
+        for it in range(Nt):
+            row = [f"rho_t{it}_j{j}" for j in range(Nlon)] + [f"cbar_t{it}"]
+            layout.append(row)
+
+        per_subplot_kw = {
+            **{f"rho_t{it}_j{j}": {"projection": "polar"} for it in range(Nt) for j in range(Nlon)},
+            **{f"cbar_t{it}": {} for it in range(Nt)},
+        }
+
+        # make the cbar column skinny
+        axd = fig.subplot_mosaic(
+            layout,
+            per_subplot_kw=per_subplot_kw,
+            width_ratios=[1.0] * Nlon + [0.06],
+        )
+
+        for it in range(Nt):
+            mappable_row = None
+
+            for j in range(Nlon):
+                ax = axd[f"rho_t{it}_j{j}"]
+
+                img = rho[:, :, j, it]    # (Nr, Nlat)
+                r = sph[:, :, j, it, 0]   # (Nr, Nlat)
+                lat = sph[:, :, j, it, 1] # (Nr, Nlat)
+
+                mappable_row = ax.pcolormesh(
+                    lat, r, img,
+                    shading="auto",
+                    norm=density_norm,
+                    cmap="inferno",
+                )
+
+                if it == 0:
+                    ax.set_title(f"{float(longitudes_deg[j]):.1f}°", pad=10)
+
+                if j == 0:
+                    ax.text(
+                        -0.15, 0.5, f"t#{it}",
+                        transform=ax.transAxes,
+                        rotation=90,
+                        va="center",
+                        ha="right",
+                    )
+
+                ax.set_theta_zero_location("W")
+                ax.set_theta_direction(-1)
+                ax.set_xlabel("Latitude (rad)")
+                ax.set_ylabel(r"Radius (R$_\odot$)")
+                ax.set_rlim((0, None))
+
+            # one colorbar per *row* in the dedicated last column
+            cax = axd[f"cbar_t{it}"]
+
+            fig.colorbar(
+                mappable_row,
+                cax=cax,
+                orientation="vertical",
+                label="Density",
+            )
+
+        wandb.log({f"longitude_slices.rho.{self.name}": wandb.Image(fig)})
+        plt.close(fig)
+
+
+class LongitudeTimeVelocityMagCallback(BaseCallback):
+    """
+    Same grid as density but plots |v|.
+    Expects v_pred (...,3)
+    """
+    def __init__(self, cube_shape, **kwargs):
+        super().__init__(**kwargs)
+        self.cube_shape = cube_shape
+
+    @rank_zero_only
+    def on_validation_end(self, trainer, pl_module):
+        out = self.get_validation_outputs(pl_module)
+        if out is None:
+            return
+
+        Nlon, Nt, Nr, Nth = self.cube_shape
+        v = out["v_pred"].view(Nlon, Nt, Nr, Nth, 3).cpu().numpy()
+        vmag = np.linalg.norm(v, axis=-1)
+
+        sph = out["spherical_coords"].view(Nlon, Nt, Nr, Nth, 3).cpu().numpy()
+        r = sph[0, 0, :, 0, 0]
+        th = sph[0, 0, 0, :, 1]
+        th_deg = np.rad2deg(th)
+
+        times = out.get("meta.times", None)
+        times = times.cpu().numpy() if times is not None else None
+        lon = out.get("meta.longitudes_rad", None)
+        lon = np.rad2deg(lon.cpu().numpy()) if lon is not None else np.arange(Nlon)
+
+        fig, axes = plt.subplots(Nlon, Nt, figsize=(4*Nt, 3*Nlon), squeeze=False)
+        for i in range(Nlon):
+            for j in range(Nt):
+                ax = axes[i, j]
+                img = vmag[i, j, :, :]
+                ax.imshow(img, origin="lower", aspect="auto",
+                          extent=[th_deg.min(), th_deg.max(), r.min(), r.max()])
+                if i == 0:
+                    ax.set_title(f"t={times[j]:.3f}" if times is not None else f"t#{j}")
+                if j == 0:
+                    ax.set_ylabel(f"r [R☉]\nlon={lon[i]:.0f}°")
+                if i == Nlon - 1:
+                    ax.set_xlabel("lat [deg]")
+
+        fig.tight_layout()
+        wandb.log({f"longitude_time_velocitymag.{self.name}": wandb.Image(fig)})
+        plt.close(fig)
+
+class FixedViewpointSeriesCallback(BaseCallback):
+    """
+    3 rows: tB, pB, density
+    N cols: time snapshots
+    Expects instrument validation outputs: model_image (...,2), density (...,1 or ...), target optional NaNs
+    """
+    def __init__(self, image_shape, n_times=6, **kwargs):
+        super().__init__(**kwargs)
+        self.image_shape = image_shape
+        self.n_times = int(n_times)
+
+    @rank_zero_only
+    def on_validation_end(self, trainer, pl_module):
+        out = self.get_validation_outputs(pl_module)
+        if out is None:
+            return
+
+        H, W = self.image_shape
+        model_image = out["model_image"].view(self.n_times, H, W, -1).cpu().numpy()
+        density = out["density"].view(self.n_times, H, W, -1).cpu().numpy()
+
+        fig, axes = plt.subplots(3, self.n_times, figsize=(4*self.n_times, 10), squeeze=False)
+
+        for j in range(self.n_times):
+            axes[0, j].imshow(model_image[j, :, :, 0], origin="lower")
+            axes[0, j].set_title(f"tB t#{j}")
+            axes[1, j].imshow(model_image[j, :, :, 1], origin="lower")
+            axes[1, j].set_title(f"pB t#{j}")
+            d = density[j, :, :, 0] if density.shape[-1] >= 1 else density[j, :, :, 0]
+            axes[2, j].imshow(np.log10(np.clip(d, 1e-30, None)), origin="lower")
+            axes[2, j].set_title(f"log10 rho t#{j}")
+
+            for i in range(3):
+                axes[i, j].axis("off")
+
+        fig.tight_layout()
+        wandb.log({f"fixed_viewpoint_series.{self.name}": wandb.Image(fig)})
+        plt.close(fig)
+
+
+class StarBackgroundCallback(BaseCallback):
+    """
+    Visualize StarBackgroundModule output (additive background) in log scale.
+    Expects outputs['background'] shaped (Npix, 2) after validation_step.
+    """
+
+    def __init__(self, ds_key, image_shape, eps=1e-12):
+        super().__init__(ds_key)
+        self.image_shape = tuple(image_shape)
+        self.eps = float(eps)
+
+    @rank_zero_only
+    def on_validation_end(self, trainer, pl_module):
+        outputs = self.get_validation_outputs(pl_module)
+        if outputs is None or 'background' not in outputs:
+            return
+
+        bg = outputs['background'].view(*self.image_shape, -1).detach().cpu().numpy()
+        # bg[...,0]=tB additive, bg[...,1]=pB additive (if present)
+        has_pb = (bg.shape[-1] > 1)
+
+        def _imshow_log(ax, img, title):
+            img = np.asarray(img)
+            good = np.isfinite(img) & (img > 0)
+            if not np.any(good):
+                ax.set_axis_off()
+                ax.set_title(title + " (no >0 finite)")
+                return None
+            masked = np.ma.array(img, mask=~good)
+            im = ax.imshow(masked, origin='lower', cmap='magma', norm=LogNorm(vmin=max(self.eps, masked.min()), vmax=masked.max()))
+            ax.set_title(title)
+            ax.set_axis_off()
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            plt.colorbar(im, cax=cax)
+            return im
+
+        ncols = 2 if has_pb else 1
+        fig, axs = plt.subplots(1, ncols, figsize=(5 * ncols, 5))
+
+        if ncols == 1:
+            axs = [axs]
+
+        _imshow_log(axs[0], bg[..., 0], "Star background (tB)")
+        if has_pb:
+            _imshow_log(axs[1], bg[..., 1], "Star background (pB)")
+
+        fig.tight_layout()
+        wandb.log({f"star_background.{self.ds_key}": fig})
+        plt.close(fig)
+
+class FullStarBackgroundCallback(BaseCallback):
+    """
+    Plots star background image(s) in log scale.
+    Expects outputs: background (...,C). Usually C=2 for (tB,pB).
+    """
+    def __init__(self, image_shape, **kwargs):
+        super().__init__(**kwargs)
+        self.image_shape = image_shape
+
+    @rank_zero_only
+    def on_validation_end(self, trainer, pl_module):
+        out = self.get_validation_outputs(pl_module)
+        if out is None or "background" not in out:
+            return
+
+        H, W = self.image_shape
+        bg = out["background"].view(H, W, -1).detach().cpu().numpy()
+
+        nC = bg.shape[-1]
+        fig, axes = plt.subplots(1, nC, figsize=(6*nC, 5), squeeze=False)
+        axes = axes[0]
+
+        for c in range(nC):
+            img = np.asarray(bg[..., c])
+            img = np.clip(img, 1e-30, None)
+            axes[c].imshow(img, origin="lower", norm=LogNorm(vmin=np.nanpercentile(img, 5), vmax=np.nanpercentile(img, 99)))
+            axes[c].set_title(f"Star background ch{c} (log)")
+            axes[c].axis("off")
+
+        fig.tight_layout()
+        wandb.log({f"star_background_full.{self.name}": wandb.Image(fig)})
+        plt.close(fig)

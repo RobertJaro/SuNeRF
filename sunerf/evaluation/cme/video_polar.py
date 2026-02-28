@@ -25,7 +25,7 @@ if __name__ == '__main__':
 
     # set default path
     if args.out_path is None:
-        args.out_path = os.path.join(os.path.dirname(args.sunerf_path), 'video')
+        args.out_path = os.path.join(os.path.dirname(args.sunerf_path), 'video_polar')
     os.makedirs(args.out_path, exist_ok=True)
 
     ##########################################################
@@ -42,37 +42,19 @@ if __name__ == '__main__':
     mid_time = min_time + (max_time - min_time) / 2
 
     # time = datetime(2024, 9, 16, 15, 8)
-    lon = -90 * u.deg
-    lat = 0 * u.deg
+    lon = 0 * u.deg
+    lat = -90 * u.deg
     distance = 1.4373074e+11 * u.m
 
     occ_min = args.occ_range[0] * u.R_sun
     occ_max = args.occ_range[1] * u.R_sun
 
-    n_points = 20
+    n_points = 50
     points_1 = zip(np.ones(n_points) * u.AU,
-                   np.ones(n_points) * lat,
-                   np.linspace(lon, lon + 360 * u.deg, n_points),
-                   [mid_time] * n_points)
-    points_2 = zip(np.ones(n_points) * u.AU,
-                   np.linspace(lat, lat + 80 * u.deg, n_points),
-                   np.ones(n_points) * lon,
-                   [mid_time] * n_points)
-    points_3 = zip(np.ones(n_points) * u.AU,
-                   np.linspace(lat + 80 * u.deg, lat, n_points),
-                   np.ones(n_points) * lon,
-                   pd.date_range(start=mid_time, end=min_time, periods=n_points))
-    points_4 = zip(np.ones(n_points) * u.AU,
                    np.ones(n_points) * lat,
                    np.ones(n_points) * lon,
                    pd.date_range(start=min_time, end=max_time, periods=n_points))
-    points = list(points_1) + list(points_2) + list(points_3) + list(points_4)
-
-    # points_1 = zip(np.ones(n_points) * u.AU,
-    #                np.ones(n_points) * lat,
-    #                np.ones(n_points) * lon,
-    #                pd.date_range(start=min_time, end=max_time, periods=n_points))
-    # points = list(points_1)
+    points = list(points_1)
 
     brightness_norm = LogNorm()
     density_norm = LogNorm()

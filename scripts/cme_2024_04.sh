@@ -48,17 +48,17 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 # Train
 #python -m sunerf.run_thomson --config "config/cme/202409_combined.yaml"
 
-python -m sunerf.run_thomson --config "config/cme/202409_cor2_lasco.yaml"
+#python -m sunerf.run_thomson --config "config/cme/202409_cor2_lasco.yaml"
 python -m sunerf.run_thomson --config "config/cme/202409_cor2_metis.yaml"
 #python -m sunerf.run_thomson --config "config/cme/202409_cor2_metis_nophysics.yaml"
 
 
 # static
 #python -m sunerf.run_thomson --config "config/cme/202409_metis_static.yaml"
-python -m sunerf.run_thomson --config "config/cme/202409_cor2_static.yaml"
+#python -m sunerf.run_thomson --config "config/cme/202409_cor2_static.yaml"
 
 # single instrument - time evolving
-python -m sunerf.run_thomson --config "config/cme/202409_cor2.yaml"
+#python -m sunerf.run_thomson --config "config/cme/202409_cor2.yaml"
 
 #################################################
 # Evaluation
@@ -92,8 +92,10 @@ python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjaro
 python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v01/save_state.snf" --longitudes 0 15 30 45 60 75 90
 python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v01/save_state.snf"
 
-python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_nophysics_v02/save_state.snf" --longitudes 0 15 30 45 60 75 90
-python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_nophysics_v02/save_state.snf"
+python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v05/save_state.snf" --longitudes 0 15 30 45 60 75 90 --radius_range 1.5 15 --time_range "2024-09-22T00:00" "2024-10-01T00:00"
+python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v05/save_state.snf" --occ_range 1.5 15
+python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v05/save_state.snf" --longitudes -10 -5 0 5 10 --radius_range 1.5 15 --time_range "2024-09-20T00:00" "2024-10-01T00:00"
+
 
 # Metis static
 python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_metis_static_v01/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/metis/pB/*"

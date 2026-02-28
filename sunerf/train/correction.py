@@ -10,7 +10,7 @@ class CorrectionModule(nn.Module):
     def __init__(self, corrections=None,**kwargs):
         super().__init__()
         self.corrections = ['f_corona'] if corrections is None else corrections # use default corrections if none provided
-        possible_img_corrections = ['tB_add', 'pB_add', 'tB_mul', 'pB_mul', 'img', 'transmission']
+        possible_img_corrections = ['tB_add', 'pB_add', 'tB_mul', 'pB_mul', 'img', 'transmission', 'leakage']
         possible_hpc_corrections = ['f_corona']
         possible_radial_corrections = ['calibration_gain', 'calibration_offset']
         possible_temporal_corrections = ['calibration']
@@ -24,20 +24,26 @@ class CorrectionModule(nn.Module):
         radial_corrections = [c for c in self.corrections if c in possible_radial_corrections]
         temporal_corrections = [c for c in self.corrections if c in possible_temporal_corrections]
 
+        encoding_config = {'type': 'default', 'w0': 30.}
+
         if len(img_corrections) > 0:
-            self.img_correction_module = SirenNet(in_dim=2, out_dim=len(img_corrections), dim=32, n_layers=4, w0_initial=5)
+            self.img_correction_module = SirenModel(in_dim=2, out_dim=len(img_corrections), dim=64, n_layers=4, encoding_config=encoding_config)
         else:
             self.img_correction_module = None
         if len(hpc_corrections) > 0:
-            self.hpc_correction_module = SirenNet(in_dim=2, out_dim=len(hpc_corrections), dim=16, n_layers=2, w0_initial=5)
+            # Tx, Ty, distance
+            self.hpc_correction_module = SirenModel(in_dim=2, out_dim=len(hpc_corrections), dim=32, n_layers=2, encoding_config=encoding_config)
+            self.distance_scaling_module = SirenModel(in_dim=1, out_dim=len(hpc_corrections), dim=16, n_layers=2, encoding_config={'type': 'default', 'w0': 1.})
         else:
             self.hpc_correction_module = None
         if len(radial_corrections) > 0:
-            self.radial_correction_module = SirenNet(in_dim=1, out_dim=len(radial_corrections), dim=16, n_layers=2, w0_initial=1)
+            self.radial_correction_module = SirenModel(in_dim=1, out_dim=len(radial_corrections), dim=32, n_layers=2,
+                                                       encoding_config={'type': 'default', 'w0': 1.})
         else:
             self.radial_correction_module = None
         if len(temporal_corrections) > 0:
-            self.temporal_correction_module = SirenNet(in_dim=1, out_dim=len(temporal_corrections), dim=16, n_layers=2, w0_initial=1)
+            self.temporal_correction_module = SirenModel(in_dim=1, out_dim=len(temporal_corrections), dim=32, n_layers=2,
+                                                         encoding_config={'type': 'default', 'w0': 1.})
         else:
             self.temporal_correction_module = None
 
@@ -59,7 +65,9 @@ class CorrectionModule(nn.Module):
         corrections = {}
         # 1. corrections of physical origin (F corona)
         if self.hpc_correction_module is not None:
-            hpc_corrections = self.hpc_correction_module(hpc_coords)
+            hpc_corrections = self.hpc_correction_module(hpc_coords[..., :2])
+            distance_scaling = self.distance_scaling_module(hpc_coords[..., 2:3])
+            hpc_corrections = hpc_corrections + distance_scaling
             i = 0
             if 'f_corona' in self.hpc_corrections:
                 f_corona = torch.exp(hpc_corrections[..., i:i+1] - 6)
@@ -90,12 +98,12 @@ class CorrectionModule(nn.Module):
 
             i = 0
             if 'tB_add' in self.img_corrections:
-                tB_add = img_corrections[..., i:i+1] * 1e-3
+                tB_add = torch.exp(img_corrections[..., i:i+1] - 6)
                 tB = tB + tB_add
                 corrections['tB_add'] = tB_add
                 i += 1
             if 'pB_add' in self.img_corrections:
-                pB_add = img_corrections[..., i:i+1] * 1e-3
+                pB_add = torch.exp(img_corrections[..., i:i+1] - 6)
                 pB = pB + pB_add
                 corrections['pB_add'] = pB_add
                 i += 1
@@ -114,6 +122,13 @@ class CorrectionModule(nn.Module):
                 tB = tB * transmission
                 pB = pB * transmission
                 corrections['transmission'] = transmission
+                i += 1
+            if 'leakage' in self.img_corrections:
+                raw = img_corrections[..., i:i + 1]
+                leakage = torch.exp(raw - 6.0)
+
+                pB = pB + tB * leakage
+                corrections['leakage'] = leakage
                 i += 1
 
         # 4. temporal corrections (calibration)
@@ -160,3 +175,42 @@ class AlignmentModule(nn.Module):
         aligned_rays = torch.stack([rays[..., 0, :], aligned_rays_d], dim=-2)  # keep origins the same
 
         return aligned_rays
+
+
+class StarBackgroundModule(nn.Module):
+    """
+    NeRF-style infinite background model: static sky brightness as a function of ray direction only.
+
+    - Input: ray directions (rays_d) in a FIXED inertial/sky frame.
+    - Output: additive background in (tB, pB), typically with pB strongly suppressed.
+
+    Call pattern (matching your other correction modules):
+        corrected_image, bg_terms = module(image, rays_d)
+    """
+
+    def __init__(self,
+                 dim=64,
+                 n_layers=4,
+                 encoding_config=None,
+                 scale=1e-3):
+        super().__init__()
+        encoding_config = {'type': 'default', 'w0': 30.0} if encoding_config is None else encoding_config
+        self.model = SirenModel(in_dim=3, out_dim=2, dim=dim, n_layers=n_layers, encoding_config=encoding_config)
+
+        # Keep background small by construction so it can't trivially explain the corona
+        self.scale = nn.Parameter(torch.tensor(float(scale), dtype=torch.float32), requires_grad=False)
+
+    def forward(self, rays_d):
+        """
+        image: (..., 2) [tB, pB]
+        rays_d: (..., 3) ray directions (must be in a fixed inertial/sky frame)
+        """
+        d = rays_d / (torch.norm(rays_d, dim=-1, keepdim=True) + 1e-8)
+
+        model_out = self.model(d)  # (..., len(outputs))
+
+        tB_add = torch.exp(model_out[..., 0:1]) * self.scale
+        pB_add = torch.exp(model_out[..., 1:2]) * self.scale
+
+        correction = torch.cat([tB_add, pB_add], dim=-1)
+        return correction

@@ -12,7 +12,9 @@ from pytorch_lightning.utilities import rank_zero_only
 from sunerf.data.loader.thomson_instrument import ThomsonDataModule
 from sunerf.model.thomson import ThomsonSuNeRFModule, save_thomson_sunerf
 from sunerf.train.callback import ThomsonImageCallback, LatitudeSliceCallback, LongitudeSliceCallback, CubeCallback, \
-    VelocitySliceCallback, CorrectionImageCallback
+    VelocitySliceCallback, CorrectionImageCallback, FullStarBackgroundCallback, RadialSlicesCallback, \
+    LongitudeTimeVelocityMagCallback, FixedViewpointSeriesCallback, \
+    LongitudeSlicesCallback
 from sunerf.train.util import load_yaml_config
 
 if __name__ == '__main__':
@@ -51,6 +53,7 @@ if __name__ == '__main__':
     # initialize logger
     logger = WandbLogger(**logging_config, save_dir=work_directory)
 
+
     @rank_zero_only
     def _log_hparams(cfg):
         logger.log_hyperparams(cfg)
@@ -61,6 +64,7 @@ if __name__ == '__main__':
     # initialize data module and model
     data_module_save_path = os.path.join(work_directory, 'data_module.pkl')
 
+
     @rank_zero_only
     def _load_data_module():
         if os.path.exists(data_module_save_path) and not args.reload:
@@ -70,8 +74,9 @@ if __name__ == '__main__':
         data_module = ThomsonDataModule(**data_config, work_directory=work_directory)
         torch.save(data_module, data_module_save_path)
 
-    _load_data_module() # ensure only rank 0 loads/saves the data module
-    data_module = torch.load(data_module_save_path) # all ranks load the data module
+
+    _load_data_module()  # ensure only rank 0 loads/saves the data module
+    data_module = torch.load(data_module_save_path)  # all ranks load the data module
 
     image_scaling = list(data_module.config.values())[0]['image_scaling']
     rho_normalization = image_scaling / (8.69 * 1e-7)
@@ -93,43 +98,138 @@ if __name__ == '__main__':
 
     callbacks = [checkpoint_callback, save_callback]
 
-    for callback_config in config.get('callbacks', []):
-        ds_key = callback_config.pop('ds_key', None)
-        callback_type = callback_config.pop('type')
-        if callback_type.lower() == 'thomson_image':
-            callback = ThomsonImageCallback(ds_key=ds_key,
-                                            image_shape=data_module.validation_datasets[ds_key].image_shape)
-        elif callback_type.lower() == 'latitude_slice':
-            latitude = callback_config.get('latitude', 0)
-            callback = LatitudeSliceCallback(ds_key=ds_key, latitude=latitude,
-                                             cube_shape=data_module.validation_datasets[ds_key].cube_shape,
-                                             rho_normalization=rho_normalization,
-                                             Rs_per_ds=data_module.Rs_per_ds,
-                                             seconds_per_dt=data_module.seconds_per_dt)
-        elif callback_type.lower() == 'longitude_slice':
-            longitude = callback_config.get('longitude', 0)
-            callback = LongitudeSliceCallback(ds_key=ds_key, longitude=longitude,
-                                              cube_shape=data_module.validation_datasets[ds_key].cube_shape,
-                                              rho_normalization=rho_normalization,
-                                              Rs_per_ds=data_module.Rs_per_ds,
-                                              seconds_per_dt=data_module.seconds_per_dt)
-        elif callback_type.lower() == 'cube':
-            callback = CubeCallback(ds_key=ds_key,
-                                    cube_shape=data_module.validation_datasets[ds_key].cube_shape,
-                                    Rs_per_ds=data_module.Rs_per_ds,
-                                    seconds_per_dt=data_module.seconds_per_dt)
-        elif callback_type.lower() == 'velocity_slice':
-            latitude = callback_config.get('latitude', 0)
-            callback = VelocitySliceCallback(ds_key=ds_key, latitude=latitude,
-                                             cube_shape=data_module.validation_datasets[ds_key].cube_shape,
-                                             rho_normalization=rho_normalization,
-                                             Rs_per_ds=data_module.Rs_per_ds,
-                                             seconds_per_dt=data_module.seconds_per_dt)
-        elif callback_type.lower() == 'correction_image':
-            callback = CorrectionImageCallback(ds_key=ds_key,
-                                               image_shape=data_module.validation_datasets[ds_key].image_shape)
+    for cb_cfg in config.get('callbacks', []):
+        cb_cfg = dict(cb_cfg)  # avoid mutating config
+        ds_key = cb_cfg.pop('ds_key', None)
+        cb_type = cb_cfg.pop("type").lower()
+
+        if ds_key is None:
+            raise ValueError(f"Callback '{cb_type}' is missing 'ds_key'")
+
+        ds = data_module.validation_datasets[ds_key]
+        # NOTE: ds is wrapped. We need to access the base dataset for shapes/meta.
+        base = getattr(ds, "dataset", ds)  # RenderModeDataset stores base in `.dataset`
+
+        if cb_type == "thomson_image":
+            callback = ThomsonImageCallback(ds_key=ds_key, image_shape=base.image_shape)
+
+        elif cb_type == "latitude_slice":
+            callback = LatitudeSliceCallback(
+                ds_key=ds_key,
+                latitude=cb_cfg.get("latitude", 0),
+                cube_shape=base.cube_shape,
+                rho_normalization=rho_normalization,
+                Rs_per_ds=data_module.Rs_per_ds,
+                seconds_per_dt=data_module.seconds_per_dt,
+            )
+
+        elif cb_type == "longitude_slice":
+            callback = LongitudeSliceCallback(
+                ds_key=ds_key,
+                longitude=cb_cfg.get("longitude", 0),
+                cube_shape=base.cube_shape,
+                rho_normalization=rho_normalization,
+                Rs_per_ds=data_module.Rs_per_ds,
+                seconds_per_dt=data_module.seconds_per_dt,
+            )
+
+        elif cb_type == "cube":
+            callback = CubeCallback(
+                ds_key=ds_key,
+                cube_shape=base.cube_shape,
+                Rs_per_ds=data_module.Rs_per_ds,
+                seconds_per_dt=data_module.seconds_per_dt,
+            )
+
+        elif cb_type == "velocity_slice":
+            callback = VelocitySliceCallback(
+                ds_key=ds_key,
+                latitude=cb_cfg.get("latitude", 0),
+                cube_shape=base.cube_shape,
+                rho_normalization=rho_normalization,
+                Rs_per_ds=data_module.Rs_per_ds,
+                seconds_per_dt=data_module.seconds_per_dt,
+            )
+
+        elif cb_type == "correction_image":
+            callback = CorrectionImageCallback(ds_key=ds_key, image_shape=base.image_shape)
+
+        # -----------------------------
+        # NEW: radial slices (configurable radii)
+        # -----------------------------
+        elif cb_type == "radial_slices":
+            # expects base.cube_shape = (Nr, Ntheta, Nphi, Nt)
+            callback = RadialSlicesCallback(
+                ds_key=ds_key,
+                cube_shape=base.cube_shape,
+                radii=base.radii,
+                name=cb_cfg.get("name", ds_key),
+            )
+
+        # -----------------------------
+        # NEW: longitude slices over time (density)
+        # shared dataset with velocity callback
+        # expects base.cube_shape = (Nlon, Nt, Nr, Ntheta)
+        # -----------------------------
+        elif cb_type == "longitude_density":
+            callback = LongitudeSlicesCallback(
+                ds_key=ds_key,
+                cube_shape=base.cube_shape,
+                longitude_deg=base.longitude_deg,
+                name=cb_cfg.get("name", ds_key),
+            )
+
+        # -----------------------------
+        # NEW: longitude slices over time (velocity magnitude)
+        # shared dataset with density callback
+        # -----------------------------
+        elif cb_type == "longitude_time_velocitymag":
+            callback = LongitudeTimeVelocityMagCallback(
+                ds_key=ds_key,
+                cube_shape=base.cube_shape,
+                name=cb_cfg.get("name", ds_key),
+            )
+
+        # -----------------------------
+        # NEW: fixed viewpoint series (3 rows: tB, pB, density; 6 cols over time)
+        # expects base.image_shape and base.n_times
+        # -----------------------------
+        elif cb_type == "fixed_viewpoint_series":
+            n_times = getattr(base, "n_times", cb_cfg.get("n_times", 6))
+            callback = FixedViewpointSeriesCallback(
+                ds_key=ds_key,
+                image_shape=base.image_shape,
+                n_times=n_times,
+                name=cb_cfg.get("name", ds_key),
+            )
+
+        # -----------------------------
+        # Existing: star background (log scale)
+        # NOTE: you called it star_background_full; keep name for backward compat
+        # expects base.image_shape (recommended) OR base.sky_shape (if you kept that naming)
+        # -----------------------------
+        elif cb_type in ("star_background_full", "full_star_background"):
+            # Prefer image_shape (H,W) since your FullStarBackgroundDataset sets that.
+            if hasattr(base, "image_shape"):
+                image_shape = base.image_shape
+                callback = FullStarBackgroundCallback(
+                    ds_key=ds_key,
+                    image_shape=image_shape,
+                    eps=cb_cfg.get("eps", 1e-12),
+                    name=cb_cfg.get("name", ds_key),
+                )
+            else:
+                # fallback if you used sky_shape naming previously
+                callback = FullStarBackgroundCallback(
+                    ds_key=ds_key,
+                    image_shape=base.sky_shape,
+                    eps=cb_cfg.get("eps", 1e-12),
+                    name=cb_cfg.get("name", ds_key),
+                )
+
         else:
-            raise ValueError(f'Unknown callback type {callback_type}')
+            raise ValueError(f"Unknown callback type '{cb_type}'")
+
         callbacks.append(callback)
 
     N_GPUS = torch.cuda.device_count()

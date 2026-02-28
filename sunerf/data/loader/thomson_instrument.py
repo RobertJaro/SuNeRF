@@ -2,24 +2,29 @@ import copy
 import glob
 import multiprocessing
 import os
-from datetime import timedelta
-from itertools import repeat
+from datetime import timedelta, datetime
+from typing import Any
 
 import numpy as np
 import scipy
 import torch
 from astropy import units as u
+from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from dateutil.parser import parse
-from sunpy.map import Map
+from sunpy.coordinates import frames
+from sunpy.map import Map, make_fitswcs_header, all_coordinates_from_map
 from sunpy.visualization.colormaps import cm
+from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from sunerf.data.date_util import normalize_datetime
+from sunerf.data.date_util import normalize_datetime, unnormalize_datetime
 from sunerf.data.loader.base_loader import BaseDataModule, TensorsDataset, MapDataLoader
 from sunerf.data.loader.volume_sampling import RandomSphericalCoordinateDataset
+from sunerf.data.ray_sampling import get_rays
 from sunerf.train.callback import log_overview
-from sunerf.train.coordinate_transformation import spherical_to_cartesian
+from sunerf.train.coordinate_transformation import spherical_to_cartesian, pose_spherical
+from sunerf.train.render_mode import RenderModeDataset, RenderMode
 
 
 class ThomsonDataModule(BaseDataModule):
@@ -46,9 +51,10 @@ class ThomsonDataModule(BaseDataModule):
                                 'observers': dc['observers']}
 
         base_config['batch_size'] = validation_batch_size
-        times = np.concatenate([dataset.normalized_times for dataset in train_dict.values() if isinstance(dataset, GenericThomsonDataset)])
+        times = np.concatenate(
+            [dataset.normalized_times for dataset in train_dict.values() if isinstance(dataset, GenericThomsonDataset)])
         time_range = [np.min(times), np.max(times)]
-        valid_dict = self._load_valid_dataset(valid_datasets, base_config, time_range=time_range)
+        valid_dict = self._load_valid_dataset(valid_datasets, base_config, time_range=time_range, seconds_per_dt=seconds_per_dt, ref_date=ref_date)
 
         super().__init__(train_dict, valid_dict,
                          Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt, ref_date=ref_date,
@@ -75,11 +81,14 @@ class ThomsonDataModule(BaseDataModule):
             elif ds_type.lower() == 'metis':
                 dataset = MetisDataset(**ds_config, ds_key=ds_key)
             elif ds_type.lower() == 'random':
-                assert len(train_dict) > 0, 'Specify at least one dataset for reference times. The random dataset configuration needs to be last in config file.'
-                times = np.concatenate([dataset.normalized_times for dataset in train_dict.values() if isinstance(dataset, GenericThomsonDataset)])
+                assert len(
+                    train_dict) > 0, 'Specify at least one dataset for reference times. The random dataset configuration needs to be last in config file.'
+                times = np.concatenate([dataset.normalized_times for dataset in train_dict.values() if
+                                        isinstance(dataset, GenericThomsonDataset)])
                 time_range = [np.min(times), np.max(times)]
                 radius_range = u.Quantity(ds_config.pop('radius_range'), unit=ds_config.pop('unit', 'AU'))
-                dataset = RandomSphericalCoordinateDataset(time_range=time_range, radius_range=radius_range, **ds_config)
+                dataset = RandomSphericalCoordinateDataset(time_range=time_range, radius_range=radius_range,
+                                                           **ds_config)
             else:
                 raise ValueError(f'Unknown dataset type {ds_type}')
             # update ref time
@@ -90,7 +99,7 @@ class ThomsonDataModule(BaseDataModule):
             train_dict[ds_key] = dataset
         return train_dict, ref_date
 
-    def _load_valid_dataset(self, data_config, base_config, time_range):
+    def _load_valid_dataset(self, data_config, base_config, time_range, seconds_per_dt, ref_date):
         data_config = copy.deepcopy(data_config)
 
         valid_dict = {}
@@ -102,16 +111,28 @@ class ThomsonDataModule(BaseDataModule):
             ds_config.update(config)
             if ds_type.lower() == 'hao':
                 dataset = HAOThomsonDataset(**ds_config, ds_key=ds_key, test=True)
+                dataset = RenderModeDataset(dataset, render_mode=RenderMode.INSTRUMENT)
             elif ds_type.lower() == 'cor':
                 dataset = COR2Dataset(**ds_config, ds_key=ds_key, test=True)
+                dataset = RenderModeDataset(dataset, render_mode=RenderMode.INSTRUMENT)
             elif ds_type.lower() == 'lasco':
                 dataset = LASCOC2Dataset(**ds_config, ds_key=ds_key, test=True)
+                dataset = RenderModeDataset(dataset, render_mode=RenderMode.INSTRUMENT)
             elif ds_type.lower() == 'metis':
                 dataset = MetisDataset(**ds_config, ds_key=ds_key, test=True)
+                dataset = RenderModeDataset(dataset, render_mode=RenderMode.INSTRUMENT)
             elif ds_type.lower() == 'reference_cube':
                 dataset = ReferenceCubeDataset(**ds_config, ds_key=ds_key, shuffle=False, filter_nans=False)
-            elif ds_type.lower() == 'series':
-                dataset = SeriesCubeDataset(**ds_config, time_range=time_range)
+                dataset = RenderModeDataset(dataset, render_mode=RenderMode.REFERENCE)
+            elif ds_type.lower() == "radial_slices":
+                dataset = RadialSlicesDataset(**ds_config, ds_key=ds_key, time_range=time_range)
+                dataset = RenderModeDataset(dataset, RenderMode.QUERY_POINTS)
+            elif ds_type.lower() == "longitude_slices":
+                dataset = LongitudeSlicesDataset(**ds_config, ds_key=ds_key, time_range=time_range)
+                dataset = RenderModeDataset(dataset, RenderMode.QUERY_POINTS)
+            elif ds_type.lower() == "fixed_viewpoint_series":
+                dataset = FixedViewpointSeriesDataset(**ds_config, ds_key=ds_key, time_range=time_range)
+                dataset = RenderModeDataset(dataset, RenderMode.INSTRUMENT)
             else:
                 raise ValueError(f'Unknown dataset type {ds_type}')
             assert ds_key not in valid_dict, f'Duplicate dataset key {ds_key}'
@@ -124,6 +145,7 @@ class GenericThomsonDataset(TensorsDataset):
                  Rs_per_ds, seconds_per_dt, image_norm=512, hpc_norm=1e4, ref_date=None,
                  batch_size=int(2 ** 10), debug=False, test=False, noise_level=False,
                  reference_frame='inertial', azimuthal_equidistant=True,
+                 correction_config=None,
                  **kwargs):
         self.scaling = scaling
         # select files with min diff in dates
@@ -149,16 +171,41 @@ class GenericThomsonDataset(TensorsDataset):
         observers = [d.pop('observer') for d in data]
         for k in data[0].keys():
             data_dict[k] = np.stack([d[k] for d in data], axis=0)
+        tB_image_stack = data_dict['image']
 
         # load remaining images
         if pB_files is None:
-            pB_image_stack = np.ones_like(data_dict['image']) * np.nan
+            pB_image_stack = np.ones_like(tB_image_stack) * np.nan
         else:
             with multiprocessing.Pool(os.cpu_count()) as p:
-                pB_image_stack = [v for v in tqdm(p.imap(fits.getdata, pB_files), total=len(pB_files), desc=f'Loading pB')]
+                pB_image_stack = [v for v in
+                                  tqdm(p.imap(fits.getdata, pB_files), total=len(pB_files), desc=f'Loading pB')]
                 pB_image_stack = np.stack(pB_image_stack, axis=0)
 
-        image_stack = np.stack([data_dict['image'], pB_image_stack], axis=-1)
+        # apply correction if specified
+        if correction_config is not None:
+            if correction_config['type'] == 'percentile':
+                pB_level = correction_config.get('pB_level', 20)
+                tB_level = correction_config.get('tB_level', 20)
+                pB_correction = np.percentile(pB_image_stack, pB_level, axis=0, keepdims=True)
+                tB_correction = np.percentile(tB_image_stack, tB_level, axis=0, keepdims=True)
+                pB_image_stack = pB_image_stack - pB_correction
+                tB_image_stack = tB_image_stack - tB_correction
+                min_value = correction_config.get('min_value', 0)
+                pB_image_stack[pB_image_stack < min_value] = 0
+                tB_image_stack[tB_image_stack < min_value] = 0
+            elif correction_config['type'] == 'file':
+                pB_correction = np.load(correction_config['pB'])
+                tB_correction = np.load(correction_config['tB'])
+                pB_image_stack = pB_image_stack - pB_correction[None]
+                tB_image_stack = tB_image_stack - tB_correction[None]
+                min_value = correction_config.get('min_value', 0)
+                pB_image_stack[pB_image_stack < min_value] = 0
+                tB_image_stack[tB_image_stack < min_value] = 0
+            else:
+                raise ValueError(f'Unknown correction type {correction_config["type"]}')
+
+        image_stack = np.stack([tB_image_stack, pB_image_stack], axis=-1)
         image_stack = image_stack / scaling
 
         if noise_level:
@@ -167,10 +214,9 @@ class GenericThomsonDataset(TensorsDataset):
             noise = noise * noise_level * mean_B
             image_stack += noise
 
-        mask = np.any(image_stack <= 0, axis=-1)
-        image_stack[mask] = np.nan  # set both tB and pB to NaN if either is negative
+        mask = image_stack <= 0
+        image_stack[mask] = np.nan
         data_dict['image'] = image_stack
-
 
         # expand and normalize times
         times = data_dict['time']
@@ -179,12 +225,13 @@ class GenericThomsonDataset(TensorsDataset):
         self.times = times
         normalized_times = np.array([normalize_datetime(t, seconds_per_dt, ref_date) for t in times])
         self.normalized_times = normalized_times
-        times_arr = np.ones((*data_dict['image'].shape[:-1], 1), dtype=np.float32) * normalized_times[:, None, None, None]
+        times_arr = np.tile(normalized_times[:, None, None, None], (1, *image_stack.shape[1:3], 1))
         data_dict['time'] = times_arr
 
         # add hpc coordinates
         hpc_coords = data_dict['hpc_coords']
-        hpc_coords /= hpc_norm
+        hpc_coords[..., :2] /= hpc_norm # norm angle Tx and Tz
+        hpc_coords[..., 2] /= Rs_per_ds # norm distance by Rs_per_ds
         data_dict['hpc_coords'] = hpc_coords
 
         # add image coordinates
@@ -198,20 +245,30 @@ class GenericThomsonDataset(TensorsDataset):
         image_coords = image_coords[None, :, :, :].repeat(image_stack.shape[0], axis=0)  # repeat over time
         data_dict['image_coords'] = image_coords
 
+        # apply occultor mask
+        occultor_mask = np.isnan(tB_image_stack)
+        data_dict['rays'][occultor_mask] = np.nan
+        data_dict['image_coords'][occultor_mask] = np.nan
+        data_dict['hpc_coords'][occultor_mask] = np.nan
+
         if not test:
             cmap = cm.soholasco2.copy()
             cmap.set_bad(color='green')
-            log_overview(data_dict["image"], data_dict['pose'], normalized_times, cmap, seconds_per_dt, Rs_per_ds, ref_date, ds_key=ds_key)
+            log_overview(data_dict["image"], data_dict['pose'], normalized_times, cmap, seconds_per_dt, Rs_per_ds,
+                         ref_date, ds_key=ds_key)
             print('----- Data Overview -----')
             print(
                 f'Image shape: {data_dict["image"].shape}; MIN: {np.nanmin(data_dict["image"])}; MAX: {np.nanmax(data_dict["image"])}')
             print(f'Time shape: {times_arr.shape}; MIN: {np.nanmin(times_arr)}; MAX: {np.nanmax(times_arr)}')
 
-        tensors = {k: v.reshape((-1, *v.shape[3:])) for k, v in data_dict.items() if k in ['image', 'rays', 'time', 'image_coords', 'hpc_coords']}
+        tensors = {k: v.reshape((-1, *v.shape[3:])) for k, v in data_dict.items() if
+                   k in ['image', 'rays', 'time', 'image_coords', 'hpc_coords']}
+
         # set all values where image (tB) is NaN to NaN --> skip for training
-        nan_mask = np.isnan(tensors['image'][..., 0])
-        for k, v in tensors.items():
-            tensors[k][nan_mask] = np.nan
+        if not test:
+            nan_mask = np.isnan(tensors['image']).all(-1)
+            for k, v in tensors.items():
+                tensors[k][nan_mask] = np.nan
 
         # info for plotting
         self.image_shape = image_stack.shape[1:3]
@@ -230,7 +287,8 @@ class GenericThomsonDataset(TensorsDataset):
         data_config['observers'] = observers
         self.data_config = data_config
 
-        super().__init__(tensors=tensors, batch_size=batch_size, shuffle=not test, filter_nans=not test, instrument=instrument_key, **kwargs)
+        super().__init__(tensors=tensors, batch_size=batch_size, shuffle=not test, filter_nans=not test,
+                         instrument=instrument_key, **kwargs)
 
 
 class HAOThomsonDataset(GenericThomsonDataset):
@@ -238,15 +296,18 @@ class HAOThomsonDataset(GenericThomsonDataset):
     def __init__(self, **kwargs):
         super().__init__(scaling=5e-5, reference_frame='heliographic', azimuthal_equidistant=True, **kwargs)
 
+
 class COR2Dataset(GenericThomsonDataset):
 
     def __init__(self, **kwargs):
         super().__init__(scaling=1.0e-6, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
 
+
 class LASCOC2Dataset(GenericThomsonDataset):
 
     def __init__(self, **kwargs):
         super().__init__(scaling=1.0e-6, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
+
 
 class MetisDataset(GenericThomsonDataset):
 
@@ -257,7 +318,6 @@ class MetisDataset(GenericThomsonDataset):
 class ReferenceCubeDataset(TensorsDataset):
 
     def __init__(self, data_path, ref_date, seconds_per_dt, Rs_per_ds, min_radius=30, max_radius=100, **kwargs):
-
         o = scipy.io.readsav(data_path)
         date0 = parse("2010-04-03T09:04:00.000")
         time = date0 + timedelta(hours=float(o['this_time']))
@@ -281,7 +341,7 @@ class ReferenceCubeDataset(TensorsDataset):
         x, y, z = cartesian_coords[..., 0], cartesian_coords[..., 1], cartesian_coords[..., 2]
 
         query_points = np.stack([x, y, z, t], axis=-1, dtype=np.float32)
-        query_points = query_points[:, :, :, 0] # squeeze time dimension
+        query_points = query_points[:, :, :, 0]  # squeeze time dimension
 
         print('Query points range: ', query_points.reshape(-1, 4).min(0), query_points.reshape(-1, 4).max(0))
 
@@ -297,31 +357,266 @@ class ReferenceCubeDataset(TensorsDataset):
         super().__init__(tensors, **kwargs)
 
 
+class RadialSlicesDataset(TensorsDataset):
+    """
+    Produces query_points on multiple constant-radius shells AND multiple time steps.
 
-class SeriesCubeDataset(TensorsDataset):
+    Dimensions:
+      - radii: (Nr,) in R_sun
+      - theta: (Ntheta,) latitude in radians [-pi/2, pi/2)
+      - phi: (Nphi,) longitude in radians [0, 2pi)
+      - time: (Nt,) normalized time steps (default: 5, evenly sampled over time_range)
 
-    def __init__(self, time_range, Rs_per_ds, radius_range=[ 21.5, 130 ],
-                 filter_nans=False, shuffle=False, **kwargs):
+    Output:
+      - query_points: (Nr*Ntheta*Nphi*Nt, 4)  [x,y,z,t] (normalized x/y/z by Rs_per_ds)
+      - spherical_coords: (Nr*Ntheta*Nphi*Nt, 3) [r, theta, phi] (r in R_sun)
+      - meta.*: radii/theta/phi/times (useful for callbacks)
+    """
 
-        times = np.linspace(time_range[0], time_range[1], 6, dtype=np.float32)
-        max_radius = radius_range[1]
-        x_range = np.linspace(-max_radius, max_radius, 256, dtype=np.float32)
-        y_range = np.linspace(-max_radius, max_radius, 256, dtype=np.float32)
+    def __init__(
+        self,
+        time_range,
+        Rs_per_ds,
+        seconds_per_dt, ref_date,
+        radii=(5, 7.5, 10, 15, 20),
+        Ntheta=180,
+        Nphi=360,
+        n_times=5,           # default: 5 time steps (rows)
+        **kwargs,
+    ):
+        # --- angular grids ---
+        radii = np.asarray(radii, dtype=np.float32)  # (Nr,) in R_sun
+        theta = np.linspace(-np.pi / 2, np.pi / 2, int(Ntheta), endpoint=False, dtype=np.float32)  # lat
+        phi = np.linspace(0, 2 * np.pi, int(Nphi), endpoint=False, dtype=np.float32)               # lon
 
-        query_points = np.stack(np.meshgrid(x_range, y_range, [0], times), axis=-1)
+        # --- time grid ---
+        t0, t1 = float(time_range[0]), float(time_range[1])
+        t = np.linspace(t0, t1, int(n_times), dtype=np.float32)
 
-        r = np.linalg.norm(query_points[..., :3], axis=-1)
-        mask = (r > radius_range[0]) & (r < radius_range[1])
-        query_points[~mask] = np.nan
+        # coords: (Nr, Ntheta, Nphi, Nt, 4) with [r, th, ph, t]
+        # meshgrid order matches indexing="ij"
+        rr, th, ph, tt = np.meshgrid(radii, theta, phi, t, indexing="ij")
 
-        query_points[..., :3] = query_points[..., :3] / Rs_per_ds
+        # replace longitude with inertial longitude for each time step
+        datetimes = [unnormalize_datetime(it, seconds_per_dt, ref_date) for it in t]
+        longitudes = convert_carrington_to_inertial(phi * u.rad, datetimes)
+        for i, longitude_inertial in enumerate(longitudes):
+            ph[:, :, :, i] = longitude_inertial
 
-        self.cube_shape = query_points.shape[:-1]
+        coords = np.stack([rr, th, ph, tt], axis=-1)  # (Nr, Ntheta, Nphi, Nt, 4)
+        spherical_coords = coords[..., :3]  # (Nr, Ntheta, Nphi, Nt, 3)
+
+        cart = spherical_to_cartesian(spherical_coords, np).astype(np.float32)  # (..,3) in R_sun
+        cart /= Rs_per_ds  # normalize spatial coords
+
+        query_points = np.concatenate([cart, coords[..., 3:4]], axis=-1).astype(np.float32)  # (..,4)
+
+        # store shapes + meta for callbacks
+        self.cube_shape = query_points.shape[:-1]  # (Nr, Ntheta, Nphi, Nt)
+        self.radii = radii
+        self.theta = theta
+        self.phi = phi
+        self.times = t
 
         query_points = query_points.reshape(-1, 4)
+        spherical_coords = spherical_coords.reshape(-1, 3)
 
-        print('Series dataset-----------------')
-        print('Query points range: ', np.nanmin(query_points.reshape(-1, 4), 0), np.nanmax(query_points.reshape(-1, 4), 0))
+        tensors = {'query_points': query_points,
+                   'spherical_coords': spherical_coords}
+        super().__init__(tensors, shuffle=False, filter_nans=False, **kwargs)
 
-        tensors = {'query_points': query_points}
-        super().__init__(tensors, filter_nans=filter_nans, shuffle=shuffle, **kwargs)
+class LongitudeSlicesDataset(TensorsDataset):
+    """
+    Produces query_points on multiple constant-longitude slices AND multiple time steps.
+
+    Dimensions:
+      - r:         (Nr,) radius in R_sun
+      - latitude:  (Nlat,) in radians [-pi/2, pi/2)
+      - longitude: (Nlon_slices,) in radians
+                   (default: [0,30,60,90,120,150] deg)
+      - time:      (Nt,) normalized time steps
+
+    Output:
+      - query_points: (Nr*Nlat*Nlon_slices*Nt, 4)  [x,y,z,t]
+                      (x/y/z normalized by Rs_per_ds)
+      - spherical_coords: (Nr*Nlat*Nlon_slices*Nt, 3) [r, latitude, longitude]
+                          (r in R_sun)
+      - meta.*: r/latitude/longitude/times
+    """
+
+    def __init__(
+        self,
+        time_range,
+        Rs_per_ds,
+        seconds_per_dt,
+        ref_date,
+        longitude_deg=(0, 30, 60, 90, 120, 150),
+        radius_range=(1.5, 15), # in R_sun
+        Nlatitude=360,
+        Nradius=180,
+        n_times=5,
+        **kwargs,
+    ):
+        # --- radial + angular grids ---
+        r0, r1 = float(radius_range[0]), float(radius_range[1])
+        r = np.linspace(r0, r1, int(Nradius), dtype=np.float32)  # radius in R_sun
+
+        latitude = np.linspace(
+            0,
+            2 * np.pi,
+            int(Nlatitude),
+            endpoint=False,
+            dtype=np.float32,
+        )  # latitude in radians
+
+        # --- time grid ---
+        t0, t1 = float(time_range[0]), float(time_range[1])
+        times = np.linspace(t0, t1, int(n_times), dtype=np.float32)
+
+
+        datetimes = [unnormalize_datetime(t, seconds_per_dt, ref_date) for t in times]
+        longitudes = convert_carrington_to_inertial(longitude_deg * u.deg, datetimes)
+
+        # meshgrid: (Nr, Nlat, Nlon_slices, Nt)
+        rr, lat, lon, tt = np.meshgrid(
+            r, latitude, np.zeros_like(longitude_deg), times, indexing="ij"
+        )
+        # fill longitude values for each time step
+        for i, longitude_inertial in enumerate(longitudes):
+            lon[:, :, :, i] = longitude_inertial
+
+        coords = np.stack([rr, lat, lon, tt], axis=-1).astype(np.float32)
+        spherical_coords = coords[..., :3]  # (..,3) -> [r, latitude, longitude]
+
+        cart = spherical_to_cartesian(spherical_coords, np).astype(np.float32)
+        cart /= Rs_per_ds
+
+        query_points = np.concatenate(
+            [cart, coords[..., 3:4]], axis=-1
+        ).astype(np.float32)
+
+        # meta for callbacks
+        self.cube_shape = query_points.shape[:-1]  # (Nr, Nlat, Nlon_slices, Nt)
+        self.r = r
+        self.latitude = latitude
+        self.longitude = longitudes
+        self.longitude_deg = longitude_deg
+        self.times = times
+
+        query_points = query_points.reshape(-1, 4)
+        spherical_coords = spherical_coords.reshape(-1, 3)
+
+        tensors = {
+            "query_points": query_points,
+            "spherical_coords": spherical_coords,
+        }
+
+        super().__init__(tensors, shuffle=False, filter_nans=False, **kwargs)
+
+
+class FixedViewpointSeriesDataset(TensorsDataset):
+    """
+    Produces rays for a fixed observer (lat/lon/distance) and multiple times.
+    Returns instrument-style batch keys: rays, time, image, image_coords, hpc_coords, instrument
+    """
+
+    def __init__(self,
+                 instrument_key,
+                 lat_deg=0.0,
+                 lon_deg=0.0,
+                 distance_AU=1.0,
+                 n_times=6,
+                 time_range=None,  # normalized [tmin,tmax]
+                 ref_date=None,
+                 seconds_per_dt=1.0,
+                 Rs_per_ds=1.0,
+                 resolution=(256, 256),
+                 scale_arcsec=(2400 / 256, 2400 / 256),
+                 image_norm=512,
+                 hpc_norm=1e4,
+                 **kwargs):
+
+        self.image_shape = tuple(int(x) for x in resolution)
+        self.n_times = int(n_times)
+
+        if time_range is None:
+            times_norm = np.array([0.0], dtype=np.float32)
+        else:
+            t0, t1 = float(time_range[0]), float(time_range[1])
+            times_norm = np.linspace(t0, t1, self.n_times, dtype=np.float32)
+
+        # build a mock SunPy map just to get pixel coords (Tx,Ty)
+        # Note: use some reasonable reference coord; this is only for WCS/pixel geometry.
+        # Observer at each time is encoded via pose, not WCS.
+        t_ref = ref_date if isinstance(ref_date, datetime) else datetime(2010, 1, 1)
+        obs = SkyCoord(0 * u.deg, 0 * u.deg, (distance_AU * u.AU).to(u.solRad),
+                       frame=frames.HeliographicStonyhurst, obstime=t_ref)
+        reference_coord = SkyCoord(0 * u.arcsec, 0 * u.arcsec, obstime=t_ref, observer=obs,
+                                   frame=frames.Helioprojective)
+
+        mock = np.zeros(self.image_shape, dtype=np.float32)
+        header = make_fitswcs_header(mock, reference_coord,
+                                     scale=[scale_arcsec[0], scale_arcsec[1]] * u.arcsec / u.pix)
+        ref_map = Map(mock, header)
+        img_coords = all_coordinates_from_map(ref_map).transform_to(frames.Helioprojective)
+
+        # rays for each time
+        lat = np.deg2rad(float(lat_deg))
+        lon = np.deg2rad(float(lon_deg))
+        dist_solRad = (distance_AU * u.AU).to_value(u.solRad)
+
+        rays_all = []
+        time_all = []
+        img_all = []
+        imgcoords_all = []
+        hpccoords_all = []
+
+        ny, nx = self.image_shape
+        image_coords = np.stack(np.mgrid[:ny, :nx], axis=-1).astype(np.float32)
+        image_coords[..., 0] -= 0.5 * (ny - 1)
+        image_coords[..., 1] -= 0.5 * (nx - 1)
+        image_coords /= float(image_norm)
+
+        hpc_coords = np.zeros((ny, nx, 2), dtype=np.float32) / float(hpc_norm)
+
+        for tnorm in times_norm:
+            pose = pose_spherical(lon, lat, dist_solRad / float(Rs_per_ds)).numpy()
+            rays_o, rays_d = get_rays(img_coords.Tx, img_coords.Ty, pose)
+            rays = np.stack([rays_o, rays_d], axis=-2).astype(np.float32)  # (ny,nx,2,3)
+
+            rays_all.append(rays)
+            time_all.append(np.ones((ny, nx, 1), dtype=np.float32) * tnorm)
+
+            # NaN target image (tB,pB); model will still render
+            img_all.append(np.ones((ny, nx, 2), dtype=np.float32) * np.nan)
+
+            imgcoords_all.append(image_coords)
+            hpccoords_all.append(hpc_coords)
+
+        rays_all = np.stack(rays_all, axis=0)  # (Nt,ny,nx,2,3)
+        time_all = np.stack(time_all, axis=0)  # (Nt,ny,nx,1)
+        img_all = np.stack(img_all, axis=0)  # (Nt,ny,nx,2)
+        imgcoords_all = np.stack(imgcoords_all, 0)  # (Nt,ny,nx,2)
+        hpccoords_all = np.stack(hpccoords_all, 0)  # (Nt,ny,nx,2)
+
+        tensors = {
+            "rays": torch.from_numpy(rays_all.reshape(-1, 2, 3)),
+            "time": torch.from_numpy(time_all.reshape(-1, 1)),
+            "image": torch.from_numpy(img_all.reshape(-1, 2)),
+            "image_coords": torch.from_numpy(imgcoords_all.reshape(-1, 2)),
+            "hpc_coords": torch.from_numpy(hpccoords_all.reshape(-1, 2)),
+        }
+
+        super().__init__(tensors=tensors, **kwargs)
+
+def convert_carrington_to_inertial(longitude: list[float], datetimes: list[datetime]) -> list[float]:
+    longitudes = []
+    for t in datetimes:
+        # convert longitude from Carrington to inertial frame
+        sky_coords = SkyCoord(lon=longitude, lat=0 * u.deg,
+                              radius=1 * u.AU,
+                              frame=frames.HeliographicCarrington, observer='self',
+                              obstime=t)
+        longitude_inertial = sky_coords.transform_to(frames.HeliocentricInertial).lon.to_value(u.rad)
+        longitudes.append(longitude_inertial)
+    return longitudes
