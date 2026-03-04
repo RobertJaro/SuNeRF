@@ -17,13 +17,6 @@ def get_rays(Tx, Ty, c2w: np.array) -> Tuple[np.array, np.array]:
     y = np.tan(Ty)
     z = - np.ones_like(x)
 
-    # alternative rotation (might need verification)
-    # alpha = np.arctan2(Tx, Ty)
-    # rho = np.sqrt(Tx ** 2 + Ty ** 2)
-    # x = np.sin(alpha) * np.sin(rho)
-    # y = - np.cos(alpha) * np.sin(rho)
-    # z = - np.cos(rho)
-
     directions = np.stack([x, y, z], axis=-1, dtype=np.float32)
     directions /= np.linalg.norm(directions, axis=-1, keepdims=True)
 

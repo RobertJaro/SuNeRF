@@ -1,14 +1,12 @@
 import argparse
 import os
-from datetime import datetime
 
 import numpy as np
 import pandas as pd
 from astropy import units as u
 from matplotlib import pyplot as plt
+from matplotlib.cm import ScalarMappable
 from matplotlib.colors import LogNorm, Normalize
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-from sunpy.visualization.colormaps import cm
 from tqdm import tqdm
 
 from sunerf.evaluation.loader import ThomsonSuNeRFLoader
@@ -19,6 +17,8 @@ if __name__ == '__main__':
     parser.add_argument('--sunerf_path', type=str, required=True, help='Path to SuNeRF save state')
     parser.add_argument('--out_path', type=str, help='Path to output directory', default=None)
     parser.add_argument('--radius', type=float, nargs='+', help='Radii to plot in solar radii', default=[3, 5, 8, 10])
+    parser.add_argument('--projection', type=str, choices=['lat', 'sinlat'], default='sinlat',
+                        help='Latitude projection for radius maps')
 
     args = parser.parse_args()
 
@@ -44,26 +44,61 @@ if __name__ == '__main__':
 
     times = pd.date_range(start=min_time, end=max_time, periods=n_points)
 
-    rho_norm = LogNorm()#vmin=1e-8, vmax=2e-6)
-    velocity_norm = Normalize(vmin=100, vmax=2000)
+    rho_norm = None
+    velocity_norm = LogNorm(vmin=200, vmax=1000)
 
     for i, time in tqdm(enumerate(times), total=len(times)):
-        out = sunerf_loader.load_radius(radius=radius, time=time)
+        out = sunerf_loader.load_radius(radius=radius, time=time, projection=args.projection)
 
-        rho = out["rho"][:, :, :, 0] # (r, theta, phi, time, 1)
+        rho = out["rho"][:, :, :, 0]  # (r, theta, phi, time, 1)
+        v = out["v"][:, :, :, 0, :]  # (r, theta, phi, time, 3)
+        v_abs = np.linalg.norm(v, axis=-1)
+        latitude_axis = out["latitude_axis"]
+        latitude_label = 'Latitude [deg]' if args.projection == 'lat' else r'$\sin(Latitude)$'
 
-        fig, axs = plt.subplots(len(radius), 1, figsize=(6, 3 * len(radius)))
+        if rho_norm is None:
+            rho_norm = LogNorm(vmin=rho.min(), vmax=rho.max())
 
-        for j, ax in enumerate(axs):
-            im_rho = ax.imshow(rho[j, :, :], norm=rho_norm, extent=[0, 360, -90, 90], cmap='inferno', origin='lower')
-            divider = make_axes_locatable(ax)
-            cax = divider.append_axes("right", size="5%", pad=0.1)
-            cbar = fig.colorbar(im_rho, cax=cax)
-            cbar.set_label('Density [g/cm³]')
-            ax.set_title(f'Radius = {radius[j].to_value(u.R_sun):.2f} R☉ at {time.strftime("%Y-%m-%d %H:%M:%S")}')
-            ax.set_xlabel('Longitude [deg]')
-            ax.set_ylabel('Latitude [deg]')
+        fig = plt.figure(figsize=(12, 3 * len(radius) + 0.8), layout='constrained')
+        gs = fig.add_gridspec(
+            nrows=len(radius) + 1,
+            ncols=2,
+            height_ratios=[1] * len(radius) + [0.06]
+        )
+        axs = np.empty((len(radius), 2), dtype=object)
+        for j in range(len(radius)):
+            axs[j, 0] = fig.add_subplot(gs[j, 0])
+            axs[j, 1] = fig.add_subplot(gs[j, 1])
+        cax_rho = fig.add_subplot(gs[-1, 0])
+        cax_v = fig.add_subplot(gs[-1, 1])
+
+        for j in range(len(radius)):
+            ax_rho = axs[j, 0]
+            ax_rho.imshow(
+                rho[j, :, :], norm=rho_norm,
+                extent=[0, 360, latitude_axis.min(), latitude_axis.max()], cmap='inferno', origin='lower',
+                aspect='auto'
+            )
+            ax_rho.set_title(f'Radius = {radius[j].to_value(u.R_sun):.2f} R☉ at {time.strftime("%Y-%m-%d %H:%M:%S")}')
+            ax_rho.set_xlabel('Longitude [deg]')
+            ax_rho.set_ylabel(latitude_label)
+
+            ax_v = axs[j, 1]
+            ax_v.imshow(
+                v_abs[j, :, :], norm=velocity_norm,
+                extent=[0, 360, latitude_axis.min(), latitude_axis.max()], cmap='viridis', origin='lower',
+                aspect='auto'
+            )
+            ax_v.set_title(f'|v| at {radius[j].to_value(u.R_sun):.2f} R☉')
+            ax_v.set_xlabel('Longitude [deg]')
+            ax_v.set_ylabel(latitude_label)
+
+        mappable_rho = ScalarMappable(norm=rho_norm, cmap='inferno')
+        mappable_v = ScalarMappable(norm=velocity_norm, cmap='viridis')
+        cbar_rho = fig.colorbar(mappable_rho, cax=cax_rho, orientation='horizontal')
+        cbar_rho.set_label('Density [g/cm³]')
+        cbar_v = fig.colorbar(mappable_v, cax=cax_v, orientation='horizontal')
+        cbar_v.set_label('|v| [km/s]')
 
         plt.savefig(os.path.join(args.out_path, f'slice_{i:04d}.jpg'), dpi=150)
         plt.close()
-

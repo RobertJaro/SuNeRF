@@ -300,19 +300,19 @@ class HAOThomsonDataset(GenericThomsonDataset):
 class COR2Dataset(GenericThomsonDataset):
 
     def __init__(self, **kwargs):
-        super().__init__(scaling=1.0e-6, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
+        super().__init__(scaling=1.0e-9, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
 
 
 class LASCOC2Dataset(GenericThomsonDataset):
 
     def __init__(self, **kwargs):
-        super().__init__(scaling=1.0e-6, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
+        super().__init__(scaling=1.0e-9, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
 
 
 class MetisDataset(GenericThomsonDataset):
 
     def __init__(self, **kwargs):
-        super().__init__(scaling=1.0e-6, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
+        super().__init__(scaling=1.0e-9, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
 
 
 class ReferenceCubeDataset(TensorsDataset):

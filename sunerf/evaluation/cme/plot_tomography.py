@@ -30,6 +30,7 @@ if __name__ == '__main__':
     parser.add_argument('--longitudes', type=float, nargs='+', help='Slices longitudes in degrees', default=None)
     parser.add_argument('--time_range', type=str, nargs=2, help='Time range for visualization in ISO format (e.g., 2024-09-26T00:00:00 2024-09-28T00:00:00)')
     parser.add_argument('--radius_range', type=float, nargs=2, help='Radius range for visualization in Rsun', default=[4, 15])
+    parser.add_argument('--t_points', type=int, default=30, help='Number of time points between start and end time')
 
     args = parser.parse_args()
 
@@ -54,7 +55,7 @@ if __name__ == '__main__':
     # max_time = datetime(2010, 4, 3, 0, 0)
     min_time = parse(args.time_range[0])
     max_time = parse(args.time_range[1])
-    t_points = 30
+    t_points = args.t_points
 
     min_radius = args.radius_range[0]
     max_radius = args.radius_range[1]
@@ -115,8 +116,8 @@ if __name__ == '__main__':
             ax.tick_params(axis="y", colors='lightgray')
             ax.set_theta_direction(-1)
 
-        fig.suptitle(f"Time: {time} UTC", fontsize=16)
+        fig.suptitle(f"Time: {time.strftime('%Y-%m-%d %H:%M')} UTC", fontsize=16)
 
-        img_path = os.path.join(args.out_path, f"{time.isoformat('T', timespec='seconds')}.jpg")
+        img_path = os.path.join(args.out_path, f"{time.isoformat('T', timespec='minutes')}.jpg")
         fig.savefig(img_path, dpi=150)
         plt.close('all')

@@ -961,7 +961,7 @@ class LongitudeSlicesCallback(BaseCallback):
             else np.rad2deg(sph[0, 0, :, 0, 2])
         )
 
-        density_norm = LogNorm()
+        density_norm = LogNorm(vmin=np.nanmin(rho), vmax=np.nanmax(rho))
 
         fig = plt.figure(
             figsize=(4.1 * (Nlon + 1), 3.5 * Nt),

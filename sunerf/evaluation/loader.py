@@ -351,10 +351,19 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
         v = model_out['v']
         return {'rho': rho, 'v': v, 'spherical_coords': spherical_coords}
 
-    def load_radius(self, radius, time, Ntheta=128, Nphi=256, **kwargs):
+    def load_radius(self, radius, time, Ntheta=128, Nphi=256, projection='lat', **kwargs):
+        if projection == 'lat':
+            latitude = np.linspace(-np.pi / 2, np.pi / 2, Ntheta, endpoint=False)
+            latitude_axis = np.rad2deg(latitude)
+        elif projection == 'sinlat':
+            latitude_axis = np.linspace(-1.0, 1.0, Ntheta)
+            latitude = np.arcsin(latitude_axis)
+        else:
+            raise ValueError(f"Unsupported projection '{projection}'. Use 'lat' or 'sinlat'.")
+
         coords = np.stack(np.meshgrid(
             radius.to_value(u.R_sun),
-            np.linspace(-np.pi / 2, np.pi / 2, Ntheta, endpoint=False),
+            latitude,
             np.linspace(0, 2 * np.pi, Nphi, endpoint=False),
             [1],
             indexing='ij'
@@ -379,7 +388,13 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
         model_out = self.load_coords(query_points, **kwargs)
         rho = model_out['rho']
         v = model_out['v']
-        return {'rho': rho, 'v': v, 'spherical_coords': spherical_coords}
+        return {
+            'rho': rho,
+            'v': v,
+            'spherical_coords': spherical_coords,
+            'projection': projection,
+            'latitude_axis': latitude_axis
+        }
 
     def load_coords(self, *args, **kwargs):
         output = super().load_coords(*args, **kwargs)

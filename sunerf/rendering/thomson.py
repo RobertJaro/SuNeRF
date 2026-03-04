@@ -8,7 +8,7 @@ class ThomsonScattering(nn.Module):
 
     def __init__(self, Rs_per_ds, **kwargs):
         super().__init__(**kwargs)
-        c_0 = 1.0e-3
+        c_0 = 1
         solar_radius = 1 / Rs_per_ds
         #
         self.limb_darkening_coeff = nn.Parameter(torch.tensor(0.63, dtype=torch.float32), requires_grad=False)
