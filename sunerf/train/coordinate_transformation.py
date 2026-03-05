@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 
+
 def pose_spherical(longitude, latitude, r):
     # position in world
     p = r * np.array([
@@ -9,26 +10,24 @@ def pose_spherical(longitude, latitude, r):
         np.sin(latitude)
     ], dtype=np.float32)
 
-    f = -p / (np.linalg.norm(p) + 1e-8)              # forward to origin
+    f = -p / (np.linalg.norm(p) + 1e-8)  # forward to origin
     up0 = np.array([0, 0, 1], dtype=np.float32)
-
-    # handle near-pole degeneracy (optional)
-    if abs(np.dot(f, up0)) > 0.999:
+    # Avoid degeneracy near poles where f becomes parallel to the nominal up vector.
+    if np.abs(np.dot(f, up0)) > 0.999:
         up0 = np.array([0, 1, 0], dtype=np.float32)
-
-    rvec = np.cross(up0, f)
+    # Right-handed camera frame: r x u = -f
+    rvec = np.cross(f, up0)
     rvec /= (np.linalg.norm(rvec) + 1e-8)
 
-    uvec = np.cross(f, rvec)
+    uvec = np.cross(rvec, f)
 
     # camera looks along -z_cam => +z_cam = -f
-    R = np.stack([rvec, uvec, -f], axis=1)          # columns are camera axes in world
+    R = np.stack([rvec, uvec, -f], axis=1)  # columns are camera axes in world
 
     c2w = np.eye(4, dtype=np.float32)
     c2w[:3, :3] = R
-    c2w[:3,  3] = p
+    c2w[:3, 3] = p
     return c2w
-
 
 
 def spherical_to_cartesian(v, f=np):
@@ -40,16 +39,17 @@ def spherical_to_cartesian(v, f=np):
     z = r * sin(t)
     return f.stack([x, y, z], -1)
 
+
 def cartesian_to_spherical(v, f):
     x, y, z = v[..., 0], v[..., 1], v[..., 2]
     eps = 1e-6
-    r = f.sqrt(x*x + y*y + z*z + eps*eps)
+    r = f.sqrt(x * x + y * y + z * z + eps * eps)
 
     lon = f.atan2(y, x)
 
     if f is torch:
         u = (z / r).clamp(-1.0 + 1e-6, 1.0 - 1e-6)
-        lat = torch.asin(u)   # latitude
+        lat = torch.asin(u)  # latitude
         return torch.stack([r, lat, lon], dim=-1)
     elif f is np:
         u = np.clip(z / r, -1.0 + 1e-6, 1.0 - 1e-6)
@@ -57,7 +57,6 @@ def cartesian_to_spherical(v, f):
         return np.stack([r, lat, lon], axis=-1)
     else:
         raise ValueError("Unsupported math module")
-
 
 
 def carrington_rotation_rate(f=torch):
@@ -76,6 +75,7 @@ def carrington_rotation_rate(f=torch):
     """
     omega_carrington = 2 * f.pi / (25.38 * 24 * 3600)  # rad/s
     return omega_carrington
+
 
 def differential_rotation_rate(latitude, f=torch):
     """
@@ -98,7 +98,7 @@ def differential_rotation_rate(latitude, f=torch):
     C = -1.787 * (f.pi / 180) / 86400  # rad/s
 
     sin_lat = f.sin(latitude)
-    omega = A + B * sin_lat**2 + C * sin_lat**4
+    omega = A + B * sin_lat ** 2 + C * sin_lat ** 4
     return omega  # in rad/s
 
 
@@ -114,6 +114,7 @@ def to_carrington_rotation_frame(coords, seconds_per_dt):
     cartesian_coords_shift = spherical_to_cartesian(spherical_coords_shift, torch)
     coords_shift = torch.cat([cartesian_coords_shift, time], dim=-1)
     return coords_shift
+
 
 def to_differential_rotation_frame(coords, seconds_per_dt):
     time = coords[..., 3:4]  # 3 = reference time

@@ -275,14 +275,14 @@ class ThomsonImageCallback(BaseCallback):
             else:
                 v_min = np.nanmin(target_image[..., i])
                 v_max = np.nanmax(target_image[..., i])
-            im = ax.imshow(target_image[..., i], cmap='plasma', vmin=v_min, vmax=v_max)
+            im = ax.imshow(target_image[..., i], cmap='plasma', vmin=v_min, vmax=v_max, origin='lower')
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("right", size="5%", pad=0.05)
             plt.colorbar(im, cax=cax)
             ax.set_title(f'Target')
 
             ax = axs[i, 1]
-            im = ax.imshow(model_image[..., i], cmap='plasma', vmin=v_min, vmax=v_max)
+            im = ax.imshow(model_image[..., i], cmap='plasma', vmin=v_min, vmax=v_max, origin='lower')
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("right", size="5%", pad=0.05)
             plt.colorbar(im, cax=cax)
@@ -294,14 +294,14 @@ class ThomsonImageCallback(BaseCallback):
             v_max = np.nanmax(model_ratio[..., 0])
         else:
             v_max = np.nanmax(target_ratio[..., 0])
-        im = ax.imshow(target_ratio[..., 0], cmap='plasma', vmin=0, vmax=v_max)
+        im = ax.imshow(target_ratio[..., 0], cmap='plasma', vmin=0, vmax=v_max, origin='lower')
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
         plt.colorbar(im, cax=cax)
         ax.set_title(f'Target')
 
         ax = axs[2, 1]
-        im = ax.imshow(model_ratio[..., 0], cmap='plasma', vmin=0, vmax=v_max)
+        im = ax.imshow(model_ratio[..., 0], cmap='plasma', vmin=0, vmax=v_max, origin='lower')
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
         plt.colorbar(im, cax=cax)
@@ -567,6 +567,11 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
         ax.scatter(0, 0, 0, marker='o', color='yellow')
 
         tstr = unnormalize_datetime(times[i], seconds_per_dt, ref_date).isoformat(' ')
+        obs = origins[i]
+        obs_r = np.linalg.norm(obs) + 1e-8
+        obs_lat = np.rad2deg(np.arcsin(np.clip(obs[2] / obs_r, -1.0, 1.0)))
+        obs_lon = (np.rad2deg(np.arctan2(obs[1], obs[0])) + 360.0) % 360.0
+        fig.suptitle(f"Observer lon={obs_lon:.2f} deg, lat={obs_lat:.2f} deg | Time: {tstr}", fontsize=11)
 
         # --- right: images ---
         ax = plt.subplot(1, 2 + int(has_pb), 2)
