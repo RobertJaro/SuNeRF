@@ -56,31 +56,56 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 #python -i -m sunerf.train.fit_background --file_path '/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/pB/*' --out_dir '/glade/work/rjarolim/sunerf-cme-obs/background_correction/stereo_b_pB'
 #python -i -m sunerf.train.fit_background --file_path '/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/tB/*' --out_dir '/glade/work/rjarolim/sunerf-cme-obs/background_correction/stereo_b_tB'
 
+########### Fit scaling masks ###########
+#python -m sunerf.data.coronagraph.fit_radial_profile \
+#  --input "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/*" \
+#  --output "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_a_pB_fit.npy" \
+#  --plot-output "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_a_pB_fit.png" \
+#  --degree 3
+#
+#python -m sunerf.data.coronagraph.fit_radial_profile \
+#  --input "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/tB/*" \
+#  --output "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_a_tB_fit.npy" \
+#  --plot-output "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_a_tB_fit.png" \
+#  --degree 3
+#
+#python -m sunerf.data.coronagraph.fit_radial_profile \
+#  --input "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/pB/*" \
+#  --output "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_b_pB_fit.npy" \
+#  --plot-output "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_b_pB_fit.png" \
+#  --degree 3
+#
+#python -m sunerf.data.coronagraph.fit_radial_profile \
+#  --input "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/tB/*" \
+#  --output "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_b_tB_fit.npy" \
+#  --plot-output "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_b_tB_fit.png" \
+#  --degree 3
 
 #################################################
 # Train
 #python -m sunerf.run_thomson --config "config/cme/2010_03_cor2.yaml"
-#python -m sunerf.run_thomson --config "config/cme/2010_03_cor2_correction.yaml"
-python -m sunerf.run_thomson --config "config/cme/2010_03_cor2_physics.yaml"
+python -m sunerf.run_thomson --config "config/cme/2010_03_cor2_correction.yaml"
+#python -m sunerf.run_thomson --config "config/cme/2010_03_cor2_physics.yaml"
 #python -m sunerf.run_thomson --config "config/cme/2010_03_cor2_stereo_a.yaml"
 
-
+exit
 #################################################
 # Evaluation
 
 # ref series
-python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/*" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/ref_series_stereo_a"
-python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/pB/*" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/ref_series_stereo_b"
+python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v05/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/*" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v05/ref_series_stereo_a"
+python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v05/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/pB/*" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v05/ref_series_stereo_b"
 # tomography
-python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/save_state.snf" --longitudes 0 30 60 90 120 150 180 --time_range "2010-03-19T00:00" "2010-03-20T00:00"
-python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/save_state.snf" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/tomography_cme" --longitudes 90 100 110 120 130 140 --time_range "2010-03-19T00:00" "2010-03-21T00:00"
+python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v05/save_state.snf" --longitudes 0 30 60 90 120 150 180 --time_range "2010-03-19T00:00" "2010-03-20T00:00"
+python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v05/save_state.snf" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v05/tomography_cme" --longitudes 90 100 110 120 130 140 --time_range "2010-03-19T00:00" "2010-03-21T00:00"
 # radius map
-python -m sunerf.evaluation.cme.plot_radius_map --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_v14/save_state.snf" --radius 5 8 12 15
+python -m sunerf.evaluation.cme.plot_radius_map --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v05/save_state.snf" --radius 5 8 12 15
 # video
-python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/save_state.snf"
-python -m sunerf.evaluation.cme.video_polar --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_physics_v01/save_state.snf"
+python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v05/save_state.snf"
+python -m sunerf.evaluation.cme.video_polar --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v05/save_state.snf"
 python -m sunerf.evaluation.cme.video_fixed_rotation --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/save_state.snf"
-
+# export cubes
+python -m sunerf.evaluation.cme.export_cubes --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/save_state.snf" --time_range "2010-03-19T00:00" "2010-03-21T00:00"
 
 # STEREO A only
 python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_stereo_a_v08/save_state.snf" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/*" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_stereo_a_v08/ref_series_stereo_a"

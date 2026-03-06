@@ -1,15 +1,16 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v06"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/202409_cor2_metis_v06'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v07"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/202409_cor2_metis_v07'
 
 instruments:
   - type: 'default'
     key: 'Metis'
     scaling: { type: 'log' }
-    correction: { corrections: [ 'f_corona', 'calibration' ] }
+    correction: { corrections: ['f_corona', 'pB_add', 'leakage', 'calibration'] }
   - type: 'default'
     key: 'COR2'
     scaling: { type: 'log' }
-    correction: { corrections: [ 'f_corona' ] }
+    correction: { corrections: ['f_corona', 'pB_add', 'leakage'] }
+
 
 model:
   dim: 128
@@ -24,19 +25,19 @@ data:
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/metis/pB/*"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/metis/tB/*"
       batch_size: 1024
-      debug: False
+      debug: True
     - type: 'COR'
       key: 'COR2'
       instrument_key: 'COR2'
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/pB/*"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/tB/*"
       batch_size: 1024
-      debug: False
-#    - type: 'random'
-#      name: 'continuity'
-#      radius_range: [ 1.5, 17.0 ]
-#      unit: 'solRad'
-#      batch_size: 4096
+      debug: True
+    - type: 'random'
+      name: 'continuity'
+      radius_range: [ 1.5, 17.0 ]
+      unit: 'solRad'
+      batch_size: 4096
   valid_datasets:
     - type: 'COR'
       key: 'COR2'
@@ -93,9 +94,10 @@ sampling:
 lambda:
   image: 1.0
   ratio: 10.0
-#  radial: 1.0e-4
-#  continuity: 1.0e-4
-#  velocity: 1.0e-4
+  radial: 1.0e-4
+  continuity: 1.0e-4
+  velocity: 1.0e-4
 
-training:
-  log_every_n_steps: 10000
+
+#training:
+#  log_every_n_steps: 10000

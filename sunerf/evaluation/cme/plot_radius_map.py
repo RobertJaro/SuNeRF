@@ -45,7 +45,7 @@ if __name__ == '__main__':
     times = pd.date_range(start=min_time, end=max_time, periods=n_points)
 
     rho_norm = None
-    velocity_norm = LogNorm(vmin=200, vmax=1000)
+    velocity_norm = LogNorm(vmin=100, vmax=500)
 
     for i, time in tqdm(enumerate(times), total=len(times)):
         out = sunerf_loader.load_radius(radius=radius, time=time, projection=args.projection)

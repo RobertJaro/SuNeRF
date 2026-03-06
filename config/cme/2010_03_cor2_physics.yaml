@@ -1,14 +1,14 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_physics_v01"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2010_03_cor2_physics_v01'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_physics_v04"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2010_03_cor2_physics_v04'
 
 instruments:
   - type: 'default'
     key: 'STEREO_A_COR2'
-    scaling: {type: 'log'}
+    scaling: {type: 'asinh', a: 1.0e-4}
     correction: { corrections: ['f_corona', 'pB_add', 'leakage'] }
   - type: 'default'
     key: 'STEREO_B_COR2'
-    scaling: { type: 'log' }
+    scaling: {type: 'asinh', a: 1.0e-4}
     correction: { corrections: ['f_corona', 'pB_add', 'leakage'] }
     calibration: True
 
@@ -25,16 +25,18 @@ data:
       instrument_key: 'STEREO_A_COR2'
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/*"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/tB/*"
+#      scaling_mask_config: { type: log_polyfit, tB_coeffs_file: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_a_tB_fit.npy", pB_coeffs_file: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_a_pB_fit.npy" }
       batch_size: 1024
-      debug: False
+      debug: True
       #correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2_tB_correction.npy", pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2_pB_correction.npy" }
     - type: 'COR'
       key: 'STEREO_B_COR2'
       instrument_key: 'STEREO_B_COR2'
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/pB/*"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/tB/*"
+#      scaling_mask_config: { type: log_polyfit, tB_coeffs_file: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_b_tB_fit.npy", pB_coeffs_file: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_b_pB_fit.npy" }
       batch_size: 1024
-      debug: False
+      debug: True
       #correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2_tB_correction.npy", pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2_pB_correction.npy" }
     - type: 'random'
       name: 'continuity'
@@ -48,6 +50,7 @@ data:
       instrument_key: 'STEREO_A_COR2'
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/20100319_200815_1P4c2A.fts"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/tB/20100319_200815_1B4c2A.fts"
+#      scaling_mask_config: { type: log_polyfit, tB_coeffs_file: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_a_tB_fit.npy", pB_coeffs_file: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_a_pB_fit.npy" }
       #correction_config: {type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2_tB_correction.npy", pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2_pB_correction.npy" }
 
     - type: 'COR'
@@ -55,6 +58,7 @@ data:
       instrument_key: 'STEREO_B_COR2'
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/pB/20100319_200815_1P4c2B.fts"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/tB/20100319_200815_1B4c2B.fts"
+#      scaling_mask_config: { type: log_polyfit, tB_coeffs_file: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_b_tB_fit.npy", pB_coeffs_file: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_b_pB_fit.npy" }
       #correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2_tB_correction.npy", pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2_pB_correction.npy" }
 
 
@@ -123,5 +127,5 @@ lambda:
   velocity: 1.0e-4
 
 
-training:
-  log_every_n_steps: 10000
+#training:
+#  log_every_n_steps: 10000

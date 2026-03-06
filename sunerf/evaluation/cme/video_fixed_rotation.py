@@ -20,7 +20,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Visualize CME')
     parser.add_argument('--sunerf_path', type=str, required=True, help='Path to SuNeRF save state')
     parser.add_argument('--out_path', type=str, help='Path to output directory', default=None)
-    parser.add_argument('--occ_range', type=float, nargs='+', help='Occulting range in solar radii', default=[2.5, 15.0])
+    parser.add_argument('--occ_range', type=float, nargs=2, help='Occulting range in solar radii', default=[2.5, 15.0])
+    parser.add_argument('--latitude', type=float, default=0.0, help='Observer latitude in degrees')
+    parser.add_argument('--longitude', type=float, default=-90.0, help='Observer longitude in degrees')
+    parser.add_argument('--n_points', type=int, default=50, help='Number of observer points across the time range')
+    parser.add_argument('--resolution', type=int, default=256, help='Square output resolution in pixels')
     args = parser.parse_args()
 
     # set default path
@@ -39,20 +43,18 @@ if __name__ == '__main__':
 
     min_time = min(observer_times)
     max_time = max(observer_times)
-    mid_time = min_time + (max_time - min_time) / 2
 
     # time = datetime(2024, 9, 16, 15, 8)
-    lon = -90 * u.deg
-    lat = 0 * u.deg
-    distance = 1.4373074e+11 * u.m
-
+    base_lon = args.longitude * u.deg
+    base_lat = args.latitude * u.deg
     occ_min = args.occ_range[0] * u.R_sun
     occ_max = args.occ_range[1] * u.R_sun
+    resolution = (args.resolution, args.resolution) * u.pix
 
-    n_points = 50
+    n_points = args.n_points
     points_1 = zip(np.ones(n_points) * u.AU,
-                   np.ones(n_points) * lat,
-                   np.ones(n_points) * lon,
+                   np.ones(n_points) * base_lat,
+                   np.ones(n_points) * base_lon,
                    pd.date_range(start=min_time, end=max_time, periods=n_points))
     points = list(points_1)
 
@@ -63,8 +65,7 @@ if __name__ == '__main__':
         obs_coord = SkyCoord(radius=d, lat=lat, lon=lon, frame=frames.HeliographicCarrington, obstime=time, observer='self')
         lon = obs_coord.transform_to(frames.HeliocentricInertial).lon
         model_out = sunerf_loader.load_image(lat, lon, time,
-                                             distance=d, resolution=(256, 256) * u.pix,
-                                             scale=[30000 / 256, 30000 / 256] * u.arcsec / u.pix,
+                                             distance=d, resolution=resolution,
                                              occ_min=occ_min, occ_max=occ_max,
                                              progress=False)
 

@@ -53,22 +53,24 @@ class BaseSuNeRFModule(LightningModule):
         if not outputs_list or len(outputs_list) == 0:
             return
 
-        rank = dist.get_rank()
-        world = dist.get_world_size()
-        if rank == 0:
-            obj_gather_list = [None] * world
-            dist.gather_object(self.validation_batches, obj_gather_list, dst=0)
-            # Merge dicts from all ranks
-            merged_outputs = {}
-            for rank_dict in obj_gather_list:
-                for dataloader_idx, batch_list in rank_dict.items():
-                    if dataloader_idx not in merged_outputs:
-                        merged_outputs[dataloader_idx] = []
-                    merged_outputs[dataloader_idx].extend(batch_list)
-            outputs_list = merged_outputs
-        else:
-            dist.gather_object(self.validation_batches, None, dst=0)
-            return
+        is_distributed = dist.is_available() and dist.is_initialized()
+        if is_distributed:
+            rank = dist.get_rank()
+            world = dist.get_world_size()
+            if rank == 0:
+                obj_gather_list = [None] * world
+                dist.gather_object(self.validation_batches, obj_gather_list, dst=0)
+                # Merge dicts from all ranks
+                merged_outputs = {}
+                for rank_dict in obj_gather_list:
+                    for dataloader_idx, batch_list in rank_dict.items():
+                        if dataloader_idx not in merged_outputs:
+                            merged_outputs[dataloader_idx] = []
+                        merged_outputs[dataloader_idx].extend(batch_list)
+                outputs_list = merged_outputs
+            else:
+                dist.gather_object(self.validation_batches, None, dst=0)
+                return
 
         for dataloader_idx, outputs in outputs_list.items():
             # ---- reorder the list itself ----
@@ -93,5 +95,4 @@ class BaseSuNeRFModule(LightningModule):
         state_dict = checkpoint['state_dict']
         self.load_state_dict(state_dict, strict=False)
         self.validation_outputs = {}  # reset validation outputs
-
 

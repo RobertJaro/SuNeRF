@@ -125,10 +125,12 @@ class MapDataLoader:
             img_coords = get_azimuthal_equidistant_coordinates(s_map)
             x = img_coords[..., 0]
             y = img_coords[..., 1]
+            projected_radius = np.sqrt(x ** 2 + y ** 2) / s_map.rsun_obs.to_value(u.arcsec)
         else:
             coords = all_coordinates_from_map(s_map).transform_to(frames.Helioprojective)
             x = coords.Tx
             y = coords.Ty
+            projected_radius = (np.sqrt(x ** 2 + y ** 2) / s_map.rsun_obs).to_value(1)
 
         all_rays = np.stack(get_rays(x, y, pose), -2)
 
@@ -136,13 +138,20 @@ class MapDataLoader:
         hpc_coords = np.stack([x.to_value(u.arcsec), y.to_value(u.arcsec), distance], -1)
 
         if self.max_radius is not None:
-            radius = np.sqrt(x ** 2 + y ** 2) / s_map.rsun_obs.to(u.arcsec) * u.Rsun
-            mask = radius > (self.max_radius * u.Rsun)
+            mask = projected_radius > self.max_radius
             # apply mask
             all_rays[mask] = np.nan
             image[mask] = np.nan
 
-        return {'image': image, 'pose': pose, 'rays': all_rays, 'time': time, 'observer': observer, 'hpc_coords': hpc_coords}
+        return {
+            'image': image,
+            'pose': pose,
+            'rays': all_rays,
+            'time': time,
+            'observer': observer,
+            'hpc_coords': hpc_coords,
+            'projected_radius': projected_radius.astype(np.float32),
+        }
 
 
 class BatchesDataset(Dataset):

@@ -97,21 +97,21 @@ class TestImageCallback(BaseCallback):
         # reshape
         outputs = {k: v.view(*self.image_shape, *v.shape[1:]).cpu().numpy() for k, v in outputs.items()}
 
-        fine_image = self.normalize(outputs['fine_image'])
+        prediction_image = self.normalize(outputs['fine_image'])
         target_image = self.normalize(outputs['target_image'])
         coarse_image = self.normalize(outputs['coarse_image'])
 
-        self.plot_samples(fine_image, coarse_image, outputs['height_map'], outputs['absorption_map'],
+        self.plot_samples(prediction_image, coarse_image, outputs['height_map'], outputs['absorption_map'],
                           target_image, outputs['z_vals_stratified'], outputs['z_vals_hierarchical'],
                           outputs['distance'].mean(), self.cmap)
 
-        val_loss = ((fine_image - target_image) ** 2).mean()
-        val_ssim = structural_similarity(target_image[..., 0], fine_image[..., 0], data_range=1)
+        val_loss = ((prediction_image - target_image) ** 2).mean()
+        val_ssim = structural_similarity(target_image[..., 0], prediction_image[..., 0], data_range=1)
         val_psnr = -10. * np.log10(val_loss)
 
         wandb.log({'validation.loss': val_loss, 'validation.ssim': val_ssim, 'validation.psnr': val_psnr})
 
-    def plot_samples(self, fine_image, coarse_image, height_map, absorption_map, target_image, z_vals_stratified,
+    def plot_samples(self, prediction_image, coarse_image, height_map, absorption_map, target_image, z_vals_stratified,
                      z_vals_hierach, distance, cmap):
         # Log example images on wandb
         # # Plot example outputs
@@ -119,9 +119,9 @@ class TestImageCallback(BaseCallback):
         fig, ax = plt.subplots(1, 6, figsize=(30, 4))
 
         ax[0].imshow(target_image[..., 0], cmap=cmap, norm=sdo_img_norm)
-        ax[0].set_title(f'Target')
-        ax[1].imshow(fine_image[..., 0], cmap=cmap, norm=sdo_img_norm)
-        ax[1].set_title(f'Fine')
+        ax[0].set_title(f'Ground Truth')
+        ax[1].imshow(prediction_image[..., 0], cmap=cmap, norm=sdo_img_norm)
+        ax[1].set_title(f'Prediction')
         ax[2].imshow(coarse_image[..., 0], cmap=cmap, norm=sdo_img_norm)
         ax[2].set_title(f'Coarse')
         ax[3].imshow(height_map, cmap='plasma', vmin=1, vmax=1.3)
@@ -170,7 +170,7 @@ class PlasmaImageCallback(BaseCallback):
             divider = make_axes_locatable(col[0])
             cax = divider.append_axes("right", size="5%", pad=0.05)
             plt.colorbar(im, cax=cax)
-            col[0].set_title(f'Target')
+            col[0].set_title(f'Ground Truth')
 
             im = col[1].imshow(pred_image[..., i], cmap=cmap, vmin=0, vmax=v_max)
             divider = make_axes_locatable(col[1])
@@ -279,14 +279,14 @@ class ThomsonImageCallback(BaseCallback):
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("right", size="5%", pad=0.05)
             plt.colorbar(im, cax=cax)
-            ax.set_title(f'Target')
+            ax.set_title(f'Ground Truth')
 
             ax = axs[i, 1]
             im = ax.imshow(model_image[..., i], cmap='plasma', vmin=v_min, vmax=v_max, origin='lower')
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("right", size="5%", pad=0.05)
             plt.colorbar(im, cax=cax)
-            ax.set_title(f'Fine')
+            ax.set_title(f'Prediction')
 
         # ratio images
         ax = axs[2, 0]
@@ -298,14 +298,14 @@ class ThomsonImageCallback(BaseCallback):
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
         plt.colorbar(im, cax=cax)
-        ax.set_title(f'Target')
+        ax.set_title(f'Ground Truth')
 
         ax = axs[2, 1]
         im = ax.imshow(model_ratio[..., 0], cmap='plasma', vmin=0, vmax=v_max, origin='lower')
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
         plt.colorbar(im, cax=cax)
-        ax.set_title(f'Model')
+        ax.set_title(f'Prediction')
 
         [ax.set_xticks([]) for ax in axs.flatten()]
         [ax.set_yticks([]) for ax in axs.flatten()]
@@ -603,7 +603,7 @@ def plot_ray_sampling(
         ax.plot(z_hierarch, y_hierarch, 'r-o', markersize=4)
     ax.set_ylim([-1, 2])
     # ax.set_xlim([-1.3, 1.3])
-    ax.set_title('Stratified  Samples (blue) and Hierarchical Samples (red)')
+    ax.set_title('Ray Samples: Stratified (blue), Hierarchical (red)')
     ax.axes.yaxis.set_visible(False)
     ax.grid(True)
 
@@ -1039,6 +1039,73 @@ class LongitudeSlicesCallback(BaseCallback):
 
         wandb.log({f"longitude_slices.rho.{self.name}": wandb.Image(fig)})
         plt.close(fig)
+
+        if "v_pred" not in out:
+            print('no velocity predictions found, skipping velocity plots')
+            return
+
+        v = out["v_pred"].detach().cpu().numpy().reshape(Nr, Nlat, Nlon, Nt, 3)
+        vmag = np.linalg.norm(v, axis=-1)
+        vmag = np.clip(vmag, 1e-30, None)
+        vmag_norm = LogNorm(vmin=np.nanmin(vmag), vmax=np.nanmax(vmag))
+
+        fig_v = plt.figure(
+            figsize=(4.1 * (Nlon + 1), 3.5 * Nt),
+            constrained_layout=True,
+            dpi=180,
+        )
+
+        axd_v = fig_v.subplot_mosaic(
+            layout,
+            per_subplot_kw=per_subplot_kw,
+            width_ratios=[1.0] * Nlon + [0.06],
+        )
+
+        for it in range(Nt):
+            mappable_row_v = None
+
+            for j in range(Nlon):
+                ax = axd_v[f"rho_t{it}_j{j}"]
+
+                img_v = vmag[:, :, j, it]
+                r = sph[:, :, j, it, 0]
+                lat = sph[:, :, j, it, 1]
+
+                mappable_row_v = ax.pcolormesh(
+                    lat, r, img_v,
+                    shading="auto",
+                    norm=vmag_norm,
+                    cmap="cividis",
+                )
+
+                if it == 0:
+                    ax.set_title(f"{float(longitudes_deg[j]):.1f}°", pad=10)
+
+                if j == 0:
+                    ax.text(
+                        -0.15, 0.5, f"t#{it}",
+                        transform=ax.transAxes,
+                        rotation=90,
+                        va="center",
+                        ha="right",
+                    )
+
+                ax.set_theta_zero_location("W")
+                ax.set_theta_direction(-1)
+                ax.set_xlabel("Latitude (rad)")
+                ax.set_ylabel(r"Radius (R$_\odot$)")
+                ax.set_rlim((0, None))
+
+            cax = axd_v[f"cbar_t{it}"]
+            fig_v.colorbar(
+                mappable_row_v,
+                cax=cax,
+                orientation="vertical",
+                label="|v|",
+            )
+
+        wandb.log({f"longitude_slices.vmag.{self.name}": wandb.Image(fig_v)})
+        plt.close(fig_v)
 
 
 class LongitudeTimeVelocityMagCallback(BaseCallback):

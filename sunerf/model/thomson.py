@@ -144,6 +144,14 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         drop_off_distance = (1 * u.AU).to_value(u.R_sun) / Rs_per_ds
         self.drop_off_distance = nn.Parameter(torch.tensor(drop_off_distance, dtype=torch.float32), requires_grad=False)
 
+    @staticmethod
+    def _normalize_with_scaling_mask(image: torch.Tensor, batch: dict) -> torch.Tensor:
+        scaling_mask = batch.get('scaling_mask', None)
+        if scaling_mask is None:
+            return image
+        # no clamping here, as scaling mask should already be properly regularized
+        return image / scaling_mask
+
     def training_step(self, batch, batch_nb):
         dataset_batch = {k: v for k, v in batch.items() if k != 'random'}
 
@@ -207,6 +215,8 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
             # scale images
             image_scaling = self.scaling_modules[instrument_key]
+            model_image = self._normalize_with_scaling_mask(model_image, dataset_batch[k])
+            target_image = self._normalize_with_scaling_mask(target_image, dataset_batch[k])
             scaled_model_image = image_scaling(model_image)
             scaled_target_image = image_scaling(target_image)
 
@@ -474,6 +484,8 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
         # scale images consistently
         image_scaling = self.scaling_modules[instrument_key]
+        image = self._normalize_with_scaling_mask(image, batch)
+        model_image = self._normalize_with_scaling_mask(model_image, batch)
         target_image = image_scaling(image)
         model_image = image_scaling(model_image)
 

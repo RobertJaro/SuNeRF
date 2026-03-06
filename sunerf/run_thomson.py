@@ -241,7 +241,7 @@ if __name__ == '__main__':
                       devices=N_GPUS,
                       accelerator='gpu' if N_GPUS >= 1 else None,
                       strategy=DDPStrategy(find_unused_parameters=False) if n_gpus > 1 else 'auto',
-                      num_sanity_val_steps=-1,  # validate all points to check the first image
+                      num_sanity_val_steps=0,  # validate all points to check the first image
                       val_check_interval=log_every_n_steps,
                       check_val_every_n_epoch=check_val_every_n_epoch,
                       gradient_clip_val=0.5,

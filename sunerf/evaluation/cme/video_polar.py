@@ -43,8 +43,7 @@ if __name__ == '__main__':
 
     # time = datetime(2024, 9, 16, 15, 8)
     lon = 0 * u.deg
-    lat = -90 * u.deg
-    distance = 1.4373074e+11 * u.m
+    lat = 90 * u.deg
 
     occ_min = args.occ_range[0] * u.R_sun
     occ_max = args.occ_range[1] * u.R_sun
@@ -64,7 +63,6 @@ if __name__ == '__main__':
         lon = obs_coord.transform_to(frames.HeliocentricInertial).lon
         model_out = sunerf_loader.load_image(lat, lon, time,
                                              distance=d, resolution=(256, 256) * u.pix,
-                                             scale=[30000 / 256, 30000 / 256] * u.arcsec / u.pix,
                                              occ_min=occ_min, occ_max=occ_max,
                                              progress=False)
 

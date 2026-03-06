@@ -13,8 +13,10 @@ def pose_spherical(longitude, latitude, r):
     f = -p / (np.linalg.norm(p) + 1e-8)  # forward to origin
     up0 = np.array([0, 0, 1], dtype=np.float32)
     # Avoid degeneracy near poles where f becomes parallel to the nominal up vector.
+
     if np.abs(np.dot(f, up0)) > 0.999:
         up0 = np.array([0, 1, 0], dtype=np.float32)
+
     # Right-handed camera frame: r x u = -f
     rvec = np.cross(f, up0)
     rvec /= (np.linalg.norm(rvec) + 1e-8)

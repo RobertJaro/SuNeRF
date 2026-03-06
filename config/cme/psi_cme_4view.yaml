@@ -1,0 +1,146 @@
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/psi_cme_4view_v01"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/psi_cme_4view_v01'
+
+instruments:
+  - type: 'default'
+    key: 'L1'
+    scaling: {type: 'asinh', a: 1.0e-4}
+  - type: 'default'
+    key: 'L4'
+    scaling: {type: 'asinh', a: 1.0e-4}
+  - type: 'default'
+    key: 'L5'
+    scaling: {type: 'asinh', a: 1.0e-4}
+  - type: 'default'
+    key: 'P1'
+    scaling: {type: 'asinh', a: 1.0e-4}
+  - type: 'default'
+    key: 'R2'
+    scaling: {type: 'asinh', a: 1.0e-4}
+
+model:
+  dim: 128
+  static: False
+  encoding_config: { type: multi_spectral, weights: [ 30, 30, 30, 1.0 ], num_dims: [32, 32, 32, 4] } #{ type: multi_spectral, weights: [ 10, 10, 10, 1.0e-3 ], num_dims: [32, 32, 32, 4] }
+  use_carrington_projection: True
+
+data:
+  train_datasets:
+    - type: 'psi_cme'
+      key: 'L1'
+      instrument_key: 'L1'
+      data_path_pB: "/glade/work/rjarolim/data/psi_cme_prep/L1/pb/*"
+      data_path_tB: "/glade/work/rjarolim/data/psi_cme_prep/L1/tb/*"
+      batch_size: 1024
+      debug: True
+    - type: 'psi_cme'
+      key: 'L4'
+      instrument_key: 'L4'
+      data_path_pB: "/glade/work/rjarolim/data/psi_cme_prep/L4/pb/*"
+      data_path_tB: "/glade/work/rjarolim/data/psi_cme_prep/L4/tb/*"
+      batch_size: 1024
+      debug: True
+    - type: 'psi_cme'
+      key: 'L5'
+      instrument_key: 'L5'
+      data_path_pB: "/glade/work/rjarolim/data/psi_cme_prep/L5/pb/*"
+      data_path_tB: "/glade/work/rjarolim/data/psi_cme_prep/L5/tb/*"
+      batch_size: 1024
+      debug: True
+    - type: 'psi_cme'
+      key: 'P1'
+      instrument_key: 'P1'
+      data_path_pB: "/glade/work/rjarolim/data/psi_cme_prep/P1/pb/*"
+      data_path_tB: "/glade/work/rjarolim/data/psi_cme_prep/P1/tb/*"
+      batch_size: 1024
+      debug: True
+    - type: 'random'
+      name: 'continuity'
+      radius_range: [ 2.0, 30.0 ]
+      unit: 'solRad'
+      batch_size: 4096
+  valid_datasets:
+    # 1) Standard instrument validation (renders images)
+    - type: 'psi_cme'
+      key: 'L1'
+      instrument_key: 'L1'
+      data_path_pB: "/glade/work/rjarolim/data/psi_cme_prep/L1/pb/L1_pb050.fts"
+      data_path_tB: "/glade/work/rjarolim/data/psi_cme_prep/L1/tb/L1_tb050.fts"
+
+    - type: 'psi_cme'
+      key: 'L4'
+      instrument_key: 'L4'
+      data_path_pB: "/glade/work/rjarolim/data/psi_cme_prep/L4/pb/L4_pb050.fts"
+      data_path_tB: "/glade/work/rjarolim/data/psi_cme_prep/L4/tb/L4_tb050.fts"
+
+    - type: 'psi_cme'
+      key: 'L5'
+      instrument_key: 'L5'
+      data_path_pB: "/glade/work/rjarolim/data/psi_cme_prep/L5/pb/L5_pb050.fts"
+      data_path_tB: "/glade/work/rjarolim/data/psi_cme_prep/L5/tb/L5_tb050.fts"
+
+    - type: 'psi_cme'
+      key: 'P1'
+      instrument_key: 'P1'
+      data_path_pB: "/glade/work/rjarolim/data/psi_cme_prep/P1/pb/P1_pb050.fts"
+      data_path_tB: "/glade/work/rjarolim/data/psi_cme_prep/P1/tb/P1_tb050.fts"
+
+    - type: 'psi_cme'
+      key: 'R2'
+      instrument_key: 'R2'
+      data_path_pB: "/glade/work/rjarolim/data/psi_cme_prep/R2/pb/R2_pb050.fts"
+      data_path_tB: "/glade/work/rjarolim/data/psi_cme_prep/R2/tb/R2_tb050.fts"
+
+    - key: valid_radial
+      type: radial_slices
+      radii: [5, 10, 15, 20, 25]
+    - type: longitude_slices
+      key: valid_lon_slices
+      radius_range: [ 2.0, 30.0 ]
+
+  Rs_per_ds: 15
+  seconds_per_dt: 86400
+  batch_size: 4096
+  validation_batch_size: 4096
+  num_workers: 16
+
+callbacks:
+  # image callbacks
+  - type: 'thomson_image'
+    ds_key: 'L1'
+  - type: 'thomson_image'
+    ds_key: 'L4'
+  - type: 'thomson_image'
+    ds_key: 'L5'
+  - type: 'thomson_image'
+    ds_key: 'P1'
+  - type: 'thomson_image'
+    ds_key: 'R2'
+
+  - type: radial_slices
+    ds_key: valid_radial
+
+  - type: longitude_density
+    ds_key: valid_lon_slices
+
+
+logging:
+  entity: "robert_jarolim"
+  project: "sunerf-cme-obs"
+  name: "PSI CME 4-view"
+
+sampling:
+  type: "spherical"
+  n_samples: 64
+  max_distance: 35
+
+lambda:
+  image: 1.0
+  ratio: 10.0
+  radial:  1.0e-4
+  continuity: 1.0e-4
+  velocity: 1.0e-4
+
+
+#training:
+#  log_every_n_steps: 10000

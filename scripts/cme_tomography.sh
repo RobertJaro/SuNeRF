@@ -4,6 +4,7 @@
 #PBS -A P22100000
 #PBS -q main
 #PBS -l select=1:ncpus=32:ngpus=4:mem=32gb
+#PBS -l job_priority=economy
 #PBS -l walltime=12:00:00
 
 module load conda/latest

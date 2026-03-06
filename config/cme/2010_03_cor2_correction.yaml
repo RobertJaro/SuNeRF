@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v05"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v05'
 
 instruments:
   - type: 'default'
@@ -116,9 +116,9 @@ sampling:
 lambda:
   image: 1.0
   ratio: 10.0
-  radial: 0 #1.0e-2
-  continuity: 0 #1.0e-2
-  velocity: 0 #1.0e-2
+  radial: 1.0e-4
+  continuity: 1.0e-6
+  velocity: 1.0e-4
 
 
 training:

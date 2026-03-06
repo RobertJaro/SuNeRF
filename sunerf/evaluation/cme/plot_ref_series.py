@@ -10,6 +10,7 @@ from matplotlib.colors import LogNorm, Normalize
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from sunpy.coordinates import frames
 from sunpy.map import Map, all_coordinates_from_map
+from sunpy.visualization.colormaps import cm
 from tqdm import tqdm
 
 from sunerf.evaluation.loader import ThomsonSuNeRFLoader
@@ -121,7 +122,7 @@ if __name__ == '__main__':
 
         # --- Image 1 (tB_map projection) ---
         ax = axd["im0"]
-        im = ax.imshow(ref_map.data, cmap="plasma", norm=brightness_norm, origin='lower')
+        im = ax.imshow(ref_map.data, cmap=cm.soholasco2, norm=brightness_norm, origin='lower')
         cax = make_axes_locatable(ax).append_axes("right", size="5%", pad=0.05, axes_class=plt.Axes)
         fig.colorbar(im, cax=cax, label="pB (MSB)")
         ax.set_title("Polarized Brightness (Reference)")
@@ -132,7 +133,7 @@ if __name__ == '__main__':
 
         # --- Image 2 (tB_map projection) ---
         ax = axd["im1"]
-        im = ax.imshow(pB_map.data, cmap="plasma", norm=brightness_norm, origin='lower')
+        im = ax.imshow(pB_map.data, cmap=cm.soholasco2, norm=brightness_norm, origin='lower')
         cax = make_axes_locatable(ax).append_axes("right", size="5%", pad=0.05, axes_class=plt.Axes)
         fig.colorbar(im, cax=cax, label="pB (MSB)")
         ax.set_title("Polarized Brightness")
@@ -143,28 +144,26 @@ if __name__ == '__main__':
 
         # --- Polar plot - latitude ---
         ax = axd["lat"]
-        pc = ax.pcolormesh(phi_lat, r_lat, rho_lat, shading="auto", norm=density_norm, cmap="inferno")
+        pc = ax.pcolormesh(phi_lat, r_lat, rho_lat, shading="auto", norm=density_norm, cmap="plasma")
         cb = fig.colorbar(pc, ax=ax, pad=0.05, shrink=0.8, label=r"Density (cm$^{-3}$)")
         ax.set_title(f"Density Slice at {target_latitude.to_value(u.deg):.1f}° Latitude")
         ax.set_xlabel("Longitude (rad)")
         ax.set_ylabel(r"Radius (R$_\odot$)")
         ax.plot([obs_lon.to_value(u.rad), obs_lon.to_value(u.rad)], [min_radius, max_radius],
                 color="cyan", linestyle="--", linewidth=1)
-        ax.set_theta_zero_location("S")
         ax.tick_params(axis="y", colors='lightgray')
 
         # --- Polar plot - longitude ---
         ax = axd["lon"]
-        pc = ax.pcolormesh(theta_lon, r_lon, rho_lon, shading="auto", norm=density_norm, cmap="inferno")
+        pc = ax.pcolormesh(theta_lon, r_lon, rho_lon, shading="auto", norm=density_norm, cmap="plasma")
         cb = fig.colorbar(pc, ax=ax, pad=0.05, shrink=0.8, label=r"Density (cm$^{-3}$)")
         ax.set_title(f"Density Slice at {target_longitude.to_value(u.deg):.1f}° Longitude")
         ax.set_xlabel("Latitude (rad)")
         ax.set_ylabel(r"Radius (R$_\odot$)")
         ax.plot([obs_lat.to_value(u.rad), obs_lat.to_value(u.rad)], [min_radius, max_radius],
                 color="cyan", linestyle="--", linewidth=1)
-        ax.set_theta_zero_location("W")
         ax.tick_params(axis="y", colors='lightgray')
-        ax.set_theta_direction(-1)
+
 
         fig.suptitle(f"Time: {time} UTC", fontsize=16)
 

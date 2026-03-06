@@ -236,8 +236,8 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
         self.rho_scaling = 57.80811838603689  # from calibration
         self.msb = 4.67E+20  # from metis calibration, ph/cm2/s/sr
         self.sigma_ne = 7.95e-26  # cm2 cm2/sr
-        self.c0 = 1.0e-3  # TODO: load from state
-        self.msb_norm = 1e-6
+        self.c0 = 1.0  # TODO: load from state
+        self.msb_norm = 1e-9 # TODO: load from state
 
     def convert_rho(self, model_rho):
         # convert to electron density in cm^-3
@@ -249,9 +249,15 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
                    time: datetime,
                    distance=(1 * u.AU).to(u.solRad),
                    hpc_lat: u = 0 * u.arcsec, hpc_lon: u = 0 * u.arcsec,
-                   resolution=(256, 256) * u.pix, scale=[2400 / 256, 2400 / 256] * u.arcsec / u.pix,
+                   resolution=(256, 256) * u.pix, scale=None,
                    occ_min=None, occ_max=None,
                    instrument_key=None, **kwargs):
+        if scale is None:
+            if occ_max is not None:
+                scale = _get_scale_from_occ_max(occ_max, distance, resolution)
+            else:
+                scale = [2400 / 256, 2400 / 256] * u.arcsec / u.pix
+
         obs = SkyCoord(lat=lat, lon=lon, distance=distance, frame=frames.HeliocentricInertial, obstime=time)
         reference_coord = SkyCoord(hpc_lat, hpc_lon, obstime=time, observer=obs,
                                    frame=frames.Helioprojective)
@@ -405,7 +411,8 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
 
         return output
 
-    def load_cube(self, radius_range, time, pixel_per_Rs, **kwargs):
+    def load_cube(self, radius_range: u.solRad, time, pixel_per_Rs, **kwargs):
+        radius_range = radius_range.to_value(u.R_sun)
         max_radius = radius_range[1]
         #
         cartesian_coords = np.stack(np.meshgrid(
@@ -478,6 +485,19 @@ class PlasmaSuNeRFLoader(SuNeRFLoader):
         state = torch.load(state_path)
         self.log_T_range = state['log_T_range']
         super().__init__(state_path, *args, **kwargs)
+
+
+def _get_scale_from_occ_max(occ_max, distance, resolution):
+    occ_max = u.Quantity(occ_max).to(u.R_sun)
+    distance = u.Quantity(distance).to(u.R_sun)
+    nx = int(resolution[0].to_value(u.pix))
+    ny = int(resolution[1].to_value(u.pix))
+
+    # Solar angular half-diameter at observer distance.
+    rsun_obs = np.arcsin((1 * u.R_sun) / distance).to(u.arcsec)
+    full_fov = 2 * occ_max.to_value(u.R_sun) * rsun_obs
+
+    return [full_fov / nx, full_fov / ny] * u.arcsec / u.pix
 
 
 def _get_mask(s_map, occ_min, occ_max):
