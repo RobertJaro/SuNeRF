@@ -335,38 +335,6 @@ class ThomsonImageCallback(BaseCallback):
                    f'validation.ssim.{self.ds_key}': val_ssim,
                    f'validation.psnr.{self.ds_key}': val_psnr})
 
-    def plot_integrated_quantities(self, density, distance, z_vals_stratified,
-                                   z_vals_hierach, distance_from_sun, distance_from_obs):
-        fig, axs = plt.subplots(1, 5, figsize=(24, 4))
-
-        ax = axs[0]
-        im = ax.imshow(density, cmap='inferno', norm='log')
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
-        ax.set_title(f'mean log(T)')
-
-        ax = axs[1]
-        im = ax.imshow(distance_from_sun, cmap='viridis')
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
-        ax.set_title(f'Total $n_e$')
-
-        ax = axs[2]
-        im = ax.imshow(distance_from_obs, cmap='viridis')
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
-        ax.set_title(f'Mean Absorption')
-
-        # select index
-        y, x = z_vals_stratified.shape[0] // 4, z_vals_stratified.shape[1] // 4  # select point in first quadrant
-        plot_ray_sampling(z_vals_stratified[y, x] - distance, z_vals_hierach[y, x] - distance, axs[-1])
-
-        fig.tight_layout()
-        wandb.log({f'integrated_quantities.{self.ds_key}': fig})
-        plt.close('all')
 
 class CorrectionImageCallback(BaseCallback):
 
@@ -379,6 +347,8 @@ class CorrectionImageCallback(BaseCallback):
             "correction.transmission",
             "correction.tB_add",
             "correction.pB_add",
+            "correction.tB_straylight",
+            "correction.pB_straylight",
             "correction.tB_mul",
             "correction.pB_mul",
             "correction.img",
@@ -390,8 +360,10 @@ class CorrectionImageCallback(BaseCallback):
         self.title_map = {
             "correction.f_corona": "F-Corona",
             "correction.transmission": "Transmission",
-            "correction.tB_add": "tB Additive",
-            "correction.pB_add": "pB Additive",
+            "correction.tB_add": "tB Additive (Signed)",
+            "correction.pB_add": "pB Additive (Signed)",
+            "correction.tB_straylight": "tB Straylight (+)",
+            "correction.pB_straylight": "pB Straylight (+)",
             "correction.tB_mul": "tB Multiplicative",
             "correction.pB_mul": "pB Multiplicative",
             "correction.img": "Input Image",
@@ -400,10 +372,15 @@ class CorrectionImageCallback(BaseCallback):
             "correction.leakage": "Leakage",
         }
 
-        self.additive_fields = {
+        self.signed_additive_fields = {
             "correction.tB_add",
             "correction.pB_add",
             "correction.calibration_offset",
+        }
+
+        self.positive_additive_fields = {
+            "correction.tB_straylight",
+            "correction.pB_straylight",
         }
 
         self.multiplicative_fields = {
@@ -442,49 +419,61 @@ class CorrectionImageCallback(BaseCallback):
             vmax = np.nanmax(img2d)
 
             # ------------------------------------------------
-            # 1) Additive corrections → centered at 0
+            # 1) Signed additive corrections -> centered at 0
             # ------------------------------------------------
-            if k in self.additive_fields:
+            if k in self.signed_additive_fields:
+                vmax_abs = np.nanmax(np.abs(img2d))
+                if not np.isfinite(vmax_abs) or vmax_abs <= 0.0:
+                    vmax_abs = 1e-8
+                norm = TwoSlopeNorm(vcenter=0.0, vmin=-vmax_abs, vmax=vmax_abs)
+                cmap = "RdBu_r"
+
+            # ------------------------------------------------
+            # 2) Positive additive corrections -> positive, log scale
+            # ------------------------------------------------
+            elif k in self.positive_additive_fields:
                 vmin_plot = max(np.nanmin(img2d), 1e-12)
-                vmax_plot = np.nanmax(img2d)
+                vmax_plot = max(np.nanmax(img2d), vmin_plot * (1.0 + 1e-6))
                 norm = LogNorm(vmin=vmin_plot, vmax=vmax_plot)
                 cmap = "Reds"
 
             # ------------------------------------------------
-            # 2) Multiplicative corrections → centered at 1
+            # 3) Multiplicative corrections -> centered at 1
             # ------------------------------------------------
             elif k in self.multiplicative_fields:
                 deviation = img2d - 1.0
                 vmax_abs = np.nanmax(np.abs(deviation))
+                if not np.isfinite(vmax_abs) or vmax_abs <= 0.0:
+                    vmax_abs = 1e-8
                 norm = TwoSlopeNorm(vcenter=1.0,
                                     vmin=1.0 - vmax_abs,
                                     vmax=1.0 + vmax_abs)
                 cmap = "RdBu_r"
 
             # ------------------------------------------------
-            # 3) F-corona → positive, log scale
+            # 4) F-corona -> positive, log scale
             # ------------------------------------------------
             elif k == "correction.f_corona":
                 vmin_plot = max(np.nanmin(img2d), 1e-12)
-                vmax_plot = np.nanmax(img2d)
+                vmax_plot = max(np.nanmax(img2d), vmin_plot * (1.0 + 1e-6))
                 norm = LogNorm(vmin=vmin_plot, vmax=vmax_plot)
                 cmap = "Reds"
 
             # ------------------------------------------------
-            # 4) Leakage → bounded [0,1], Reds
+            # 5) Leakage -> bounded [0,1], Reds
             # ------------------------------------------------
             elif k == "correction.leakage":
                 norm = Normalize(vmin=0.0, vmax=0.1)
                 cmap = "Reds"
 
             # ------------------------------------------------
-            # 5) Fallback
+            # 6) Fallback
             # ------------------------------------------------
             else:
                 norm = Normalize(vmin=vmin, vmax=vmax)
                 cmap = "viridis"
 
-            im = ax.imshow(img2d, cmap=cmap, norm=norm)
+            im = ax.imshow(img2d, cmap=cmap, norm=norm, origin='lower')
 
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("right", size="5%", pad=0.05)
@@ -496,8 +485,6 @@ class CorrectionImageCallback(BaseCallback):
         fig.tight_layout()
         wandb.log({f"correction.{self.ds_key}": fig})
         plt.close(fig)
-
-
 
 
 @rank_zero_only
@@ -583,7 +570,6 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
 
         wandb.log({f'Overview.{ds_key}': fig})
         plt.close(fig)
-
 
 
 def plot_ray_sampling(
@@ -738,7 +724,7 @@ class VelocitySliceCallback(BaseCallback):
             if self.plot_velocities:
                 # overlay velocity vectors
                 quiver_pos = query_points[::8, ::8, 0, i,
-                             :2]  # block_reduce(query_points_npy, (8, 8, 1, 1, 1), np.mean)
+                :2]  # block_reduce(query_points_npy, (8, 8, 1, 1, 1), np.mean)
                 quiver_vel = velocity[::8, ::8, 0, i]  # block_reduce(velocity, (8, 8, 1), np.mean)
                 ax.quiver(quiver_pos[:, :, 0], quiver_pos[:, :, 1],
                           quiver_vel[:, :, 0], quiver_vel[:, :, 1],
@@ -806,6 +792,7 @@ class LongitudeSliceCallback(BaseCallback):
         wandb.log(
             {f"{self.name} - Longitude={np.rad2deg(self.longitude).astype(int):03d} deg - Slice": wandb.Image(fig)})
         plt.close('all')
+
 
 class RadialSlicesCallback(BaseCallback):
     """
@@ -925,8 +912,6 @@ class RadialSlicesCallback(BaseCallback):
         plt.close(fig)
 
 
-
-
 class LongitudeSlicesCallback(BaseCallback):
     """
     time × longitude polar density panels, plus a dedicated last column for colorbars.
@@ -998,9 +983,9 @@ class LongitudeSlicesCallback(BaseCallback):
             for j in range(Nlon):
                 ax = axd[f"rho_t{it}_j{j}"]
 
-                img = rho[:, :, j, it]    # (Nr, Nlat)
-                r = sph[:, :, j, it, 0]   # (Nr, Nlat)
-                lat = sph[:, :, j, it, 1] # (Nr, Nlat)
+                img = rho[:, :, j, it]  # (Nr, Nlat)
+                r = sph[:, :, j, it, 0]  # (Nr, Nlat)
+                lat = sph[:, :, j, it, 1]  # (Nr, Nlat)
 
                 mappable_row = ax.pcolormesh(
                     lat, r, img,
@@ -1021,8 +1006,6 @@ class LongitudeSlicesCallback(BaseCallback):
                         ha="right",
                     )
 
-                ax.set_theta_zero_location("W")
-                ax.set_theta_direction(-1)
                 ax.set_xlabel("Latitude (rad)")
                 ax.set_ylabel(r"Radius (R$_\odot$)")
                 ax.set_rlim((0, None))
@@ -1090,8 +1073,6 @@ class LongitudeSlicesCallback(BaseCallback):
                         ha="right",
                     )
 
-                ax.set_theta_zero_location("W")
-                ax.set_theta_direction(-1)
                 ax.set_xlabel("Latitude (rad)")
                 ax.set_ylabel(r"Radius (R$_\odot$)")
                 ax.set_rlim((0, None))
@@ -1113,6 +1094,7 @@ class LongitudeTimeVelocityMagCallback(BaseCallback):
     Same grid as density but plots |v|.
     Expects v_pred (...,3)
     """
+
     def __init__(self, cube_shape, **kwargs):
         super().__init__(**kwargs)
         self.cube_shape = cube_shape
@@ -1137,7 +1119,7 @@ class LongitudeTimeVelocityMagCallback(BaseCallback):
         lon = out.get("meta.longitudes_rad", None)
         lon = np.rad2deg(lon.cpu().numpy()) if lon is not None else np.arange(Nlon)
 
-        fig, axes = plt.subplots(Nlon, Nt, figsize=(4*Nt, 3*Nlon), squeeze=False)
+        fig, axes = plt.subplots(Nlon, Nt, figsize=(4 * Nt, 3 * Nlon), squeeze=False)
         for i in range(Nlon):
             for j in range(Nt):
                 ax = axes[i, j]
@@ -1155,12 +1137,14 @@ class LongitudeTimeVelocityMagCallback(BaseCallback):
         wandb.log({f"longitude_time_velocitymag.{self.name}": wandb.Image(fig)})
         plt.close(fig)
 
+
 class FixedViewpointSeriesCallback(BaseCallback):
     """
     3 rows: tB, pB, density
     N cols: time snapshots
     Expects instrument validation outputs: model_image (...,2), density (...,1 or ...), target optional NaNs
     """
+
     def __init__(self, image_shape, n_times=6, **kwargs):
         super().__init__(**kwargs)
         self.image_shape = image_shape
@@ -1176,7 +1160,7 @@ class FixedViewpointSeriesCallback(BaseCallback):
         model_image = out["model_image"].view(self.n_times, H, W, -1).cpu().numpy()
         density = out["density"].view(self.n_times, H, W, -1).cpu().numpy()
 
-        fig, axes = plt.subplots(3, self.n_times, figsize=(4*self.n_times, 10), squeeze=False)
+        fig, axes = plt.subplots(3, self.n_times, figsize=(4 * self.n_times, 10), squeeze=False)
 
         for j in range(self.n_times):
             axes[0, j].imshow(model_image[j, :, :, 0], origin="lower")
@@ -1224,7 +1208,8 @@ class StarBackgroundCallback(BaseCallback):
                 ax.set_title(title + " (no >0 finite)")
                 return None
             masked = np.ma.array(img, mask=~good)
-            im = ax.imshow(masked, origin='lower', cmap='magma', norm=LogNorm(vmin=max(self.eps, masked.min()), vmax=masked.max()))
+            im = ax.imshow(masked, origin='lower', cmap='magma',
+                           norm=LogNorm(vmin=max(self.eps, masked.min()), vmax=masked.max()))
             ax.set_title(title)
             ax.set_axis_off()
             divider = make_axes_locatable(ax)
@@ -1246,11 +1231,13 @@ class StarBackgroundCallback(BaseCallback):
         wandb.log({f"star_background.{self.ds_key}": fig})
         plt.close(fig)
 
+
 class FullStarBackgroundCallback(BaseCallback):
     """
     Plots star background image(s) in log scale.
     Expects outputs: background (...,C). Usually C=2 for (tB,pB).
     """
+
     def __init__(self, image_shape, **kwargs):
         super().__init__(**kwargs)
         self.image_shape = image_shape
@@ -1265,13 +1252,14 @@ class FullStarBackgroundCallback(BaseCallback):
         bg = out["background"].view(H, W, -1).detach().cpu().numpy()
 
         nC = bg.shape[-1]
-        fig, axes = plt.subplots(1, nC, figsize=(6*nC, 5), squeeze=False)
+        fig, axes = plt.subplots(1, nC, figsize=(6 * nC, 5), squeeze=False)
         axes = axes[0]
 
         for c in range(nC):
             img = np.asarray(bg[..., c])
             img = np.clip(img, 1e-30, None)
-            axes[c].imshow(img, origin="lower", norm=LogNorm(vmin=np.nanpercentile(img, 5), vmax=np.nanpercentile(img, 99)))
+            axes[c].imshow(img, origin="lower",
+                           norm=LogNorm(vmin=np.nanpercentile(img, 5), vmax=np.nanpercentile(img, 99)))
             axes[c].set_title(f"Star background ch{c} (log)")
             axes[c].axis("off")
 

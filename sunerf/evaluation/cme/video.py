@@ -53,19 +53,19 @@ if __name__ == '__main__':
     points_1 = zip(np.ones(n_points) * u.AU,
                    np.ones(n_points) * lat,
                    np.linspace(lon, lon + 360 * u.deg, n_points),
-                   [mid_time] * n_points)
+                   pd.date_range(start=min_time, end=mid_time, periods=n_points))
     points_2 = zip(np.ones(n_points) * u.AU,
                    np.linspace(lat, lat + 80 * u.deg, n_points),
                    np.ones(n_points) * lon,
                    [mid_time] * n_points)
     points_3 = zip(np.ones(n_points) * u.AU,
                    np.linspace(lat + 80 * u.deg, lat, n_points),
-                   np.ones(n_points) * lon,
-                   pd.date_range(start=mid_time, end=min_time, periods=n_points))
+                   np.linspace(lon, lon + 180 * u.deg, n_points),
+                   [mid_time] * n_points)
     points_4 = zip(np.ones(n_points) * u.AU,
                    np.ones(n_points) * lat,
-                   np.ones(n_points) * lon,
-                   pd.date_range(start=min_time, end=max_time, periods=n_points))
+                   np.ones(n_points) * (lon + 180 * u.deg),
+                   pd.date_range(start=mid_time, end=max_time, periods=n_points))
     points = list(points_1) + list(points_2) + list(points_3) + list(points_4)
 
     # points_1 = zip(np.ones(n_points) * u.AU,
@@ -82,7 +82,6 @@ if __name__ == '__main__':
         lon = obs_coord.transform_to(frames.HeliocentricInertial).lon
         model_out = sunerf_loader.load_image(lat, lon, time,
                                              distance=d, resolution=(256, 256) * u.pix,
-                                             scale=[30000 / 256, 30000 / 256] * u.arcsec / u.pix,
                                              occ_min=occ_min, occ_max=occ_max,
                                              progress=False)
 

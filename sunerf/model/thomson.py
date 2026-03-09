@@ -92,9 +92,10 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                          'radial': 1e-2,
                          'velocity': 1e-3} if lambda_config is None else lambda_config
         # check lambda config
-        available_lambdas = ['image', 'ratio', 'continuity', 'radial', 'velocity', 'target_velocity',
+        available_lambdas = ['image', 'ratio', 'continuity', 'radial', 'velocity',
                              'f_corona', 'transmission', 'calibration_gain', 'calibration_offset', 'calibration_scalar',
-                             'pB_mul', 'tB_mul', 'pB_add', 'tB_add', 'star_background']
+                             'pB_mul', 'tB_mul', 'pB_add', 'tB_add', 'pB_add_mean', 'tB_add_mean',
+                             'pB_straylight', 'tB_straylight', 'star_background']
         for k in lambda_config:
             if k not in available_lambdas:
                 raise ValueError(f"Unknown lambda_config key: {k}")
@@ -131,7 +132,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         # solar wind
         velocity_min = (100.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
         self.velocity_min = nn.Parameter(torch.tensor(velocity_min, dtype=torch.float32), requires_grad=False)
-        velocity_max = (800.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
+        velocity_max = (1000.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
         self.velocity_max = nn.Parameter(torch.tensor(velocity_max, dtype=torch.float32), requires_grad=False)
         velocity_avg = (300.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
         self.velocity_avg = nn.Parameter(torch.tensor(velocity_avg, dtype=torch.float32), requires_grad=False)
@@ -281,9 +282,10 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             log_values['continuity'] = continuity_loss
 
             # velocity regularization
-            v_abs = torch.norm(v, dim=-1)
-            min_v = torch.clip(v_abs - self.velocity_min, max=0).pow(2)
-            max_v = torch.clip(v_abs - self.velocity_max, min=0).pow(2)
+            r_hat = query_points[:, :3] / (torch.norm(query_points[:, :3], dim=-1, keepdim=True) + 1e-7)
+            v_radial = (v * r_hat).sum(dim=-1)
+            min_v = torch.clip(v_radial - self.velocity_min, max=0).pow(2)
+            max_v = torch.clip(v_radial - self.velocity_max, min=0).pow(2)
             velocity_loss = min_v + max_v
             velocity_loss = (velocity_loss * radial_weight).sum() / (radial_weight.sum() + 1e-7)
             log_values['velocity'] = velocity_loss
@@ -297,18 +299,9 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             log_values['radial'] = radial_loss
             loss += self.lambdas['radial']['value'] * radial_loss
 
-            # target velocity regularization
-            target_velocity = query_points[:, :3] / (torch.norm(query_points[:, :3], dim=-1, keepdim=True) + 1e-7)
-            target_velocity = target_velocity * self.velocity_avg
-            target_loss = (v - target_velocity).pow(2).sum(-1)
-            target_loss = (target_loss * radial_weight).sum() / (radial_weight.sum() + 1e-7)
-            log_values['target_velocity'] = target_loss
-            loss += self.lambdas['target_velocity']['value'] * target_loss
-
             assert torch.isnan(continuity_loss).sum() == 0, 'Invalid loss detected: continuity_loss'
             assert torch.isnan(velocity_loss).sum() == 0, 'Invalid loss detected: velocity_loss'
             assert torch.isnan(radial_loss).sum() == 0, 'Invalid loss detected: radial_loss'
-            assert torch.isnan(target_loss).sum() == 0, 'Invalid loss detected: target_loss'
 
         assert torch.isnan(loss).sum() == 0, 'Invalid loss detected: loss'
         # log results to WANDB
@@ -364,6 +357,26 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             # prefer small tB additive correction
             tB_add_loss = tB_add.pow(2)
             correction_losses['tB_add'] = tB_add_loss
+        if self.lambdas['pB_add_mean']['value'] > 0.0 and 'pB_add' in correction:
+            pB_add = correction['pB_add']
+            # prefer zero-mean pB additive correction over the sample
+            pB_add_mean_loss = pB_add.mean().pow(2).reshape(1, 1)
+            correction_losses['pB_add_mean'] = pB_add_mean_loss
+        if self.lambdas['tB_add_mean']['value'] > 0.0 and 'tB_add' in correction:
+            tB_add = correction['tB_add']
+            # prefer zero-mean tB additive correction over the sample
+            tB_add_mean_loss = tB_add.mean().pow(2).reshape(1, 1)
+            correction_losses['tB_add_mean'] = tB_add_mean_loss
+        if self.lambdas['pB_straylight']['value'] > 0.0 and 'pB_straylight' in correction:
+            pB_straylight = correction['pB_straylight']
+            # prefer small positive pB straylight correction
+            pB_straylight_loss = pB_straylight.pow(2)
+            correction_losses['pB_straylight'] = pB_straylight_loss
+        if self.lambdas['tB_straylight']['value'] > 0.0 and 'tB_straylight' in correction:
+            tB_straylight = correction['tB_straylight']
+            # prefer small positive tB straylight correction
+            tB_straylight_loss = tB_straylight.pow(2)
+            correction_losses['tB_straylight'] = tB_straylight_loss
         return correction_losses
 
     def compute_continuity_loss(self, rho, v, query_points):
@@ -479,8 +492,9 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         model_ratio = model_image[..., 1:2] / (model_image[..., 0:1] + 1e-8)
 
         # clip ratios to prevent extreme values from dominating the loss
-        target_ratio = torch.clamp(target_ratio, 0.0, 1.0)
-        model_ratio = torch.clamp(model_ratio, 0.0, 1.0)
+        # >1 is unphysical, but can be caused by correction/calibration
+        target_ratio = torch.clamp(target_ratio, 0.0, 2.0)
+        model_ratio = torch.clamp(model_ratio, 0.0, 2.0)
 
         # scale images consistently
         image_scaling = self.scaling_modules[instrument_key]

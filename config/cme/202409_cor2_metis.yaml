@@ -5,7 +5,8 @@ instruments:
   - type: 'default'
     key: 'Metis'
     scaling: { type: 'log' }
-    correction: { corrections: ['f_corona', 'pB_add', 'leakage', 'calibration'] }
+    correction: { corrections: ['f_corona', 'pB_add', 'leakage'] }
+    calibration: True
   - type: 'default'
     key: 'COR2'
     scaling: { type: 'log' }

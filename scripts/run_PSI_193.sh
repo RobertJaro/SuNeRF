@@ -13,8 +13,8 @@
 #conda activate sunerf
 #cd /home/rjarolim/projects/SuNeRF
 
-module load conda/latest
-module load cuda/11.7.1
+module load conda
+module load cuda
 conda activate lightning
 
 cd /glade/u/home/rjarolim/projects/SuNeRF

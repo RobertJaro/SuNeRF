@@ -2,28 +2,14 @@
 import argparse
 import datetime as dt
 import re
-import subprocess
-from html.parser import HTMLParser
 from pathlib import Path
+from shutil import copyfileobj
 from typing import Iterator, List, Optional, Tuple
-from urllib.parse import urljoin
-from urllib.request import urlopen
 
-DEFAULT_BASE_URL = "https://umbra.nascom.nasa.gov/punch/2/PTM"
-DEFAULT_SUFFIX = "v0j.fits"
+import fsspec
 
-
-class LinkParser(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.links: List[str] = []
-
-    def handle_starttag(self, tag: str, attrs):
-        if tag.lower() != "a":
-            return
-        for key, value in attrs:
-            if key.lower() == "href" and value:
-                self.links.append(value)
+S3_BUCKET = "noaa-nesdis-swfo-ccor-1-pds"
+DEFAULT_PREFIX = "SWFO/GOES-19/CCOR-1/ccor1-l1a_science"
 
 
 def parse_iso_datetime(value: str) -> dt.datetime:
@@ -52,15 +38,11 @@ def parse_cadence(value: str) -> dt.timedelta:
     return dt.timedelta(seconds=qty * seconds_per_unit)
 
 
-def parse_timestamp_from_name(filename: str) -> Optional[dt.datetime]:
-    # Common pattern: YYYYMMDD_HHMMSS or YYYYMMDDTHHMMSS
-    match = re.search(r"(20\d{2})(\d{2})(\d{2})[T_]?(\d{2})(\d{2})(\d{2})", filename)
-    if match:
-        year, month, day, hour, minute, second = map(int, match.groups())
-        return dt.datetime(year, month, day, hour, minute, second)
+def parse_timestamp_from_path(path: str) -> Optional[dt.datetime]:
+    filename = Path(path).name
 
-    # Fallback: YYYYDOYHHMMSS
-    match = re.search(r"(20\d{2})(\d{3})(\d{6})", filename)
+    # GOES convention: ..._sYYYYDDDHHMMSS_...
+    match = re.search(r"_s(\d{4})(\d{3})(\d{6})_", filename)
     if match:
         year = int(match.group(1))
         day_of_year = int(match.group(2))
@@ -69,6 +51,12 @@ def parse_timestamp_from_name(filename: str) -> Optional[dt.datetime]:
         return dt.datetime(year, 1, 1, hour, minute, second) + dt.timedelta(
             days=day_of_year - 1
         )
+
+    # Generic convention: ...YYYYMMDD_HHMMSS... (or YYYYMMDDTHHMMSS)
+    match = re.search(r"(20\d{2})(\d{2})(\d{2})[T_]?(\d{2})(\d{2})(\d{2})", filename)
+    if match:
+        year, month, day, hour, minute, second = map(int, match.groups())
+        return dt.datetime(year, month, day, hour, minute, second)
 
     return None
 
@@ -81,39 +69,27 @@ def iter_days(start: dt.datetime, end: dt.datetime) -> Iterator[dt.date]:
         day += dt.timedelta(days=1)
 
 
-def list_day_files(day_url: str, extension: str) -> List[str]:
-    with urlopen(day_url) as response:
-        html = response.read().decode("utf-8", errors="replace")
-
-    parser = LinkParser()
-    parser.feed(html)
-
-    files: List[str] = []
-    for href in parser.links:
-        if href.startswith("?") or href.startswith("#") or href.endswith("/"):
-            continue
-        name = Path(href).name
-        if name.endswith(extension):
-            files.append(urljoin(day_url, href))
-    return sorted(set(files))
-
-
 def list_files(
-    base_url: str,
+    fs,
+    product_prefix: str,
     start: dt.datetime,
     end: dt.datetime,
     extension: str,
 ) -> List[Tuple[str, Optional[dt.datetime]]]:
     found: List[str] = []
     for day in iter_days(start, end):
-        day_url = f"{base_url.rstrip('/')}/{day:%Y/%m/%d}/"
-        try:
-            found.extend(list_day_files(day_url=day_url, extension=extension))
-        except Exception as exc:
-            print(f"Warning: could not list {day_url} ({exc})")
+        pattern = f"{S3_BUCKET}/{product_prefix}/{day:%Y/%m/%d}/*{extension}"
+        found.extend(fs.glob(pattern))
 
-    timed = [(url, parse_timestamp_from_name(Path(url).name)) for url in sorted(set(found))]
-    return [(url, ts) for url, ts in timed if ts is None or (start <= ts < end)]
+    files = sorted(set(found))
+    timed = [(path, parse_timestamp_from_path(path)) for path in files]
+
+    # Keep files that are either clearly in range or unparseable (to avoid dropping data).
+    return [
+        (path, ts)
+        for path, ts in timed
+        if ts is None or (start <= ts < end)
+    ]
 
 
 def sample_by_cadence(
@@ -122,8 +98,8 @@ def sample_by_cadence(
     end: dt.datetime,
     cadence: dt.timedelta,
 ) -> List[str]:
-    parseable = sorted((u, ts) for u, ts in files if ts is not None)
-    unparseable = [u for u, ts in files if ts is None]
+    parseable = sorted((p, ts) for p, ts in files if ts is not None)
+    unparseable = [p for p, ts in files if ts is None]
 
     if not parseable:
         return sorted(unparseable)
@@ -131,42 +107,51 @@ def sample_by_cadence(
     selected: List[str] = []
     idx = 0
     slot_start = start
+
     while slot_start < end:
         slot_end = min(slot_start + cadence, end)
+
         while idx < len(parseable) and parseable[idx][1] < slot_start:
             idx += 1
+
         if idx < len(parseable) and parseable[idx][1] < slot_end:
             selected.append(parseable[idx][0])
             while idx < len(parseable) and parseable[idx][1] < slot_end:
                 idx += 1
+
         slot_start = slot_end
 
     return sorted(set(selected + unparseable))
 
 
-def download_files(urls: List[str], out_dir: Path, overwrite: bool) -> Tuple[int, int]:
+def s3_to_local_path(s3_path: str, out_dir: Path) -> Path:
+    return out_dir / Path(s3_path).name
+
+
+def download_files(fs, files: List[str], out_dir: Path, overwrite: bool) -> Tuple[int, int]:
     downloaded = 0
     skipped = 0
     out_dir.mkdir(parents=True, exist_ok=True)
     seen_names = {}
 
-    for i, url in enumerate(urls, start=1):
-        local_path = out_dir / Path(url).name
+    for i, s3_path in enumerate(files, start=1):
+        local_path = s3_to_local_path(s3_path, out_dir)
         name = local_path.name
-        if name in seen_names and seen_names[name] != url:
-            print(f"[{i}/{len(urls)}] Warning: duplicate filename {name} from multiple URLs.")
-        seen_names[name] = url
+
+        if name in seen_names and seen_names[name] != s3_path:
+            print(
+                f"[{i}/{len(files)}] Warning: duplicate filename {name} from multiple S3 keys."
+            )
+        seen_names[name] = s3_path
 
         if local_path.exists() and not overwrite:
             skipped += 1
-            print(f"[{i}/{len(urls)}] Skipping existing: {local_path}")
+            print(f"[{i}/{len(files)}] Skipping existing: {local_path}")
             continue
 
-        print(f"[{i}/{len(urls)}] Downloading: {url}")
-        subprocess.run(
-            ["wget", "-nv", "-O", str(local_path), url],
-            check=True,
-        )
+        print(f"[{i}/{len(files)}] Downloading: {s3_path}")
+        with fs.open(s3_path, "rb") as src, local_path.open("wb") as dst:
+            copyfileobj(src, dst)
         downloaded += 1
 
     return downloaded, skipped
@@ -174,7 +159,7 @@ def download_files(urls: List[str], out_dir: Path, overwrite: bool) -> Tuple[int
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Download PUNCH L2 PTM archive files with cadence sampling using wget."
+        description="Download NOAA SWFO GOES-19 CCOR L1A science files with cadence sampling."
     )
     parser.add_argument("--start", required=True, type=parse_iso_datetime)
     parser.add_argument("--end", required=True, type=parse_iso_datetime)
@@ -185,49 +170,62 @@ def main():
         help="Sampling cadence (default: 1h). Examples: 30m, 1h, 6h.",
     )
     parser.add_argument(
-        "--base-url",
-        default=DEFAULT_BASE_URL,
-        help=f"Archive base URL (default: {DEFAULT_BASE_URL}).",
+        "--out",
+        default="data/ccor",
+        help="Local output directory (default: data/ccor).",
+    )
+    parser.add_argument(
+        "--product-prefix",
+        default=DEFAULT_PREFIX,
+        help=f"S3 prefix under {S3_BUCKET} (default: {DEFAULT_PREFIX}).",
     )
     parser.add_argument(
         "--ext",
-        default=DEFAULT_SUFFIX,
-        help=f"Filename suffix filter (default: {DEFAULT_SUFFIX}).",
+        default=".fits",
+        help="File extension filter (default: .fits).",
     )
     parser.add_argument(
-        "--out",
-        default="data/punch",
-        help="Local output directory (default: data/punch).",
+        "--overwrite",
+        action="store_true",
+        help="Overwrite local files if they already exist.",
     )
-    parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List selected files without downloading.",
+    )
     args = parser.parse_args()
 
     if args.start >= args.end:
         raise SystemExit("Error: --start must be earlier than --end.")
 
+    fs = fsspec.filesystem("s3", anon=True)
     files = list_files(
-        base_url=args.base_url,
+        fs=fs,
+        product_prefix=args.product_prefix.strip("/"),
         start=args.start,
         end=args.end,
         extension=args.ext,
     )
-    sampled_urls = sample_by_cadence(
+
+    sampled_files = sample_by_cadence(
         files=files,
         start=args.start,
         end=args.end,
         cadence=args.cadence,
     )
 
-    print(f"Found {len(files)} files in range; selected {len(sampled_urls)} after cadence.")
+    print(f"Found {len(files)} files in range; selected {len(sampled_files)} after cadence.")
     if args.dry_run:
-        for url in sampled_urls:
-            print(url)
+        for path in sampled_files:
+            print(path)
         return
 
+    out_dir = Path(args.out)
     downloaded, skipped = download_files(
-        urls=sampled_urls,
-        out_dir=Path(args.out),
+        fs=fs,
+        files=sampled_files,
+        out_dir=out_dir,
         overwrite=args.overwrite,
     )
     print(f"Done. Downloaded: {downloaded}, skipped existing: {skipped}.")

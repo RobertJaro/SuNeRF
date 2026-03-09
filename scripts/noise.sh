@@ -7,8 +7,8 @@
 #PBS -l job_priority=economy
 #PBS -l walltime=12:00:00
 
-module load conda/latest
-module load cuda/11.7.1
+module load conda
+module load cuda
 conda activate lightning
 
 cd /glade/u/home/rjarolim/projects/SuNeRF

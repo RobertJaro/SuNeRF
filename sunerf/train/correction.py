@@ -10,7 +10,7 @@ class CorrectionModule(nn.Module):
     def __init__(self, corrections=None,**kwargs):
         super().__init__()
         self.corrections = ['f_corona'] if corrections is None else corrections # use default corrections if none provided
-        possible_img_corrections = ['tB_add', 'pB_add', 'tB_mul', 'pB_mul', 'img', 'transmission', 'leakage']
+        possible_img_corrections = ['tB_add', 'pB_add', 'tB_straylight', 'pB_straylight', 'tB_mul', 'pB_mul', 'img', 'transmission', 'leakage']
         possible_hpc_corrections = ['f_corona']
         possible_radial_corrections = ['calibration_gain', 'calibration_offset']
         possible_temporal_corrections = ['calibration']
@@ -98,14 +98,26 @@ class CorrectionModule(nn.Module):
 
             i = 0
             if 'tB_add' in self.img_corrections:
-                tB_add = torch.exp(img_corrections[..., i:i+1] - 6)
+                raw = img_corrections[..., i:i+1]
+                tB_add = raw * 1e-4
                 tB = tB + tB_add
                 corrections['tB_add'] = tB_add
                 i += 1
             if 'pB_add' in self.img_corrections:
-                pB_add = torch.exp(img_corrections[..., i:i+1] - 6)
+                raw = img_corrections[..., i:i+1]
+                pB_add = raw * 1e-4
                 pB = pB + pB_add
                 corrections['pB_add'] = pB_add
+                i += 1
+            if 'tB_straylight' in self.img_corrections:
+                tB_straylight = torch.exp(img_corrections[..., i:i+1] - 6.0)
+                tB = tB + tB_straylight
+                corrections['tB_straylight'] = tB_straylight
+                i += 1
+            if 'pB_straylight' in self.img_corrections:
+                pB_straylight = torch.exp(img_corrections[..., i:i+1] - 6.0)
+                pB = pB + pB_straylight
+                corrections['pB_straylight'] = pB_straylight
                 i += 1
             if 'tB_mul' in self.img_corrections:
                 tB_mul = torch.exp(img_corrections[..., i:i+1] * 0.01)

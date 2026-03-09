@@ -7,8 +7,8 @@
 #PBS -l job_priority=economy
 #PBS -l walltime=12:00:00
 
-module load conda/latest
-module load cuda/11.7.1
+module load conda
+module load cuda
 conda activate lightning
 
 cd /glade/u/home/rjarolim/projects/SuNeRF
@@ -93,8 +93,10 @@ python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjaro
 python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v01/save_state.snf"
 
 python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v05/save_state.snf" --longitudes 0 15 30 45 60 75 90 --radius_range 1.5 15 --time_range "2024-09-22T00:00" "2024-10-01T00:00"
-python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v05/save_state.snf" --occ_range 1.5 15
+python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v07/save_state.snf" --occ_range 1.5 15
 python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v05/save_state.snf" --longitudes -10 -5 0 5 10 --radius_range 1.5 15 --time_range "2024-09-20T00:00" "2024-10-01T00:00"
+
+python -m sunerf.evaluation.cme.video_polar --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v07/save_state.snf"
 
 
 # Metis static

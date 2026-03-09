@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 import argparse, glob
+import multiprocessing
 import os.path
 import shutil
 from pathlib import Path
 
+import matplotlib
 import numpy as np
-import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 import sunpy.map
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 from tqdm import tqdm
 
 
@@ -22,6 +26,7 @@ def parse_args():
     p.add_argument("--vmax", type=float, default=None)
     p.add_argument("--dpi", type=int, default=120)
     p.add_argument("--size", type=float, default=4.2)
+    p.add_argument("--num_workers", type=int, default=os.cpu_count())
     return p.parse_args()
 
 
@@ -38,6 +43,54 @@ def first_log_range(maps):
 
 def stem(p):
     return Path(p).stem.replace(" ", "_")
+
+
+class FrameRenderer:
+    def __init__(self, out_dir, vmin, vmax, dpi, size):
+        self.out_dir = Path(out_dir)
+        self.norm = LogNorm(vmin=vmin, vmax=vmax)
+        self.dpi = dpi
+        self.size = size
+
+    def __call__(self, row):
+        tb_fp, pb_fp = row
+        maps = []
+        labels = []
+        stems = []
+
+        if tb_fp:
+            m = sunpy.map.Map(tb_fp)
+            maps.append(m)
+            labels.append(f"tB: {m.date.isot if m.date else stem(tb_fp)}")
+            stems.append(stem(tb_fp))
+
+        if pb_fp:
+            m = sunpy.map.Map(pb_fp)
+            maps.append(m)
+            labels.append(f"pB: {m.date.isot if m.date else stem(pb_fp)}")
+            stems.append(stem(pb_fp))
+
+        n = len(maps)
+        fig = plt.figure(figsize=(self.size * n, self.size), dpi=self.dpi)
+
+        for i, (m, title) in enumerate(zip(maps, labels), start=1):
+            ax = fig.add_subplot(1, n, i, projection=m.wcs)
+            im = ax.imshow(m.data, norm=self.norm, cmap="inferno", origin="lower")
+            m.draw_limb(axes=ax, color="red", linewidth=1.2)
+            ax.set_title(title, fontsize=9, pad=6)
+
+            cax = make_axes_locatable(ax).append_axes("right", size="5%", pad=0.1, axes_class=plt.Axes)
+            fig.colorbar(im, cax=cax)
+
+            ax.set_xlabel("Tx [arcsec]")
+            ax.set_ylabel("Ty [arcsec]")
+
+        out_name = f"{stems[0]}__{stems[1]}.jpg" if len(stems) == 2 else f"{stems[0]}.jpg"
+        out_path = self.out_dir / out_name
+        fig.tight_layout()
+        fig.savefig(out_path, bbox_inches="tight")
+        plt.close(fig)
+        return str(out_path)
 
 
 def main():
@@ -65,53 +118,17 @@ def main():
     vmin0, vmax0 = first_log_range(preview_maps)
     vmin = vmin0 if a.vmin is None else float(a.vmin)
     vmax = vmax0 if a.vmax is None else float(a.vmax)
-    norm = LogNorm(vmin=vmin, vmax=vmax)
-
     out_dir = Path(a.out_path)
     out_dir.mkdir(parents=True, exist_ok=True)
+    renderer = FrameRenderer(out_dir=str(out_dir), vmin=vmin, vmax=vmax, dpi=a.dpi, size=a.size)
 
-    for tb_fp, pb_fp in tqdm(rows):
-        maps = []
-        labels = []
-        stems = []
-
-        if tb_fp:
-            m = sunpy.map.Map(tb_fp)
-            maps.append(m)
-            labels.append(f"tB: {m.date.isot if m.date else stem(tb_fp)}")
-            stems.append(stem(tb_fp))
-
-        if pb_fp:
-            m = sunpy.map.Map(pb_fp)
-            maps.append(m)
-            labels.append(f"pB: {m.date.isot if m.date else stem(pb_fp)}")
-            stems.append(stem(pb_fp))
-
-        n = len(maps)
-        fig = plt.figure(figsize=(a.size * n, a.size), dpi=a.dpi)
-
-        axes = []
-        ims = []
-
-        for i, (m, title) in enumerate(zip(maps, labels), start=1):
-            ax = fig.add_subplot(1, n, i, projection=m.wcs)
-            im = ax.imshow(m.data, norm=norm, cmap="inferno", origin="lower")
-            m.draw_limb(axes=ax, color="red", linewidth=1.2)
-            ax.set_title(title, fontsize=9, pad=6)
-
-            # plot colorbar
-            cax = make_axes_locatable(ax, ).append_axes("right", size="5%", pad=0.1, axes_class=plt.Axes)
-            cbar = fig.colorbar(im, cax=cax)
-
-            # Static helioprojective labels
-            ax.set_xlabel("Tx [arcsec]")
-            ax.set_ylabel("Ty [arcsec]")
-
-
-        out_name = f"{stems[0]}__{stems[1]}.jpg" if len(stems) == 2 else f"{stems[0]}.jpg"
-        fig.tight_layout()
-        fig.savefig(out_dir / out_name, bbox_inches="tight")
-        plt.close(fig)
+    if a.num_workers is None or a.num_workers <= 1:
+        for row in tqdm(rows, total=len(rows), desc="Rendering frames"):
+            renderer(row)
+    else:
+        with multiprocessing.Pool(a.num_workers) as pool:
+            for _ in tqdm(pool.imap(renderer, rows), total=len(rows), desc="Rendering frames"):
+                pass
 
     # create zip of all images
     shutil.make_archive(a.out_path, 'zip', a.out_path)

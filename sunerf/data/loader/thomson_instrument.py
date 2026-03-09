@@ -11,6 +11,7 @@ from astropy import units as u
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from dateutil.parser import parse
+from skimage.morphology import remove_small_objects, binary_opening, disk
 from sunpy.coordinates import frames
 from sunpy.map import Map, make_fitswcs_header, all_coordinates_from_map
 from sunpy.visualization.colormaps import cm
@@ -89,6 +90,10 @@ class ThomsonDataModule(BaseDataModule):
                 dataset = LASCOC2Dataset(**ds_config, ds_key=ds_key)
             elif ds_type.lower() == 'metis':
                 dataset = MetisDataset(**ds_config, ds_key=ds_key)
+            elif ds_type.lower() == 'ccor':
+                dataset = CCORDataset(**ds_config, ds_key=ds_key)
+            elif ds_type.lower() in {'punchwfi', 'punch_wfi', 'punch'}:
+                dataset = PunchWFIDataset(**ds_config, ds_key=ds_key)
             elif ds_type.lower() == 'psi_cme':
                 dataset = PSICMEDataset(**ds_config, ds_key=ds_key)
             elif ds_type.lower() == 'random':
@@ -131,6 +136,12 @@ class ThomsonDataModule(BaseDataModule):
                 dataset = RenderModeDataset(dataset, render_mode=RenderMode.INSTRUMENT)
             elif ds_type.lower() == 'metis':
                 dataset = MetisDataset(**ds_config, ds_key=ds_key, test=True)
+                dataset = RenderModeDataset(dataset, render_mode=RenderMode.INSTRUMENT)
+            elif ds_type.lower() == 'ccor':
+                dataset = CCORDataset(**ds_config, ds_key=ds_key, test=True)
+                dataset = RenderModeDataset(dataset, render_mode=RenderMode.INSTRUMENT)
+            elif ds_type.lower() in {'punchwfi', 'punch_wfi', 'punch'}:
+                dataset = PunchWFIDataset(**ds_config, ds_key=ds_key, test=True)
                 dataset = RenderModeDataset(dataset, render_mode=RenderMode.INSTRUMENT)
             elif ds_type.lower() == 'psi_cme':
                 dataset = PSICMEDataset(**ds_config, ds_key=ds_key, test=True)
@@ -197,31 +208,67 @@ class GenericThomsonDataset(TensorsDataset):
                                   tqdm(p.imap(fits.getdata, pB_files), total=len(pB_files), desc=f'Loading pB')]
                 pB_image_stack = np.stack(pB_image_stack, axis=0)
 
+        # save occultor mask before any correction/cleaning that may set more pixels to NaN
+        # this mask is used to set rays/image coords/hpc coords to NaN for occulted pixels,
+        # which should be ignored during training and evaluation
+        occultor_mask = np.isnan(tB_image_stack)
         # apply correction if specified
         if correction_config is not None:
+            alpha = float(correction_config.get('alpha', 1.0))
+            tB_alpha = float(correction_config.get('tB_alpha', alpha))
+            pB_alpha = float(correction_config.get('pB_alpha', alpha))
             if correction_config['type'] == 'percentile':
                 pB_level = correction_config.get('pB_level', 20)
                 tB_level = correction_config.get('tB_level', 20)
                 pB_correction = np.percentile(pB_image_stack, pB_level, axis=0, keepdims=True)
                 tB_correction = np.percentile(tB_image_stack, tB_level, axis=0, keepdims=True)
-                pB_image_stack = pB_image_stack - pB_correction
-                tB_image_stack = tB_image_stack - tB_correction
-                min_value = correction_config.get('min_value', 0)
-                pB_image_stack[pB_image_stack < min_value] = 0
-                tB_image_stack[tB_image_stack < min_value] = 0
+                pB_image_stack = pB_image_stack - pB_alpha * pB_correction
+                tB_image_stack = tB_image_stack - tB_alpha * tB_correction
             elif correction_config['type'] == 'file':
-                pB_correction = np.load(correction_config['pB'])
-                tB_correction = np.load(correction_config['tB'])
-                pB_image_stack = pB_image_stack - pB_correction[None]
-                tB_image_stack = tB_image_stack - tB_correction[None]
-                min_value = correction_config.get('min_value', 0)
-                pB_image_stack[pB_image_stack < min_value] = 0
-                tB_image_stack[tB_image_stack < min_value] = 0
+                pB_path = correction_config.get('pB', None)
+                tB_path = correction_config.get('tB', None)
+                if pB_path is None and tB_path is None:
+                    raise ValueError("correction_config.type='file' requires at least one of 'tB' or 'pB'.")
+                if pB_path is not None:
+                    pB_correction = np.load(pB_path)
+                    pB_image_stack = pB_image_stack - pB_alpha * pB_correction[None]
+                if tB_path is not None:
+                    tB_correction = np.load(tB_path)
+                    tB_image_stack = tB_image_stack - tB_alpha * tB_correction[None]
+            elif correction_config['type'] == 'basic':
+                pass
             else:
                 raise ValueError(f'Unknown correction type {correction_config["type"]}')
 
+            min_value = correction_config.get('min_value', 0)
+            pB_below = int(np.count_nonzero(pB_image_stack <= min_value))
+            tB_below = int(np.count_nonzero(tB_image_stack <= min_value))
+            print(f'Filtering {pB_below} pB pixels and {tB_below} tB pixels below min value {min_value}')
+            pB_image_stack[pB_image_stack <= min_value] = np.nan
+            tB_image_stack[tB_image_stack <= min_value] = np.nan
+
+            if correction_config.get('clean', False):
+                clean_min_size = correction_config.get('clean_min_size', 128)
+                opening_radius = correction_config.get('clean_opening_radius', 2)
+                footprint = disk(opening_radius) if opening_radius > 0 else None
+                # Clean each frame independently; stack-wide cleaning would connect components over time.
+                for i in range(tB_image_stack.shape[0]):
+                    # clean pB
+                    pB_mask = np.isfinite(pB_image_stack[i])
+                    if footprint is not None:
+                        pB_mask = binary_opening(pB_mask, footprint=footprint)
+                    pB_mask_clean = remove_small_objects(pB_mask, min_size=clean_min_size)
+                    pB_image_stack[i][~pB_mask_clean] = np.nan
+                    # clean tB
+                    tB_mask = np.isfinite(tB_image_stack[i])
+                    if footprint is not None:
+                        tB_mask = binary_opening(tB_mask, footprint=footprint)
+                    tB_mask_clean = remove_small_objects(tB_mask, min_size=clean_min_size)
+                    tB_image_stack[i][~tB_mask_clean] = np.nan
+
         image_stack = np.stack([tB_image_stack, pB_image_stack], axis=-1)
         image_stack = image_stack / scaling
+        image_stack[image_stack <= 0] = np.nan  # set non-positive values to NaN = unphysical
 
         if noise_level:
             mean_B = np.nanmean(image_stack)
@@ -229,8 +276,6 @@ class GenericThomsonDataset(TensorsDataset):
             noise = noise * noise_level * mean_B
             image_stack += noise
 
-        mask = image_stack <= 0
-        image_stack[mask] = np.nan
         data_dict['image'] = image_stack
 
         if scaling_mask_config is not None:
@@ -266,7 +311,6 @@ class GenericThomsonDataset(TensorsDataset):
         data_dict['image_coords'] = image_coords
 
         # apply occultor mask
-        occultor_mask = np.isnan(tB_image_stack) & np.isnan(pB_image_stack)
         data_dict['rays'][occultor_mask] = np.nan
         data_dict['image_coords'][occultor_mask] = np.nan
         data_dict['hpc_coords'][occultor_mask] = np.nan
@@ -276,7 +320,7 @@ class GenericThomsonDataset(TensorsDataset):
         if not test:
             cmap = cm.soholasco2.copy()
             cmap.set_bad(color='green')
-            log_overview(data_dict["image"], data_dict['pose'], normalized_times, cmap, seconds_per_dt, Rs_per_ds,
+            log_overview(data_dict["image"] * scaling, data_dict['pose'], normalized_times, cmap, seconds_per_dt, Rs_per_ds,
                          ref_date, ds_key=ds_key)
             print('----- Data Overview -----')
             print(
@@ -332,6 +376,18 @@ class LASCOC2Dataset(GenericThomsonDataset):
 
 
 class MetisDataset(GenericThomsonDataset):
+
+    def __init__(self, **kwargs):
+        super().__init__(scaling=1.0e-9, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
+
+
+class PunchWFIDataset(GenericThomsonDataset):
+
+    def __init__(self, **kwargs):
+        super().__init__(scaling=1.0e-9, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
+
+
+class CCORDataset(GenericThomsonDataset):
 
     def __init__(self, **kwargs):
         super().__init__(scaling=1.0e-9, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)

@@ -1,17 +1,20 @@
 import argparse
 import glob
+import os
+from collections import defaultdict
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from astropy.io import fits
 from astropy.visualization import ImageNormalize, AsinhStretch
+import sunpy.map
 from sunpy.visualization.colormaps import cm
 from tqdm import tqdm
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Compute percentile correction mask from FITS stack."
+        description="Compute correction mask as min over daily median SunPy maps."
     )
     parser.add_argument(
         "--input",
@@ -24,17 +27,6 @@ def main():
         help="Output .npy file",
     )
     parser.add_argument(
-        "--percentile",
-        type=float,
-        default=20.0,
-        help="Percentile for correction mask (default: 20)",
-    )
-    parser.add_argument(
-        "--use-min",
-        action="store_true",
-        help="Use minimum across stack instead of percentile",
-    )
-    parser.add_argument(
         "--plot-output",
         default=None,
         help="Optional output path for a diagnostic plot (default: <output>.png)",
@@ -45,21 +37,52 @@ def main():
         default=0,
         help="Index of the frame used as reference for diagnostics (default: 0)",
     )
+    parser.add_argument(
+        "--type",
+        choices=("daily-min", "full-min"),
+        default="daily-min",
+        help="Correction type: min over daily medians (daily-min) or min over full dataset (full-min).",
+    )
     args = parser.parse_args()
+
+    # create output directory if it doesn't exist
+    output_dir = Path(args.output).parent
+    os.makedirs(output_dir, exist_ok=True)
 
     files = sorted(glob.glob(args.input))
     if not files:
         raise ValueError("No files matched --input pattern")
 
-    stack = [fits.getdata(f) for f in tqdm(files, desc="Loading data")]
+    stack = []
+    per_day_images = defaultdict(list)
+    for file_path in tqdm(files, desc="Loading maps"):
+        m = sunpy.map.Map(file_path)
+        image = np.asarray(m.data)
+        stack.append(image)
+        if args.type == "daily-min":
+            day = m.date.isot[:10]
+            per_day_images[day].append(image)
     stack = np.stack(stack, axis=0)
     if args.reference_index < 0 or args.reference_index >= stack.shape[0]:
         raise ValueError(f"--reference-index must be in [0, {stack.shape[0] - 1}]")
 
-    if args.use_min:
-        mask = np.min(stack, axis=0)
+    if args.type == "daily-min":
+        daily_medians = []
+        for day in sorted(per_day_images):
+            if len(per_day_images[day]) <= 5:
+                print(f'Skipping day {day} with only {len(per_day_images[day])} frames')
+                continue
+            day_stack = np.stack(per_day_images[day], axis=0)
+            daily_medians.append(np.median(day_stack, axis=0))
+        if not daily_medians:
+            raise ValueError("No valid days available to compute daily-min correction mask.")
+        daily_medians = np.stack(daily_medians, axis=0)
+        mask = np.min(daily_medians, axis=0)
+    elif args.type == "full-min":
+        mask = np.nanmin(stack, axis=0)
     else:
-        mask = np.percentile(stack, args.percentile, axis=0)
+        raise ValueError(f"Unknown --type value: {args.type}")
+
     np.save(args.output, mask)
 
     reference = stack[args.reference_index]

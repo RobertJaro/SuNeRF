@@ -100,9 +100,7 @@ if __name__ == '__main__':
             ax.set_title(f"Density Slice at {target_longitude.to_value(u.deg):.1f}° Longitude")
             ax.set_xlabel("Latitude (rad)")
             ax.set_ylabel(r"Radius (R$_\odot$)")
-            ax.set_theta_zero_location("W")
             ax.tick_params(axis="y", colors='lightgray')
-            ax.set_theta_direction(-1)
 
             # --- Polar plot - velocity ---
             vel_mag = np.linalg.norm(velocity, axis=-1)
@@ -112,9 +110,7 @@ if __name__ == '__main__':
             ax.set_title(f"Velocity Magnitude Slice at {target_longitude.to_value(u.deg):.1f}° Longitude")
             ax.set_xlabel("Latitude (rad)")
             ax.set_ylabel(r"Radius (R$_\odot$)")
-            ax.set_theta_zero_location("W")
             ax.tick_params(axis="y", colors='lightgray')
-            ax.set_theta_direction(-1)
 
         fig.suptitle(f"Time: {time.strftime('%Y-%m-%d %H:%M')} UTC", fontsize=16)
 
