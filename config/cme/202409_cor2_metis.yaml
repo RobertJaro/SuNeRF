@@ -1,16 +1,16 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v07"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/202409_cor2_metis_v07'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v09"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/202409_cor2_metis_v09'
 
 instruments:
   - type: 'default'
     key: 'Metis'
     scaling: { type: 'log' }
-    correction: { corrections: ['f_corona', 'pB_add', 'leakage'] }
+    correction: { corrections: [ 'f_corona', 'pB_straylight' ] }
     calibration: True
   - type: 'default'
     key: 'COR2'
     scaling: { type: 'log' }
-    correction: { corrections: ['f_corona', 'pB_add', 'leakage'] }
+    correction: { corrections: [ 'f_corona', 'pB_straylight' ] }
 
 
 model:
@@ -26,14 +26,15 @@ data:
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/metis/pB/*"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/metis/tB/*"
       batch_size: 1024
-      debug: True
+      debug: False
     - type: 'COR'
       key: 'COR2'
       instrument_key: 'COR2'
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/pB/*"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/tB/*"
       batch_size: 1024
-      debug: True
+      debug: False
+      correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/masks/stereo_a_cor2_tB_correction.npy", alpha: 0.8, clean: False }
     - type: 'random'
       name: 'continuity'
       radius_range: [ 1.5, 17.0 ]
@@ -45,6 +46,7 @@ data:
       instrument_key: 'COR2'
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/pB/20240915_000745_1P4c2A.fts"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/tB/20240915_000745_1B4c2A.fts"
+      correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/masks/stereo_a_cor2_tB_correction.npy", alpha: 0.8, clean: False }
     - type: 'Metis'
       key: 'Metis'
       instrument_key: 'Metis'
@@ -57,7 +59,6 @@ data:
     - type: longitude_slices
       key: valid_lon_slices
       radius_range: [ 1.5, 17.0 ]
-  debug: False
   Rs_per_ds: 15
   seconds_per_dt: 86400
   batch_size: 4096
@@ -91,14 +92,15 @@ sampling:
   type: "spherical"
   n_samples: 64
   max_distance: 17.0
+  radial_weighting: True
 
 lambda:
   image: 1.0
-  ratio: 10.0
-  radial: 1.0e-4
+  ratio: 1.0
+  radial: 0.0
   continuity: 1.0e-4
-  velocity: 1.0e-4
+  velocity: 0.0
 
 
-#training:
-#  log_every_n_steps: 10000
+training:
+  log_every_n_steps: 10000

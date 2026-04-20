@@ -107,13 +107,13 @@ python -m sunerf.data.download.download_aia \
 python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v08/save_state.snf" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v08/ref_series_stereo_a" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/*"
 python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v08/save_state.snf" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v08/ref_series_stereo_b" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/pB/*"
 # tomography
-python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v08/save_state.snf" --longitudes 0 30 60 90 120 150 180 --time_range "2010-03-19T00:00" "2010-03-20T00:00"
-python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v08/save_state.snf" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v08/tomography_cme" --longitudes 80 90 100 110 120 130 --time_range "2010-03-19T00:00" "2010-03-21T00:00"
+python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v10/save_state.snf" --longitudes 0 30 60 90 120 150 180 --time_range "2010-03-19T00:00" "2010-03-20T00:00"
+python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v10/save_state.snf" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v10/tomography_cme" --longitudes 80 90 100 110 120 130 --time_range "2010-03-19T00:00" "2010-03-21T00:00"
 # radius map
 python -m sunerf.evaluation.cme.plot_radius_map --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v08/save_state.snf" --radius 5 8 12 15
 # video
-python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v08/save_state.snf"
-python -m sunerf.evaluation.cme.video_polar --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v08/save_state.snf"
+python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v10/save_state.snf"
+python -m sunerf.evaluation.cme.video_polar --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v10/save_state.snf"
 python -m sunerf.evaluation.cme.video_fixed_rotation --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v08/save_state.snf"
 # export cubes
 python -m sunerf.evaluation.cme.export_cubes --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v04/save_state.snf" --time_range "2010-03-19T00:00" "2010-03-21T00:00"

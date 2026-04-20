@@ -208,10 +208,7 @@ class GenericThomsonDataset(TensorsDataset):
                                   tqdm(p.imap(fits.getdata, pB_files), total=len(pB_files), desc=f'Loading pB')]
                 pB_image_stack = np.stack(pB_image_stack, axis=0)
 
-        # save occultor mask before any correction/cleaning that may set more pixels to NaN
-        # this mask is used to set rays/image coords/hpc coords to NaN for occulted pixels,
-        # which should be ignored during training and evaluation
-        occultor_mask = np.isnan(tB_image_stack)
+
         # apply correction if specified
         if correction_config is not None:
             alpha = float(correction_config.get('alpha', 1.0))
@@ -265,6 +262,11 @@ class GenericThomsonDataset(TensorsDataset):
                         tB_mask = binary_opening(tB_mask, footprint=footprint)
                     tB_mask_clean = remove_small_objects(tB_mask, min_size=clean_min_size)
                     tB_image_stack[i][~tB_mask_clean] = np.nan
+
+        # save occultor mask before any correction/cleaning that may set more pixels to NaN
+        # this mask is used to set rays/image coords/hpc coords to NaN for occulted pixels,
+        # which should be ignored during training and evaluation
+        occultor_mask = np.isnan(tB_image_stack) & np.isnan(pB_image_stack)
 
         image_stack = np.stack([tB_image_stack, pB_image_stack], axis=-1)
         image_stack = image_stack / scaling

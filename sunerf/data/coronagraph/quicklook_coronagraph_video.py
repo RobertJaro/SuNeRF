@@ -26,7 +26,7 @@ def parse_args():
     p.add_argument("--vmax", type=float, default=None)
     p.add_argument("--dpi", type=int, default=120)
     p.add_argument("--size", type=float, default=4.2)
-    p.add_argument("--num_workers", type=int, default=os.cpu_count())
+    p.add_argument("--num_workers", type=int, default=16)
     return p.parse_args()
 
 
@@ -75,7 +75,9 @@ class FrameRenderer:
 
         for i, (m, title) in enumerate(zip(maps, labels), start=1):
             ax = fig.add_subplot(1, n, i, projection=m.wcs)
-            im = ax.imshow(m.data, norm=self.norm, cmap="inferno", origin="lower")
+            data = m.data
+            data[data <= 0] = np.nan
+            im = ax.imshow(data, norm=self.norm, cmap="inferno", origin="lower")
             m.draw_limb(axes=ax, color="red", linewidth=1.2)
             ax.set_title(title, fontsize=9, pad=6)
 

@@ -53,7 +53,7 @@ if __name__ == '__main__':
     points_1 = zip(np.ones(n_points) * u.AU,
                    np.ones(n_points) * lat,
                    np.linspace(lon, lon + 360 * u.deg, n_points),
-                   pd.date_range(start=min_time, end=mid_time, periods=n_points))
+                   [mid_time] * n_points)
     points_2 = zip(np.ones(n_points) * u.AU,
                    np.linspace(lat, lat + 80 * u.deg, n_points),
                    np.ones(n_points) * lon,

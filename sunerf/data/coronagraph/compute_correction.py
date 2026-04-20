@@ -73,11 +73,11 @@ def main():
                 print(f'Skipping day {day} with only {len(per_day_images[day])} frames')
                 continue
             day_stack = np.stack(per_day_images[day], axis=0)
-            daily_medians.append(np.median(day_stack, axis=0))
+            daily_medians.append(np.nanmedian(day_stack, axis=0))
         if not daily_medians:
             raise ValueError("No valid days available to compute daily-min correction mask.")
         daily_medians = np.stack(daily_medians, axis=0)
-        mask = np.min(daily_medians, axis=0)
+        mask = np.nanmin(daily_medians, axis=0)
     elif args.type == "full-min":
         mask = np.nanmin(stack, axis=0)
     else:
@@ -91,7 +91,7 @@ def main():
     plot_output = args.plot_output if args.plot_output is not None else f"{args.output}.png"
     fig, axes = plt.subplots(1, 3, figsize=(15, 5), layout="constrained")
 
-    brightness_norm = ImageNormalize(stretch=AsinhStretch(1e-4), vmin=0, vmax=1e-9)
+    brightness_norm = ImageNormalize(stretch=AsinhStretch(1e-4))
     subtracted_plot = subtracted.copy()
     subtracted_plot[subtracted_plot < 0] = np.nan
 

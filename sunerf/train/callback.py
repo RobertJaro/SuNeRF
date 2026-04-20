@@ -498,18 +498,30 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
         cs.append(c)
         cs.append(c)
 
-    vmin, vmax = np.nanmin(images), np.nanmax(images)
+    def _channel_lognorm(data):
+        positive = data[np.isfinite(data) & (data > 0)]
+        if positive.size == 0:
+            return None
+        vmin = float(np.nanmin(positive))
+        vmax = float(np.nanmax(positive))
+        return LogNorm(vmin=vmin, vmax=vmax)
 
-    def _imshow_log(ax, data2d, title):
-        good = np.isfinite(data2d) & (data2d > 0)
-        if not np.any(good):
+    tb_norm = _channel_lognorm(images[..., 0] if images.ndim == 4 else images)
+    pb_norm = _channel_lognorm(images[..., 1]) if images.ndim == 4 and images.shape[-1] > 1 else None
+
+    def _imshow_log(ax, data2d, title, norm):
+        finite = np.isfinite(data2d)
+        good = finite & (data2d > 0)
+        if not np.any(finite):
             ax.set_axis_off()
-            ax.set_title(title + " (no >0 finite)")
+            return None
+        if not np.any(good) or norm is None:
+            ax.set_axis_off()
             return None
         cm = copy.deepcopy(get_cmap(cmap))
         cm.set_bad('green', 1.)
         masked = np.ma.array(data2d, mask=~good)
-        im = ax.imshow(masked, norm=LogNorm(vmin=vmin, vmax=vmax), cmap=cm, origin='lower')
+        im = ax.imshow(masked, norm=norm, cmap=cm, origin='lower')
         ax.set_axis_off()
         ax.set_title(title)
         cb = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
@@ -562,11 +574,11 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
 
         # --- right: images ---
         ax = plt.subplot(1, 2 + int(has_pb), 2)
-        _imshow_log(ax, img[..., 0], f"tB | Time: {tstr}")
+        _imshow_log(ax, img[..., 0], f"tB | Time: {tstr}", tb_norm)
 
         if has_pb:
             ax = plt.subplot(1, 2 + int(has_pb), 3)
-            _imshow_log(ax, img[..., 1], f"pB | Time: {tstr}")
+            _imshow_log(ax, img[..., 1], f"pB | Time: {tstr}", pb_norm)
 
         wandb.log({f'Overview.{ds_key}': fig})
         plt.close(fig)

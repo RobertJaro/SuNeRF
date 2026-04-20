@@ -12,43 +12,21 @@ from sunerf.train.coordinate_transformation import to_carrington_rotation_frame
 
 
 class SirenModel(nn.Module):
-    def __init__(self, in_dim, out_dim, dim=512, n_layers=8, w0=1., encoding_config=None, skip_layers=None):
+    def __init__(self, in_dim, out_dim, dim=512, n_layers=8, w0=1., w0_init=30, input_weights=None, **kwargs):
         super().__init__()
-
-        encoding_config = {'type': 'default', 'w0': 1.} if encoding_config is None else encoding_config
-        encoding_type = encoding_config.pop('type', 'default')
-
-        if encoding_type == "default":
-            self.posenc = SirenLayer(in_dim=in_dim, out_dim=dim, is_first=True, **encoding_config)
-            posenc_dim = dim
-        elif encoding_type == "positional":
-            self.posenc = PositionalEncoding(in_dim=in_dim, **encoding_config)
-            posenc_dim = self.posenc.d_output
-        elif encoding_type == "identity":
-            self.posenc = Identity()
-            posenc_dim = in_dim
-        elif encoding_type == "multi_spectral":
-            self.posenc = MultispectralEncoding(in_dim=in_dim, **encoding_config)
-            posenc_dim = self.posenc.d_output
-        else:
-            raise ValueError(f"Unknown encoding: {encoding_type}")
 
         self.num_layers = n_layers
         self.dim_hidden = dim
-        self.skip_layers = skip_layers if skip_layers is not None else []
+
+        self.input_weights = nn.Parameter(torch.tensor(input_weights, dtype=torch.float32), requires_grad=False) if input_weights is not None else None
 
         # initialize the input layer
-        self.in_layer = SirenLayer(in_dim=posenc_dim, out_dim=dim, w0=w0)
+        self.in_layer = SirenLayer(in_dim=in_dim, out_dim=dim, w0=w0_init, is_first=True)
 
         # initialize the hidden layers
         layers = []
         for i in range(n_layers - 1):
-            if i in self.skip_layers:
-                # this layer will receive [h, skip_ref], width increases by posenc_dim
-                in_d = dim + posenc_dim
-            else:
-                in_d = dim
-            layer = SirenLayer(in_dim=in_d, out_dim=dim, w0=w0)
+            layer = SirenLayer(in_dim=dim, out_dim=dim, w0=w0)
             layers.append(layer)
         self.layers = nn.ModuleList(layers)
 
@@ -56,22 +34,18 @@ class SirenModel(nn.Module):
         self.out_layer = nn.Linear(dim, out_dim)
 
     def forward(self, inp):
-        inp_encoded = self.posenc(inp)  # apply positional encoding
-        x = self.in_layer(inp_encoded)
+        if self.input_weights is not None:
+            inp = inp * self.input_weights
+        x = self.in_layer(inp)
 
         for i, layer in enumerate(self.layers):
-            if i in self.skip_layers:
-                x = torch.cat([x, inp_encoded], dim=-1)
-                x = layer(x)  # layer expects dim + ref_dim
-            else:
-                x = layer(x)  # standard SIREN layer
+            x = layer(x)
 
         x = self.out_layer(x)
         return x
 
     def step(self, global_step):
-        if hasattr(self.posenc, 'step'):
-            self.posenc.step(global_step)
+        pass
 
 
 class SirenNet(nn.Module):

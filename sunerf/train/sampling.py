@@ -4,9 +4,13 @@ from torch import nn
 
 class SphericalSampler(torch.nn.Module):
 
-    def __init__(self, Rs_per_ds, min_distance=1.0, max_distance=2.0, n_samples=64, perturb=True):
+    def __init__(self, Rs_per_ds, min_distance=1.0, max_distance=2.0, n_samples=64, perturb=True,
+                 radial_weighting=False, radial_weight_power=2.0, radial_weight_grid_size=256):
         super().__init__()
         self.perturb = perturb
+        self.radial_weighting = radial_weighting
+        self.radial_weight_power = radial_weight_power
+        self.radial_weight_grid_size = radial_weight_grid_size
 
         self.max_distance = nn.Parameter(torch.tensor(max_distance / Rs_per_ds, dtype=torch.float32), requires_grad=False)
         self.min_distance = nn.Parameter(torch.tensor(min_distance / Rs_per_ds, dtype=torch.float32), requires_grad=False)
@@ -37,19 +41,52 @@ class SphericalSampler(torch.nn.Module):
         # dist_far[torch.isnan(dist_far)] = projected_far[torch.isnan(dist_far)]
         # dist_far = projected_far
 
-        z_vals = dist_near[:, None] * (1. - self.t_vals) + dist_far[:, None] * (self.t_vals)
+        if self.radial_weighting:
+            t_vals = self.t_vals.to(device=rays_o.device, dtype=rays_o.dtype).expand(rays_o.shape[0], -1)
+            z_vals = self._sample_radial_weighted(rays_o, rays_d, dist_near, dist_far, t_vals)
+        else:
+            z_vals = dist_near[:, None] * (1. - self.t_vals) + dist_far[:, None] * self.t_vals
 
-        # Draw uniform samples from bins along ray
-        if self.perturb:
-            mids = .5 * (z_vals[:, 1:] + z_vals[:, :-1])
-            upper = torch.concat([mids, z_vals[:, -1:]], dim=1)
-            lower = torch.concat([z_vals[:, :1], mids], dim=1)
-            t_rand = torch.rand(z_vals.shape, device=z_vals.device)
-            z_vals = lower + (upper - lower) * t_rand
+            # Draw uniform samples from bins along ray
+            if self.perturb:
+                mids = .5 * (z_vals[:, 1:] + z_vals[:, :-1])
+                upper = torch.concat([mids, z_vals[:, -1:]], dim=1)
+                lower = torch.concat([z_vals[:, :1], mids], dim=1)
+                t_rand = torch.rand(z_vals.shape, device=z_vals.device)
+                z_vals = lower + (upper - lower) * t_rand
 
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
 
         return {'points': pts, 'z_vals': z_vals}
+
+    def _sample_radial_weighted(self, rays_o, rays_d, dist_near, dist_far, t_vals):
+        grid_t = torch.linspace(
+            0.0, 1.0, self.radial_weight_grid_size, device=rays_o.device, dtype=rays_o.dtype
+        )[None]
+        z_grid = dist_near[:, None] * (1.0 - grid_t) + dist_far[:, None] * grid_t
+
+        pts_grid = rays_o[:, None, :] + rays_d[:, None, :] * z_grid[..., None]
+        radius = torch.linalg.norm(pts_grid, dim=-1).clamp_min(1e-6)
+        weights = radius.pow(-self.radial_weight_power)
+
+        dz = z_grid[:, 1:] - z_grid[:, :-1]
+        pdf = 0.5 * (weights[:, 1:] + weights[:, :-1]) * dz
+        cdf = torch.cumsum(pdf, dim=-1)
+        cdf = torch.concat([torch.zeros_like(cdf[:, :1]), cdf], dim=-1)
+        cdf = cdf / cdf[:, -1:].clamp_min(1e-8)
+
+        inds = torch.searchsorted(cdf.contiguous(), t_vals.contiguous(), right=True)
+        below = torch.clamp(inds - 1, min=0)
+        above = torch.clamp(inds, max=cdf.shape[-1] - 1)
+        inds_g = torch.stack([below, above], dim=-1)
+
+        matched_shape = list(inds_g.shape[:-1]) + [cdf.shape[-1]]
+        cdf_g = torch.gather(cdf.unsqueeze(-2).expand(matched_shape), dim=-1, index=inds_g)
+        z_g = torch.gather(z_grid.unsqueeze(-2).expand(matched_shape), dim=-1, index=inds_g)
+
+        denom = (cdf_g[..., 1] - cdf_g[..., 0]).clamp_min(1e-8)
+        local_t = (t_vals - cdf_g[..., 0]) / denom
+        return z_g[..., 0] + local_t * (z_g[..., 1] - z_g[..., 0])
 
 
 class StratifiedSampler(torch.nn.Module):

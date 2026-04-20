@@ -128,7 +128,6 @@ def _prep_coronagraph_map(s_map, occ_min=None, occ_max=None):
         data[radius <= occ_min] = np.nan
     if occ_max is not None:
         data[radius >= occ_max] = np.nan
-    data[data <= 0] = np.nan
 
     return Map(data, s_map.meta)
 

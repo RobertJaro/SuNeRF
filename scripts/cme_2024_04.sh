@@ -13,6 +13,9 @@ conda activate lightning
 
 cd /glade/u/home/rjarolim/projects/SuNeRF
 
+python -m sunerf.run_thomson --config "config/cme/202409_cor2_metis.yaml"
+exit
+
 #################################################
 # Prepare data for CME reconstruction
 
@@ -43,6 +46,11 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 #################################################
 # clean invalid files
 #python -m sunerf.data.coronagraph.clean_invalid --invalid_files "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/invalid_files.txt" --base_path "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/**/*" --dry_run
+
+#################################################
+# compute masks
+python -m sunerf.data.coronagraph.compute_correction --type full-min --input "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/tB/*" --output "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/masks/stereo_a_cor2_tB_correction.npy"
+python -m sunerf.data.coronagraph.compute_correction --type full-min --input "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/pB/*" --output "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/masks/stereo_a_cor2_pB_correction.npy"
 
 #################################################
 # Train
@@ -92,11 +100,11 @@ python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjaro
 python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v01/save_state.snf" --longitudes 0 15 30 45 60 75 90
 python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v01/save_state.snf"
 
-python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v05/save_state.snf" --longitudes 0 15 30 45 60 75 90 --radius_range 1.5 15 --time_range "2024-09-22T00:00" "2024-10-01T00:00"
-python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v07/save_state.snf" --occ_range 1.5 15
-python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v05/save_state.snf" --longitudes -10 -5 0 5 10 --radius_range 1.5 15 --time_range "2024-09-20T00:00" "2024-10-01T00:00"
+python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v09/save_state.snf" --longitudes 0 30 60 90 120 150 180 --radius_range 1.5 15 --time_range "2024-09-22T00:00" "2024-10-01T00:00"
+python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v09/save_state.snf" --occ_range 1.5 15
+python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v09/save_state.snf" --longitudes -10 -5 0 5 10 --radius_range 1.5 15 --time_range "2024-09-20T00:00" "2024-10-01T00:00"
 
-python -m sunerf.evaluation.cme.video_polar --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v07/save_state.snf"
+python -m sunerf.evaluation.cme.video_polar --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/202409_cor2_metis_v08/save_state.snf" --occ_range 1.5 15
 
 
 # Metis static
