@@ -234,14 +234,25 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.rho_scaling = 57.80811838603689  # from calibration
-        self.msb = 4.67E+20  # from metis calibration, ph/cm2/s/sr
-        self.sigma_ne = 7.95e-26  # cm2 cm2/sr
-        self.c0 = 1.0  # TODO: load from state
-        self.msb_norm = 1e-9 # TODO: load from state
+        if 'thomson_normalization' not in self.state:
+            raise KeyError("Missing 'thomson_normalization' in saved Thomson state.")
+
+        normalization = self.state['thomson_normalization']
+        required_keys = ['msb', 'sigma_ne', 'c0', 'msb_norm']
+        missing_keys = [k for k in required_keys if k not in normalization]
+        if missing_keys:
+            raise KeyError(
+                f"Saved Thomson state is missing normalization keys: {', '.join(missing_keys)}"
+            )
+
+        self.msb = normalization['msb']  # ph/cm2/s/sr
+        self.sigma_ne = normalization['sigma_ne']
+        self.c0 = normalization['c0']
+        self.msb_norm = normalization['msb_norm']
 
     def convert_rho(self, model_rho):
         # convert to electron density in cm^-3
-        physical_rho = model_rho / self.c0 * (self.msb * np.pi * self.sigma_ne / 2)
+        physical_rho = model_rho * self.msb_norm / self.c0 * (self.msb * np.pi * self.sigma_ne / 2)
         return physical_rho
 
     @torch.no_grad()
@@ -476,6 +487,8 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
         output = super().load_pose(*args, **kwargs)
         # convert image
         output['image'] = output['image'] * self.msb_norm
+        if 'density' in output:
+            output['density'] = self.convert_rho(output['density'])
         return output
 
 

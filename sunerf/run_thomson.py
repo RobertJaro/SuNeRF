@@ -3,6 +3,7 @@ import os
 import warnings
 
 import torch
+import numpy as np
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, LambdaCallback
 from pytorch_lightning.loggers import WandbLogger
@@ -16,6 +17,9 @@ from sunerf.train.callback import ThomsonImageCallback, LatitudeSliceCallback, L
     LongitudeTimeVelocityMagCallback, FixedViewpointSeriesCallback, \
     LongitudeSlicesCallback
 from sunerf.train.util import load_yaml_config
+
+MSB = 4.67E+20  # ph / cm^2 / s / sr
+SIGMA_NE = 7.95e-26
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -78,9 +82,6 @@ if __name__ == '__main__':
     _load_data_module()  # ensure only rank 0 loads/saves the data module
     data_module = torch.load(data_module_save_path)  # all ranks load the data module
 
-    image_scaling = list(data_module.config.values())[0]['image_scaling']
-    rho_normalization = image_scaling / (8.69 * 1e-7)
-
     # initialize SuNeRF model
     sunerf = ThomsonSuNeRFModule(instruments=instruments,
                                  Rs_per_ds=data_module.Rs_per_ds, seconds_per_dt=data_module.seconds_per_dt,
@@ -89,12 +90,21 @@ if __name__ == '__main__':
                                  sampling_config=sampling_config, **module_config,
                                  lambda_config=lambda_config, shuffle_config=shuffle_config)
 
+    image_scaling = list(data_module.config.values())[0]['image_scaling']
+    first_rendering_module = next(iter(sunerf.rendering_modules.values()))
+    c0 = float(first_rendering_module.C_0.detach().cpu().numpy())
+    rho_normalization = image_scaling / c0 * (MSB * np.pi * SIGMA_NE / 2.0)
+
     # initialize callbacks
     checkpoint_callback = ModelCheckpoint(dirpath=base_path,
                                           save_last=True,
                                           every_n_train_steps=log_every_n_steps)
     save_path = os.path.join(base_path, 'save_state.snf')
-    save_callback = LambdaCallback(on_validation_end=lambda *args: save_thomson_sunerf(sunerf, data_module, save_path))
+    save_callback = LambdaCallback(
+        on_validation_end=lambda *args: save_thomson_sunerf(
+            sunerf, data_module, save_path, msb_norm=image_scaling, msb=MSB, sigma_ne=SIGMA_NE
+        )
+    )
 
     callbacks = [checkpoint_callback, save_callback]
 
@@ -163,6 +173,7 @@ if __name__ == '__main__':
                 ds_key=ds_key,
                 cube_shape=base.cube_shape,
                 radii=base.radii,
+                rho_normalization=rho_normalization,
                 name=cb_cfg.get("name", ds_key),
             )
 
@@ -175,6 +186,9 @@ if __name__ == '__main__':
             callback = LongitudeSlicesCallback(
                 ds_key=ds_key,
                 cube_shape=base.cube_shape,
+                rho_normalization=rho_normalization,
+                Rs_per_ds=data_module.Rs_per_ds,
+                seconds_per_dt=data_module.seconds_per_dt,
                 longitude_deg=base.longitude_deg,
                 name=cb_cfg.get("name", ds_key),
             )

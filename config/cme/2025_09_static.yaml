@@ -1,4 +1,4 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v07"
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_static_v01"
 work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2025_09_v05'
 
 instruments:
@@ -20,7 +20,7 @@ instruments:
 
 model:
   dim: 128
-  static: False
+  static: True
   use_carrington_projection: True
 
 data:
@@ -114,7 +114,7 @@ callbacks:
 logging:
   entity: "robert_jarolim"
   project: "sunerf-cme-obs-v2"
-  name: "2025-09 - STEREO A COR2 + PUNCH + CCOR"
+  name: "2025-09 - STEREO A COR2 + PUNCH + CCOR - static"
 
 sampling:
   type: "spherical"
@@ -124,18 +124,13 @@ sampling:
 lambda:
   image: 1.0
   ratio: 1.0
-  continuity:
-    start: 1.0e-1
-    end: 1.0e-4
-    iterations: 1.0e+5
-  radial:
-    start: 1.0e-1
-    end: 1.0e-4
-    iterations: 1.0e+5
-  velocity:
-    start: 1.0e-1
-    end: 1.0e-4
-    iterations: 1.0e+5
+#  calibration:
+#    start: 1.0e-1
+#    end: 1.0e-5
+#    iterations: 1.0e+5
+  radial: 1.0e-3
+  continuity: 1.0e-3
+  velocity: 1.0e-3
 
 training:
-  log_every_n_steps: 10000
+  log_every_n_steps: 2000

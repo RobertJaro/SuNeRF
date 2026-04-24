@@ -1,23 +1,25 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/201208_cor2_v02"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/201208_cor2_v02'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/201208_cor2_static_v01"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/201208_cor2_v03'
 
 instruments:
   - type: 'default'
     key: 'STEREO_A_COR2'
     scaling: {type: 'log'}
-    correction: { corrections: [ 'f_corona', 'tB_add' ] }
+    correction: { corrections: [ 'pB_add', 'tB_add' ] }
     calibration: False
     alignment: False
   - type: 'default'
     key: 'STEREO_B_COR2'
     scaling: { type: 'log' }
-    correction: { corrections: [ 'f_corona', 'pB_add', 'tB_add' ] }
+    correction: { corrections: [ 'pB_add', 'tB_add' ] }
     calibration: True
     alignment: False
 
 model:
   dim: 128
-  static: False
+  static: True
+  input_weights: [30, 30, 30]
+  w0_init: 1.0
   use_carrington_projection: True
 
 data:
@@ -92,7 +94,7 @@ callbacks:
 logging:
   entity: "robert_jarolim"
   project: "sunerf-cme-obs-v2"
-  name: "2012-08 - COR2"
+  name: "2012-08 - COR2 - static"
 
 sampling:
   type: "spherical"
@@ -101,19 +103,10 @@ sampling:
 
 lambda:
   image: 1.0
-  ratio: 1.0
-  continuity:
-    start: 1.0e-1
-    end: 1.0e-4
-    iterations: 1.0e+5
-  radial:
-    start: 1.0e-1
-    end: 1.0e-4
-    iterations: 1.0e+5
-  velocity:
-    start: 1.0e-1
-    end: 1.0e-4
-    iterations: 1.0e+5
+  ratio: 10.0
+  radial: 1.0e-2
+  continuity: 1.0e-2
+  velocity: 1.0e-2
 
 training:
-  log_every_n_steps: 10000
+  log_every_n_steps: 2000

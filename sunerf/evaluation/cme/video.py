@@ -108,7 +108,7 @@ if __name__ == '__main__':
         tB_map.draw_grid(ax, color='blue')
 
         ax = axs[2]
-        im = ax.imshow(density_map.data, cmap='inferno', origin='lower', norm=density_norm)
+        im = ax.imshow(density_map.data, cmap='RdPu', origin='lower', norm=density_norm)
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05, axes_class=plt.Axes)
         fig.colorbar(im, cax=cax)

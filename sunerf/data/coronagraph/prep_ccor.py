@@ -49,6 +49,26 @@ def _validate_ccor_quality(ext_header, primary_header, file_path):
     return True
 
 
+def _rotate_ccor_map(s_map, primary_header):
+    """Undo any recorded 90-degree CCOR rotation through SunPy's map rotation."""
+    nrot90 = s_map.meta.get("NROT90", primary_header.get("NROT90", 0))
+    try:
+        nrot90 = int(nrot90) % 4
+    except (TypeError, ValueError):
+        nrot90 = 0
+
+    if nrot90 == 0:
+        return s_map
+
+    rotated_map = s_map.rotate(
+        angle=-nrot90 * 90 * u.deg,
+        order=0,
+        missing=np.nan,
+    )
+    rotated_map.meta["NROT90"] = 0
+    return rotated_map
+
+
 def _load_ccor_map(file_path):
     """Load CCOR FITS and apply extension-2 mask to extension-1 data."""
     try:
@@ -68,19 +88,22 @@ def _load_ccor_map(file_path):
     except Exception as e:
         raise RuntimeError(f"Error loading CCOR FITS file {file_path}: {e}")
 
-    return Map(masked_data, header)
+    s_map = Map(masked_data, header)
+    return _rotate_ccor_map(s_map, primary_header)
 
 
 class CCORPrep:
     """Callable helper for multiprocessing conversion of CCOR FITS files."""
 
-    def __init__(self, out_path, overwrite=True, occ_min=None, occ_max=None, resize=None, clip_max=None):
+    def __init__(self, out_path, overwrite=True, occ_min=None, occ_max=None, resize=None, value_min=None,
+                 value_max=None):
         self.out_path = out_path
         self.overwrite = overwrite
         self.occ_min = occ_min
         self.occ_max = occ_max
         self.resize = resize
-        self.clip_max = clip_max
+        self.value_min = value_min
+        self.value_max = value_max
 
     def convert(self, file_path):
         out_path = os.path.join(self.out_path, os.path.basename(file_path))
@@ -94,8 +117,10 @@ class CCORPrep:
 
         if self.resize is not None:
             s_map = s_map.resample(self.resize * u.pixel)
-        if self.clip_max is not None:
-            s_map.data[:] = np.clip(s_map.data, a_max=self.clip_max, a_min=None)
+        if self.value_min is not None:
+            s_map.data[s_map.data < self.value_min] = np.nan
+        if self.value_max is not None:
+            s_map.data[s_map.data > self.value_max] = np.nan
 
         s_map.save(out_path, overwrite=True)
         return out_path
@@ -122,12 +147,8 @@ def main():
         action="store_true",
         help="Skip outputs that already exist.",
     )
-    p.add_argument(
-        "--clip_max",
-        type=float,
-        default=None,
-        help="Optional maximum value to clip data to.",
-    )
+    p.add_argument("--value_min", type=float, default=None, help="Optional minimum allowed data value.")
+    p.add_argument("--value_max", type=float, default=None, help="Optional maximum allowed data value.")
     p.add_argument(
         "--num_workers",
         type=int,
@@ -153,7 +174,8 @@ def main():
         occ_min=args.occ_min * u.arcsec if args.occ_min is not None else None,
         occ_max=args.occ_max * u.arcsec if args.occ_max is not None else None,
         resize=args.resize,
-        clip_max=args.clip_max,
+        value_min=args.value_min,
+        value_max=args.value_max,
     )
 
     with multiprocessing.Pool(args.num_workers) as pool:

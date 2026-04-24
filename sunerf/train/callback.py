@@ -818,7 +818,7 @@ class RadialSlicesCallback(BaseCallback):
       - uses constrained_layout
     """
 
-    def __init__(self, cube_shape, radii, **kwargs):
+    def __init__(self, cube_shape, radii, rho_normalization, **kwargs):
         """
         Parameters
         ----------
@@ -830,6 +830,7 @@ class RadialSlicesCallback(BaseCallback):
         super().__init__(**kwargs)
         self.cube_shape = cube_shape
         self.radii = np.asarray(radii, dtype=np.float32)
+        self.rho_normalization = float(rho_normalization)
 
         if len(self.radii) != cube_shape[0]:
             raise ValueError(
@@ -844,7 +845,7 @@ class RadialSlicesCallback(BaseCallback):
 
         Nr, Nlat, Nlon, Nt = self.cube_shape
 
-        rho = out["rho_pred"].detach().cpu().numpy().reshape(-1)
+        rho = out["rho_pred"].detach().cpu().numpy().reshape(-1) * self.rho_normalization
         rho = rho.reshape(Nr, Nlat, Nlon, Nt)
 
         sph = out["spherical_coords"].detach().cpu().numpy().reshape(-1, 3)
@@ -917,7 +918,7 @@ class RadialSlicesCallback(BaseCallback):
                 mappable_row,
                 cax=cax,
                 orientation="vertical",
-                label="Density",
+                label=r"Density [N$_e$ cm$^{-3}$]",
             )
 
         wandb.log({f"radial_slices.{self.name}": wandb.Image(fig)})
@@ -938,10 +939,13 @@ class LongitudeSlicesCallback(BaseCallback):
       - Colorbars sit in the dedicated last column (all the way to the right).
     """
 
-    def __init__(self, cube_shape, longitude_deg=(0, 30, 60, 90, 120, 150), **kwargs):
+    def __init__(self, cube_shape, rho_normalization, Rs_per_ds, seconds_per_dt,
+                 longitude_deg=(0, 30, 60, 90, 120, 150), **kwargs):
         super().__init__(**kwargs)
         self.cube_shape = cube_shape
         self.longitude_deg = np.asarray(longitude_deg, dtype=np.float32)
+        self.rho_normalization = float(rho_normalization)
+        self.velocity_normalization = float((Rs_per_ds * u.solRad / (seconds_per_dt * u.s)).to_value(u.km / u.s))
 
     @rank_zero_only
     def on_validation_end(self, trainer, pl_module):
@@ -951,7 +955,7 @@ class LongitudeSlicesCallback(BaseCallback):
 
         Nr, Nlat, Nlon, Nt = self.cube_shape
 
-        rho = out["rho_pred"].detach().cpu().numpy().reshape(-1)
+        rho = out["rho_pred"].detach().cpu().numpy().reshape(-1) * self.rho_normalization
         rho = rho.reshape(Nr, Nlat, Nlon, Nt)
 
         sph = out["spherical_coords"].detach().cpu().numpy().reshape(-1, 3)
@@ -1029,7 +1033,7 @@ class LongitudeSlicesCallback(BaseCallback):
                 mappable_row,
                 cax=cax,
                 orientation="vertical",
-                label="Density",
+                label=r"Density [N$_e$ cm$^{-3}$]",
             )
 
         wandb.log({f"longitude_slices.rho.{self.name}": wandb.Image(fig)})
@@ -1040,7 +1044,7 @@ class LongitudeSlicesCallback(BaseCallback):
             return
 
         v = out["v_pred"].detach().cpu().numpy().reshape(Nr, Nlat, Nlon, Nt, 3)
-        vmag = np.linalg.norm(v, axis=-1)
+        vmag = np.linalg.norm(v, axis=-1) * self.velocity_normalization
         vmag = np.clip(vmag, 1e-30, None)
         vmag_norm = LogNorm(vmin=np.nanmin(vmag), vmax=np.nanmax(vmag))
 
@@ -1094,7 +1098,7 @@ class LongitudeSlicesCallback(BaseCallback):
                 mappable_row_v,
                 cax=cax,
                 orientation="vertical",
-                label="|v|",
+                label=r"|v| [km s$^{-1}$]",
             )
 
         wandb.log({f"longitude_slices.vmag.{self.name}": wandb.Image(fig_v)})

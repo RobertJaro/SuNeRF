@@ -12,7 +12,7 @@ from sunerf.train.coordinate_transformation import to_carrington_rotation_frame
 
 
 class SirenModel(nn.Module):
-    def __init__(self, in_dim, out_dim, dim=512, n_layers=8, w0=1., w0_init=30, input_weights=None, **kwargs):
+    def __init__(self, in_dim, out_dim, dim=512, n_layers=8, w0=1., w0_init=1, input_weights=None, **kwargs):
         super().__init__()
 
         self.num_layers = n_layers
@@ -46,6 +46,89 @@ class SirenModel(nn.Module):
 
     def step(self, global_step):
         pass
+
+
+class SplitTemporalSirenModel(nn.Module):
+    def __init__(
+            self,
+            spatial_dim=128,
+            spatial_layers=8,
+            time_dim=32,
+            time_layers=2,
+            fusion_dim=128,
+            fusion_layers=2,
+            w0_spatial=30.,
+            w0_time=1.,
+            alpha=0.1,
+            cold_steps=5e4,
+            warm_steps=1e4,
+            output_dim=4,
+            **kwargs):
+        super().__init__()
+        self.output_dim = output_dim
+        self.alpha_max = nn.Parameter(torch.tensor(alpha, dtype=torch.float32), requires_grad=False)
+        self.current_alpha = nn.Parameter(torch.tensor(0.0, dtype=torch.float32), requires_grad=False)
+        self.cold_steps = nn.Parameter(torch.tensor(int(cold_steps), dtype=torch.int64), requires_grad=False)
+        self.warm_steps = nn.Parameter(torch.tensor(int(warm_steps), dtype=torch.int64), requires_grad=False)
+
+        spatial_blocks = [SirenLayer(in_dim=3, out_dim=spatial_dim, w0=w0_spatial, is_first=True)]
+        spatial_blocks.extend(
+            SirenLayer(in_dim=spatial_dim, out_dim=spatial_dim, w0=1)
+            for _ in range(max(spatial_layers - 1, 0))
+        )
+        self.spatial_net = nn.Sequential(*spatial_blocks)
+
+        time_blocks = [SirenLayer(in_dim=1, out_dim=time_dim, w0=w0_time, is_first=True)]
+        time_blocks.extend(
+            SirenLayer(in_dim=time_dim, out_dim=time_dim, w0=1)
+            for _ in range(max(time_layers - 1, 0))
+        )
+        self.time_net = nn.Sequential(*time_blocks)
+
+        fusion_in_dim = spatial_dim + time_dim
+        fusion_blocks = [SirenLayer(in_dim=fusion_in_dim, out_dim=fusion_dim, w0=1)]
+        fusion_blocks.extend(
+            SirenLayer(in_dim=fusion_dim, out_dim=fusion_dim, w0=1)
+            for _ in range(max(fusion_layers - 1, 0))
+        )
+        self.fusion_net = nn.Sequential(*fusion_blocks)
+
+        self.head_static = nn.Linear(spatial_dim, output_dim)
+        self.head_dynamic = nn.Linear(fusion_dim, output_dim)
+
+    def forward(self, inp):
+        spatial = inp[..., :3]
+        time = inp[..., 3:4]
+
+        spatial_feat = self.spatial_net(spatial)
+        time_feat = self.time_net(time)
+
+        dynamic_feat = torch.cat([spatial_feat, time_feat], dim=-1)
+        dynamic_feat = self.fusion_net(dynamic_feat)
+
+        out_static = self.head_static(spatial_feat)
+        out_dynamic = self.head_dynamic(dynamic_feat)
+        return out_static + self.current_alpha * out_dynamic
+
+    def step(self, global_step):
+        step = int(global_step)
+        cold_steps = int(self.cold_steps.item())
+        warm_steps = int(self.warm_steps.item())
+        alpha_max = float(self.alpha_max.item())
+
+        if step < cold_steps:
+            alpha = 0.0
+        elif warm_steps <= 0:
+            alpha = alpha_max
+        elif step < cold_steps + warm_steps:
+            progress = (step - cold_steps) / warm_steps
+            alpha = alpha_max * progress
+        else:
+            alpha = alpha_max
+
+        self.current_alpha.copy_(
+            torch.tensor(alpha, dtype=self.current_alpha.dtype, device=self.current_alpha.device)
+        )
 
 
 class SirenNet(nn.Module):
@@ -243,7 +326,8 @@ class SirenPlasmaModel(SirenModel):
 
 class RhoModel(nn.Module):
 
-    def __init__(self, Rs_per_ds, seconds_per_dt, static=False, use_carrington_projection=True, **kwargs):
+    def __init__(self, Rs_per_ds, seconds_per_dt, static=False, use_carrington_projection=True,
+                 model_type='split_temporal', **kwargs):
         super().__init__()
         v = 300 * (u.km / u.s)
         v = v.to_value(u.solRad / u.s) / Rs_per_ds * seconds_per_dt  # normalize to model units
@@ -255,8 +339,14 @@ class RhoModel(nn.Module):
 
         self.static = static
         self.use_carrington_projection = use_carrington_projection
-        in_dim = 4 if not static else 3
-        self.model = SirenModel(in_dim=in_dim, out_dim=4, **kwargs)
+        if static:
+            self.model = SirenModel(in_dim=3, out_dim=4, **kwargs)
+        elif model_type == 'split_temporal':
+            self.model = SplitTemporalSirenModel(output_dim=4, **kwargs)
+        elif model_type in {'default', 'shared'}:
+            self.model = SirenModel(in_dim=4, out_dim=4, **kwargs)
+        else:
+            raise ValueError(f"Unknown RhoModel model_type: {model_type}")
 
     def forward(self, coords):
         radial_distance = torch.norm(coords[..., :3], dim=-1, keepdim=True)
@@ -276,6 +366,10 @@ class RhoModel(nn.Module):
 
         result = {'log_rho': log_rho, 'rho': rho, 'v': v}
         return result
+
+    def step(self, global_step):
+        if hasattr(self.model, 'step'):
+            self.model.step(global_step)
 
 
 class AbsorptionModel(GenericModel):

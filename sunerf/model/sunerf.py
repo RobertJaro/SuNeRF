@@ -18,7 +18,7 @@ class BaseSuNeRFModule(LightningModule):
         self.validation_outputs = {}
         self.validation_batches = {}
 
-        self.lr_config = {'start': 1e-4, 'end': 1e-5, 'iterations': 1e6} if lr_config is None else lr_config
+        self.lr_config = {'start': 1e-3, 'end': 1e-4, 'iterations': 1e6} if lr_config is None else lr_config
 
     def configure_optimizers(self):
         self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr_config['start'])

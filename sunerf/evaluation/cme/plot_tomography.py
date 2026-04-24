@@ -75,16 +75,25 @@ if __name__ == '__main__':
                                                 time=time)
         ##########################################################
 
-        fig = plt.figure(figsize=(5 * len(longitudes), 10), constrained_layout=True)
+        fig = plt.figure(figsize=(5 * len(longitudes) + 0.8, 10), constrained_layout=True)
 
         axd = fig.subplot_mosaic(
-            [[f"rho{j}" for j in range(len(longitudes))],
-             [f"vel{j}" for j in range(len(longitudes))]],
-            height_ratios=[1, 2],
+            [[f"rho{j}" for j in range(len(longitudes))] + ["rho_cb"],
+             [f"vel{j}" for j in range(len(longitudes))] + ["vel_cb"]],
+            height_ratios=[1, 1],
+            width_ratios=[1] * len(longitudes) + [0.06],
             per_subplot_kw={f"rho{j}": {"projection": "polar"} for j in range(len(longitudes))} |
                            {f"vel{j}": {"projection": "polar"} for j in range(len(longitudes))},
 
         )
+
+        axd["rho0"].text(-0.22, 0.5, "Density Slice", transform=axd["rho0"].transAxes,
+                          rotation=90, va="center", ha="center")
+        axd["vel0"].text(-0.22, 0.5, "Velocity Magnitude Slice", transform=axd["vel0"].transAxes,
+                          rotation=90, va="center", ha="center")
+
+        density_pc = None
+        velocity_pc = None
 
         for j in range(len(longitudes)):
             target_longitude = longitudes[j]
@@ -95,9 +104,8 @@ if __name__ == '__main__':
 
             # --- Polar plot - density ---
             ax = axd[f"rho{j}"]
-            pc = ax.pcolormesh(theta, r, rho, shading="auto", norm=density_norm, cmap="inferno")
-            cb = fig.colorbar(pc, ax=ax, pad=0.05, shrink=0.8, label=r"Density (cm$^{-3}$)")
-            ax.set_title(f"Density Slice at {target_longitude.to_value(u.deg):.1f}° Longitude")
+            density_pc = ax.pcolormesh(theta, r, rho, shading="auto", norm=density_norm, cmap="RdPu")
+            ax.set_title(f"{target_longitude.to_value(u.deg):.1f}° Longitude")
             ax.set_xlabel("Latitude (rad)")
             ax.set_ylabel(r"Radius (R$_\odot$)")
             ax.tick_params(axis="y", colors='lightgray')
@@ -105,12 +113,14 @@ if __name__ == '__main__':
             # --- Polar plot - velocity ---
             vel_mag = np.linalg.norm(velocity, axis=-1)
             ax = axd[f"vel{j}"]
-            pc = ax.pcolormesh(theta, r, vel_mag, shading="auto", norm=velocity_norm, cmap="viridis")
-            cb = fig.colorbar(pc, ax=ax, pad=0.05, shrink=0.8, label="Velocity (km/s)")
-            ax.set_title(f"Velocity Magnitude Slice at {target_longitude.to_value(u.deg):.1f}° Longitude")
+            velocity_pc = ax.pcolormesh(theta, r, vel_mag, shading="auto", norm=velocity_norm, cmap="viridis")
+            ax.set_title(f"{target_longitude.to_value(u.deg):.1f}° Longitude")
             ax.set_xlabel("Latitude (rad)")
             ax.set_ylabel(r"Radius (R$_\odot$)")
             ax.tick_params(axis="y", colors='lightgray')
+
+        fig.colorbar(density_pc, cax=axd["rho_cb"], label=r"Density (cm$^{-3}$)")
+        fig.colorbar(velocity_pc, cax=axd["vel_cb"], label="Velocity (km/s)")
 
         fig.suptitle(f"Time: {time.strftime('%Y-%m-%d %H:%M')} UTC", fontsize=16)
 

@@ -27,6 +27,14 @@ def compute_velocity(times, radius):
     return velocity_km_s
 
 
+def _create_longitude_slice_figure(num_slices):
+    fig = plt.figure(figsize=(1.7 * num_slices + 0.5, 2.2), constrained_layout=True)
+    gs = fig.add_gridspec(1, num_slices + 1, width_ratios=[1] * num_slices + [0.08])
+    axs = [fig.add_subplot(gs[0, i], projection="polar") for i in range(num_slices)]
+    cbar_ax = fig.add_subplot(gs[0, -1])
+    return fig, axs, cbar_ax
+
+
 def plot_longitude_slice(rho, spherical_coords, img_path, target_longitude=135,
                          slices=[-20, -10, 0, 10, 20], target_latitude=0):
     """Plot multiple longitude slices of the density cube.
@@ -39,13 +47,10 @@ def plot_longitude_slice(rho, spherical_coords, img_path, target_longitude=135,
         slices: List of longitude offsets from target in degrees
     """
     rho_norm = LogNorm(vmin=1e1, vmax=1e3)
-    subplot_kw = {str(i): {"projection": "polar"} for i in range(len(slices))}
-    fig, axs = plt.subplot_mosaic([[str(i) for i in range(len(slices))] + ['CB']],
-                                  width_ratios=[1 for _ in range(len(slices))] + [0.1],
-                                  per_subplot_kw=subplot_kw, figsize=(1.7 * len(slices), 2.2))
+    fig, axes, cbar_ax = _create_longitude_slice_figure(len(slices))
 
     for i, shift in enumerate(slices):
-        ax = axs[str(i)]
+        ax = axes[i]
         lon_idx = np.argmin(np.abs(spherical_coords[0, 0, :, 0, 2] - np.deg2rad(target_longitude + shift)))
 
         r = spherical_coords[:, :, lon_idx, 0, 0]
@@ -57,16 +62,14 @@ def plot_longitude_slice(rho, spherical_coords, img_path, target_longitude=135,
         ax.plot(np.deg2rad([target_latitude, target_latitude]), np.array([min_radius, max_radius]),
                 color='cyan', linestyle='--', linewidth=1)
 
-    cbar_ax = axs['CB']
     fig.colorbar(pc, cax=cbar_ax, label=r'Density [N$_\text{e}$ cm$^{-3}$]')
 
-    for ax in [axs[str(i)] for i in range(len(slices))]:
+    for ax in axes:
         if min_latitude is not None:
             ax.set_xlim(np.deg2rad([min_latitude, max_latitude]))
         ax.set_rticks([30, 60, 90, 120])
         ax.set_xticks(np.deg2rad([-45, 0, 45]))
         ax.set_rlim(0, max_radius)
-    fig.tight_layout(w_pad=0.1)
     fig.savefig(img_path, dpi=300, transparent=True)
     plt.close('all')
 
@@ -82,13 +85,10 @@ def plot_longitude_diff_slice(rho_diff, spherical_coords, img_path, target_longi
         target_longitude: Center longitude for slices in degrees
         slices: List of longitude offsets from target in degrees
     """
-    subplot_kw = {str(i): {"projection": "polar"} for i in range(len(slices))}
-    fig, axs = plt.subplot_mosaic([[str(i) for i in range(len(slices))] + ['CB']],
-                                  width_ratios=[1 for _ in range(len(slices))] + [0.1],
-                                  per_subplot_kw=subplot_kw, figsize=(1.7 * len(slices), 2.2))
+    fig, axes, cbar_ax = _create_longitude_slice_figure(len(slices))
 
     for i, shift in enumerate(slices):
-        ax = axs[str(i)]
+        ax = axes[i]
         lon_idx = np.argmin(np.abs(spherical_coords[0, 0, :, 0, 2] - np.deg2rad(target_longitude + shift)))
 
         r = spherical_coords[:, :, lon_idx, 0, 0]
@@ -97,15 +97,14 @@ def plot_longitude_diff_slice(rho_diff, spherical_coords, img_path, target_longi
 
         pc = ax.pcolormesh(th, r, z, edgecolors='face', cmap='Reds', norm=LogNorm(vmin=1e1, vmax=1e3))
 
-    cbar_ax = axs['CB']
     fig.colorbar(pc, cax=cbar_ax, label=r'Error [N$_\text{e}$ cm$^{-3}$]')
 
-    for ax in [axs[str(i)] for i in range(len(slices))]:
+    for ax in axes:
         if min_latitude is not None:
             ax.set_xlim(np.deg2rad([min_latitude, max_latitude]))
         ax.set_rticks([30, 60, 90, 120])
         ax.set_xticks(np.deg2rad([-45, 0, 45]))
-    fig.tight_layout(w_pad=0.1)
+        ax.set_rlim(0, max_radius)
     fig.savefig(img_path, dpi=300, transparent=True)
     plt.close('all')
 

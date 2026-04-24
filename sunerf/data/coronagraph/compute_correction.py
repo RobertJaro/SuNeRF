@@ -40,7 +40,7 @@ def main():
     parser.add_argument(
         "--type",
         choices=("daily-min", "full-min"),
-        default="daily-min",
+        default="full-min",
         help="Correction type: min over daily medians (daily-min) or min over full dataset (full-min).",
     )
     args = parser.parse_args()

@@ -93,6 +93,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                          'velocity': 1e-3} if lambda_config is None else lambda_config
         # check lambda config
         available_lambdas = ['image', 'ratio', 'continuity', 'radial', 'velocity',
+                             'calibration',
                              'f_corona', 'transmission', 'calibration_gain', 'calibration_offset', 'calibration_scalar',
                              'pB_mul', 'tB_mul', 'pB_add', 'tB_add', 'pB_add_mean', 'tB_add_mean',
                              'pB_straylight', 'tB_straylight', 'star_background']
@@ -260,6 +261,14 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             loss += self.lambdas[k]['value'] * v
             log_values[k] = v
 
+        if self.lambdas['calibration']['value'] > 0.0 and len(self.calibration_modules) > 0:
+            calibration_loss = torch.stack([
+                (torch.exp(module.calibration) - 1.0).pow(2).mean()
+                for module in self.calibration_modules.values()
+            ]).mean()
+            loss += self.lambdas['calibration']['value'] * calibration_loss
+            log_values['calibration'] = calibration_loss
+
         if 'random' in batch:
             query_points = batch['random']['coords']
             query_points.requires_grad = True
@@ -312,6 +321,11 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
     def get_correction_loss(self, correction):
         correction_losses = {}
+        if self.lambdas['calibration']['value'] > 0.0 and 'calibration' in correction:
+            calibration = correction['calibration']
+            # prefer temporal calibration close to 1
+            calibration_loss = (calibration - 1.0).pow(2)
+            correction_losses['calibration'] = calibration_loss
         if self.lambdas['f_corona']['value'] > 0.0 and 'f_corona' in correction:
             f_corona = correction['f_corona']
             # prefer smaller coronal brightness
@@ -574,6 +588,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         return {}
 
     def on_train_batch_end(self, *args, **kwargs):
+        self.model.step(self.global_step)
         # update lambda values
         for k, v in self.lambdas.items():
             if v['type'] == 'exponential_decay':
@@ -593,14 +608,18 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         # log instrument scaling
         scaling = {f'instrument_calibration.{k}': float(torch.exp(m.calibration).detach().cpu().numpy())
                    for k, m in self.calibration_modules.items()}
+        if hasattr(self.model, 'model') and hasattr(self.model.model, 'current_alpha'):
+            scaling['dynamic_alpha'] = float(self.model.model.current_alpha.detach().cpu().numpy())
         self.log_dict(scaling, sync_dist=True)
         # call super method
         super().on_train_batch_end(*args, **kwargs)
 
 
-def save_thomson_sunerf(sunerf: ThomsonSuNeRFModule, data_module: BaseDataModule, save_path):
+def save_thomson_sunerf(sunerf: ThomsonSuNeRFModule, data_module: BaseDataModule, save_path,
+                        msb_norm=None, msb=None, sigma_ne=None):
     output_path = '/'.join(save_path.split('/')[0:-1])
     os.makedirs(output_path, exist_ok=True)
+    first_rendering_module = next(iter(sunerf.rendering_modules.values()))
     state = {
         # sunerf  rendering module
         'rendering': sunerf.rendering,
@@ -610,5 +629,11 @@ def save_thomson_sunerf(sunerf: ThomsonSuNeRFModule, data_module: BaseDataModule
         'Rs_per_ds': data_module.Rs_per_ds,
         'seconds_per_dt': data_module.seconds_per_dt,
         'ref_date': data_module.ref_date,
+        'thomson_normalization': {
+            'c0': float(first_rendering_module.C_0.detach().cpu().numpy()),
+            'msb_norm': msb_norm,
+            'msb': msb,
+            'sigma_ne': sigma_ne,
+        }
     }
     torch.save(state, save_path)

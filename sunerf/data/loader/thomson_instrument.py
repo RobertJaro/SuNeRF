@@ -481,18 +481,21 @@ class RadialSlicesDataset(TensorsDataset):
 
         # coords: (Nr, Ntheta, Nphi, Nt, 4) with [r, th, ph, t]
         # meshgrid order matches indexing="ij"
-        rr, th, ph, tt = np.meshgrid(radii, theta, phi, t, indexing="ij")
+        rr, th, ph_carr, tt = np.meshgrid(radii, theta, phi, t, indexing="ij")
+        spherical_coords = np.stack([rr, th, ph_carr], axis=-1).astype(np.float32)
 
-        # replace longitude with inertial longitude for each time step
+        # Build a second longitude cube for the actual model query points.
+        # Validation plots should remain in Carrington coordinates, while the
+        # Cartesian samples must be rotated into the inertial frame at each time.
+        ph_query = np.array(ph_carr, copy=True)
         datetimes = [unnormalize_datetime(it, seconds_per_dt, ref_date) for it in t]
         longitudes = convert_carrington_to_inertial(phi * u.rad, datetimes)
         for i, longitude_inertial in enumerate(longitudes):
-            ph[:, :, :, i] = longitude_inertial
+            ph_query[:, :, :, i] = longitude_inertial
 
-        coords = np.stack([rr, th, ph, tt], axis=-1)  # (Nr, Ntheta, Nphi, Nt, 4)
-        spherical_coords = coords[..., :3]  # (Nr, Ntheta, Nphi, Nt, 3)
+        coords = np.stack([rr, th, ph_query, tt], axis=-1)  # (Nr, Ntheta, Nphi, Nt, 4)
 
-        cart = spherical_to_cartesian(spherical_coords, np).astype(np.float32)  # (..,3) in R_sun
+        cart = spherical_to_cartesian(coords[..., :3], np).astype(np.float32)  # (..,3) in R_sun
         cart /= Rs_per_ds  # normalize spatial coords
 
         query_points = np.concatenate([cart, coords[..., 3:4]], axis=-1).astype(np.float32)  # (..,4)
@@ -564,17 +567,20 @@ class LongitudeSlicesDataset(TensorsDataset):
         longitudes = convert_carrington_to_inertial(longitude_deg * u.deg, datetimes)
 
         # meshgrid: (Nr, Nlat, Nlon_slices, Nt)
-        rr, lat, lon, tt = np.meshgrid(
+        rr, lat, lon_carr, tt = np.meshgrid(
             r, latitude, np.zeros_like(longitude_deg), times, indexing="ij"
         )
-        # fill longitude values for each time step
+        spherical_coords = np.stack([rr, lat, lon_carr], axis=-1).astype(np.float32)
+
+        # Keep metadata longitudes in Carrington, but rotate query points into
+        # the inertial frame used by the model at each validation time.
+        lon_query = np.array(lon_carr, copy=True)
         for i, longitude_inertial in enumerate(longitudes):
-            lon[:, :, :, i] = longitude_inertial
+            lon_query[:, :, :, i] = longitude_inertial
 
-        coords = np.stack([rr, lat, lon, tt], axis=-1).astype(np.float32)
-        spherical_coords = coords[..., :3]  # (..,3) -> [r, latitude, longitude]
+        coords = np.stack([rr, lat, lon_query, tt], axis=-1).astype(np.float32)
 
-        cart = spherical_to_cartesian(spherical_coords, np).astype(np.float32)
+        cart = spherical_to_cartesian(coords[..., :3], np).astype(np.float32)
         cart /= Rs_per_ds
 
         query_points = np.concatenate(

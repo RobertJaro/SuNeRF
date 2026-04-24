@@ -9,7 +9,8 @@ python -m sunerf.data.download.download_ccor \
   --start 2025-09-01T00:00:00 \
   --end 2025-10-01T00:00:00 \
   --cadence 1h \
-  --out /glade/work/rjarolim/data/sunerf-cme/2025_09/ccor
+  --out /glade/work/rjarolim/data/sunerf-cme/2025_09/ccor_l2 \
+  --product-prefix "SWFO/GOES-19/CCOR-1/ccor1-l2_science"
 
 # download stereo cor2
 python -m sunerf.data.download.download_cor --start 2025-09-10T00:00:00  --end 2025-09-20T00:00:00 --out /glade/work/rjarolim/data/sunerf-cme/2025_09/cor --detector COR2
@@ -19,16 +20,16 @@ python -m sunerf.data.cor.remove_invalid_triplets \
   --glob "/glade/work/rjarolim/data/sunerf-cme/2025_09/cor/*.fts" --dry-run
 
 # download PUNCH NFI data
-python -m sunerf.data.download.download_punch  \
-  --level l1 --instrument nfi --ext 0j.fits \
-  --start 2025-09-01T00:00:00  --end 2025-09-20T00:00:00 \
-  --out /glade/work/rjarolim/data/sunerf-cme/2025_09/punch_nfi \
+#python -m sunerf.data.download.download_punch  \
+#  --level l1 --instrument nfi --ext 0j.fits \
+#  --start 2025-09-01T00:00:00  --end 2025-09-20T00:00:00 \
+#  --out /glade/work/rjarolim/data/sunerf-cme/2025_09/punch_nfi \
 
 # download PUNCH - CAM
-python -m sunerf.data.download.download_punch \
-  --level l3 --product CAM \
-  --start 2025-09-01T00:00:00 --end 2025-10-01T00:00:00 \
-  --out /glade/work/rjarolim/data/sunerf-cme/2025_09/punch_cam
+#python -m sunerf.data.download.download_punch \
+#  --level l3 --product CAM \
+#  --start 2025-09-01T00:00:00 --end 2025-10-01T00:00:00 \
+#  --out /glade/work/rjarolim/data/sunerf-cme/2025_09/punch_cam
 
 # download PUNCH - PAM
 python -m sunerf.data.download.download_punch \

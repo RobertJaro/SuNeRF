@@ -24,26 +24,22 @@ class CorrectionModule(nn.Module):
         radial_corrections = [c for c in self.corrections if c in possible_radial_corrections]
         temporal_corrections = [c for c in self.corrections if c in possible_temporal_corrections]
 
-        encoding_config = {'type': 'default', 'w0': 30.}
-
         if len(img_corrections) > 0:
-            self.img_correction_module = SirenModel(in_dim=2, out_dim=len(img_corrections), dim=64, n_layers=4, encoding_config=encoding_config)
+            self.img_correction_module = SirenModel(in_dim=2, out_dim=len(img_corrections), dim=64, n_layers=4, w0_init=30)
         else:
             self.img_correction_module = None
         if len(hpc_corrections) > 0:
             # Tx, Ty, distance
-            self.hpc_correction_module = SirenModel(in_dim=2, out_dim=len(hpc_corrections), dim=32, n_layers=2, encoding_config=encoding_config)
-            self.distance_scaling_module = SirenModel(in_dim=1, out_dim=len(hpc_corrections), dim=16, n_layers=2, encoding_config={'type': 'default', 'w0': 1.})
+            self.hpc_correction_module = SirenModel(in_dim=2, out_dim=len(hpc_corrections), dim=32, n_layers=2, w0_init=30)
+            self.distance_scaling_module = SirenModel(in_dim=1, out_dim=len(hpc_corrections), dim=16, n_layers=2, w0_init=1)
         else:
             self.hpc_correction_module = None
         if len(radial_corrections) > 0:
-            self.radial_correction_module = SirenModel(in_dim=1, out_dim=len(radial_corrections), dim=32, n_layers=2,
-                                                       encoding_config={'type': 'default', 'w0': 1.})
+            self.radial_correction_module = SirenModel(in_dim=1, out_dim=len(radial_corrections), dim=32, n_layers=2, w0_init=1)
         else:
             self.radial_correction_module = None
         if len(temporal_corrections) > 0:
-            self.temporal_correction_module = SirenModel(in_dim=1, out_dim=len(temporal_corrections), dim=32, n_layers=2,
-                                                         encoding_config={'type': 'default', 'w0': 1.})
+            self.temporal_correction_module = SirenModel(in_dim=1, out_dim=len(temporal_corrections), dim=32, n_layers=2, w0_init=1)
         else:
             self.temporal_correction_module = None
 
@@ -206,7 +202,7 @@ class StarBackgroundModule(nn.Module):
                  encoding_config=None,
                  scale=1e-3):
         super().__init__()
-        encoding_config = {'type': 'default', 'w0': 30.0} if encoding_config is None else encoding_config
+        encoding_config = {'type': 'default', 'w0_init': 30.0} if encoding_config is None else encoding_config
         self.model = SirenModel(in_dim=3, out_dim=2, dim=dim, n_layers=n_layers, encoding_config=encoding_config)
 
         # Keep background small by construction so it can't trivially explain the corona

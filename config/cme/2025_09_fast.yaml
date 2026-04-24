@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v07"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2025_09_v05'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_fast_v02"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2025_09_fast_v01'
 
 instruments:
   - type: 'default'
@@ -49,12 +49,6 @@ data:
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/ccor/*"
       batch_size: 1024
       debug: False
-
-    - type: 'random'
-      name: 'continuity'
-      radius_range: [1.5, 100.0]
-      unit: 'solRad'
-      batch_size: 4096
 
   valid_datasets:
     - type: 'COR'
@@ -114,7 +108,7 @@ callbacks:
 logging:
   entity: "robert_jarolim"
   project: "sunerf-cme-obs-v2"
-  name: "2025-09 - STEREO A COR2 + PUNCH + CCOR"
+  name: "2025-09 - STEREO A COR2 + PUNCH + CCOR - fast"
 
 sampling:
   type: "spherical"
@@ -124,18 +118,6 @@ sampling:
 lambda:
   image: 1.0
   ratio: 1.0
-  continuity:
-    start: 1.0e-1
-    end: 1.0e-4
-    iterations: 1.0e+5
-  radial:
-    start: 1.0e-1
-    end: 1.0e-4
-    iterations: 1.0e+5
-  velocity:
-    start: 1.0e-1
-    end: 1.0e-4
-    iterations: 1.0e+5
 
 training:
   log_every_n_steps: 10000

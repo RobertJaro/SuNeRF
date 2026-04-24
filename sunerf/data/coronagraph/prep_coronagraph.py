@@ -17,12 +17,15 @@ python prep_coronagraph.py --data_path '/path/to/data/*.fits' --output_path '/pa
 """
 
 import argparse
+import datetime as dt
 import multiprocessing
 import os
+import re
 from glob import glob
 
 import numpy as np
 from astropy import units as u
+from astropy.time import Time
 from sunpy.sun import constants
 from astropy.io import fits
 from sunpy.coordinates import frames
@@ -52,6 +55,81 @@ def _load_map(file_path):
     except Exception as e:
         raise RuntimeError(f"Error loading FITS file {file_path}: {e}")
     return Map(data, header)
+
+
+FILENAME_TS_PATTERNS = (
+    re.compile(r"(?P<ts>\d{8}T\d{6})"),
+    re.compile(r"(?P<ts>\d{8}_\d{6})"),
+    re.compile(r"(?P<ts>\d{14})"),
+)
+
+
+def parse_duration(value: str) -> dt.timedelta:
+    match = re.fullmatch(r"(?i)\s*(\d+)\s*([smhd])\s*", value)
+    if not match:
+        raise argparse.ArgumentTypeError(
+            f"Invalid duration '{value}'. Use formats like 30s, 15m, 1h."
+        )
+    quantity = int(match.group(1))
+    unit = match.group(2).lower()
+    seconds_per_unit = {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+    return dt.timedelta(seconds=quantity * seconds_per_unit)
+
+
+def _datetime_from_filename(file_path: str):
+    name = os.path.basename(file_path)
+    for pattern in FILENAME_TS_PATTERNS:
+        match = pattern.search(name)
+        if match is None:
+            continue
+        stamp = match.group("ts")
+        if "T" in stamp:
+            return dt.datetime.strptime(stamp, "%Y%m%dT%H%M%S")
+        if "_" in stamp:
+            return dt.datetime.strptime(stamp, "%Y%m%d_%H%M%S")
+        return dt.datetime.strptime(stamp, "%Y%m%d%H%M%S")
+    return None
+
+
+def _get_observation_time(file_path: str):
+    header = fits.getheader(file_path)
+    for key in ("DATE-OBS", "DATE_OBS", "DATE-BEG", "DATE-AVG", "DATE-END"):
+        value = header.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return Time(value).to_datetime()
+        except Exception:
+            continue
+    fallback = _datetime_from_filename(file_path)
+    if fallback is not None:
+        return fallback
+    raise RuntimeError(f"Could not determine observation time for {file_path}")
+
+
+def sample_files_at_cadence(files, cadence: dt.timedelta):
+    if cadence.total_seconds() <= 0:
+        raise ValueError("Cadence must be positive.")
+
+    timed_files = []
+    for file_path in tqdm(files, desc="Loading observation times"):
+        obs_time = _get_observation_time(file_path)
+        timed_files.append((obs_time, file_path))
+    timed_files.sort(key=lambda item: item[0])
+
+    sampled = []
+    next_time = timed_files[0][0]
+    last_added_path = None
+
+    for obs_time, file_path in timed_files:
+        if obs_time < next_time:
+            continue
+        if file_path != last_added_path:
+            sampled.append(file_path)
+            last_added_path = file_path
+        next_time = obs_time + cadence
+
+    return sampled
 
 
 def mask_radial_line(data, center, angle_deg, halfwidth_deg=2.0, r_min=0.0, r_max=np.inf, fill=np.nan):
@@ -99,7 +177,7 @@ def mask_radial_line(data, center, angle_deg, halfwidth_deg=2.0, r_min=0.0, r_ma
     out[mask] = fill
     return out, mask
 
-def _prep_coronagraph_map(s_map, occ_min=None, occ_max=None):
+def _prep_coronagraph_map(s_map, occ_min=None, occ_max=None, max_radius=None):
     """
     Preprocess a coronagraph map by masking the occulter and invalid values.
 
@@ -128,6 +206,9 @@ def _prep_coronagraph_map(s_map, occ_min=None, occ_max=None):
         data[radius <= occ_min] = np.nan
     if occ_max is not None:
         data[radius >= occ_max] = np.nan
+    if max_radius is not None:
+        projected_radius = (radius / s_map.rsun_obs).to_value(1)
+        data[projected_radius >= max_radius.to_value(u.solRad)] = np.nan
 
     return Map(data, s_map.meta)
 
@@ -215,12 +296,25 @@ def main():
     p.add_argument('--num_workers', type=int, default=os.cpu_count(),)
     p.add_argument('--resize', type=int, nargs=2, default=None,
                    help='Optional resize to (width height) in pixels.')
+    p.add_argument(
+        "--cadence",
+        type=parse_duration,
+        default=None,
+        help="Optional fixed sampling cadence like 15m, 1h, or 30s.",
+    )
     args = p.parse_args()
 
     os.makedirs(args.out_path, exist_ok=True)
     files = sorted(glob(args.data_path))
     if not files:
         raise FileNotFoundError(f"No files matched: {args.data_path}")
+    if args.cadence is not None:
+        original_count = len(files)
+        files = sample_files_at_cadence(files, args.cadence)
+        print(
+            f"Cadence sampling kept {len(files)} of {original_count} files "
+            f"at {args.cadence} spacing."
+        )
 
     prepper = CoronagraphPrep(
         args.out_path,

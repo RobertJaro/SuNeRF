@@ -28,12 +28,13 @@ from sunerf.data.coronagraph.prep_coronagraph import _prep_coronagraph_map
 class PunchPamPrep:
     """Callable helper for multiprocessing conversion of PUNCH PAM FITS files."""
 
-    def __init__(self, out_path, overwrite=True, occ_min=None, occ_max=None, resize=None, value_min=None,
+    def __init__(self, out_path, overwrite=True, occ_min=None, occ_max=None, max_radius=None, resize=None, value_min=None,
                  value_max=None):
         self.out_path = out_path
         self.overwrite = overwrite
         self.occ_min = occ_min
         self.occ_max = occ_max
+        self.max_radius = max_radius
         self.resize = resize
         self.value_min = value_min
         self.value_max = value_max
@@ -57,7 +58,7 @@ class PunchPamPrep:
         return Map(tb, header), Map(pb, header)
 
     def _prepare_map(self, s_map):
-        s_map = _prep_coronagraph_map(s_map, occ_min=self.occ_min, occ_max=self.occ_max)
+        s_map = _prep_coronagraph_map(s_map, occ_min=self.occ_min, occ_max=self.occ_max, max_radius=self.max_radius)
         if self.resize is not None:
             s_map = s_map.resample(self.resize * u.pixel)
         if self.value_min is not None:
@@ -103,6 +104,12 @@ def main():
         help="Maximum occulter radius in arcseconds.",
     )
     parser.add_argument(
+        "--max_radius",
+        type=float,
+        default=None,
+        help="Maximum projected radius in solar radii.",
+    )
+    parser.add_argument(
         "--no_overwrite",
         action="store_true",
         help="Skip outputs that already exist.",
@@ -132,6 +139,7 @@ def main():
         overwrite=not args.no_overwrite,
         occ_min=args.occ_min * u.arcsec if args.occ_min is not None else None,
         occ_max=args.occ_max * u.arcsec if args.occ_max is not None else None,
+        max_radius=args.max_radius * u.solRad if args.max_radius is not None else None,
         resize=args.resize,
         value_min=args.value_min,
         value_max=args.value_max,
