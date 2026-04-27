@@ -293,7 +293,7 @@ def main():
     )
     p.add_argument('--clip_max', type=float, default=None,
                    help='Optional maximum value to clip data to.')
-    p.add_argument('--num_workers', type=int, default=os.cpu_count(),)
+    p.add_argument('--num_workers', type=int, default=16,)
     p.add_argument('--resize', type=int, nargs=2, default=None,
                    help='Optional resize to (width height) in pixels.')
     p.add_argument(

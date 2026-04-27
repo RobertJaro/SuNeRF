@@ -1,4 +1,5 @@
 import os
+import copy
 
 import torch
 from astropy import units as u
@@ -623,6 +624,8 @@ def save_thomson_sunerf(sunerf: ThomsonSuNeRFModule, data_module: BaseDataModule
     state = {
         # sunerf  rendering module
         'rendering': sunerf.rendering,
+        'correction_modules': copy.deepcopy(sunerf.correction_modules).cpu(),
+        'calibration_modules': copy.deepcopy(sunerf.calibration_modules).cpu(),
         # data infor
         'data_config': data_module.config,
         # data scaling

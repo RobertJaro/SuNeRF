@@ -199,11 +199,9 @@ class StarBackgroundModule(nn.Module):
     def __init__(self,
                  dim=64,
                  n_layers=4,
-                 encoding_config=None,
                  scale=1e-3):
         super().__init__()
-        encoding_config = {'type': 'default', 'w0_init': 30.0} if encoding_config is None else encoding_config
-        self.model = SirenModel(in_dim=3, out_dim=2, dim=dim, n_layers=n_layers, encoding_config=encoding_config)
+        self.model = SirenModel(in_dim=3, out_dim=2, dim=dim, n_layers=n_layers, w0_init=100)
 
         # Keep background small by construction so it can't trivially explain the corona
         self.scale = nn.Parameter(torch.tensor(float(scale), dtype=torch.float32), requires_grad=False)

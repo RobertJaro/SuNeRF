@@ -51,16 +51,16 @@ class SirenModel(nn.Module):
 class SplitTemporalSirenModel(nn.Module):
     def __init__(
             self,
-            spatial_dim=128,
+            spatial_dim=256,
             spatial_layers=8,
-            time_dim=32,
+            time_dim=128,
             time_layers=2,
-            fusion_dim=128,
+            fusion_dim=256,
             fusion_layers=2,
             w0_spatial=30.,
             w0_time=1.,
             alpha=0.1,
-            cold_steps=5e4,
+            cold_steps=2e4,
             warm_steps=1e4,
             output_dim=4,
             **kwargs):
@@ -78,7 +78,7 @@ class SplitTemporalSirenModel(nn.Module):
         )
         self.spatial_net = nn.Sequential(*spatial_blocks)
 
-        time_blocks = [SirenLayer(in_dim=1, out_dim=time_dim, w0=w0_time, is_first=True)]
+        time_blocks = [SirenLayer(in_dim=4, out_dim=time_dim, w0=w0_time, is_first=True)]
         time_blocks.extend(
             SirenLayer(in_dim=time_dim, out_dim=time_dim, w0=1)
             for _ in range(max(time_layers - 1, 0))
@@ -96,12 +96,9 @@ class SplitTemporalSirenModel(nn.Module):
         self.head_static = nn.Linear(spatial_dim, output_dim)
         self.head_dynamic = nn.Linear(fusion_dim, output_dim)
 
-    def forward(self, inp):
-        spatial = inp[..., :3]
-        time = inp[..., 3:4]
-
-        spatial_feat = self.spatial_net(spatial)
-        time_feat = self.time_net(time)
+    def forward(self, static_input, dynamic_input):
+        spatial_feat = self.spatial_net(static_input)
+        time_feat = self.time_net(dynamic_input)
 
         dynamic_feat = torch.cat([spatial_feat, time_feat], dim=-1)
         dynamic_feat = self.fusion_net(dynamic_feat)
@@ -352,13 +349,12 @@ class RhoModel(nn.Module):
         radial_distance = torch.norm(coords[..., :3], dim=-1, keepdim=True)
         radial = coords[..., :3] / (radial_distance + 1e-8)
 
-        if self.use_carrington_projection:
-            coords = to_carrington_rotation_frame(coords, self.seconds_per_dt)
+        carrington_coords = to_carrington_rotation_frame(coords, self.seconds_per_dt)
 
         if self.static:
-            model_out = self.model(coords[..., :3])
+            model_out = self.model(carrington_coords[..., :3])
         else:
-            model_out = self.model(coords)
+            model_out = self.model(carrington_coords[..., :3], coords)
         log_rho = model_out[..., 0:1] - 2 * torch.log(radial_distance)
         rho = torch.exp(log_rho)
 

@@ -1,0 +1,153 @@
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_06_09_v01"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2025_09_06_09_v01'
+
+instruments:
+  - type: 'default'
+    key: 'STEREO_A_COR2'
+    scaling: { type: 'log' }
+    correction: { corrections: [ 'f_corona', 'pB_add', 'tB_add' ] }
+#  - type: 'default'
+#    key: 'STEREO_A_COR2_CLEAR'
+#    scaling: { type: 'log' }
+#    correction: { corrections: [ 'f_corona', 'tB_add' ] }
+  - type: 'default'
+    key: 'PUNCH'
+    scaling: { type: 'log' }
+    correction: { corrections: [ 'f_corona', 'pB_add', 'tB_add' ] }
+    calibration: True
+  - type: 'default'
+    key: 'CCOR'
+    scaling: { type: 'log' }
+    correction: { corrections: [ 'f_corona', 'tB_add' ] }
+    calibration: True
+
+model:
+  static: False
+  use_carrington_projection: True
+
+data:
+  train_datasets:
+    - type: 'COR'
+      key: 'STEREO_A_COR2'
+      instrument_key: 'STEREO_A_COR2'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/cor2/pB/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/cor2/tB/*"
+      batch_size: 1024
+      debug: False
+      correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/masks/stereo_a_cor2_tB_correction.npy", alpha: 0.8, clean: False }
+
+#    - type: 'COR'
+#      key: 'STEREO_A_COR2_CLEAR'
+#      instrument_key: 'STEREO_A_COR2_CLEAR'
+#      data_path_pB: null
+#      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/cor2_clear/*"
+#      batch_size: 1024
+#      debug: False
+
+    - type: 'punch'
+      key: 'PUNCH'
+      instrument_key: 'PUNCH'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/punch_pam/pB/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/punch_pam/tB/*"
+      batch_size: 1024
+      debug: False
+
+    - type: 'CCOR'
+      key: 'CCOR'
+      instrument_key: 'CCOR'
+      data_path_pB: null
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/ccor/*"
+      batch_size: 1024
+      debug: False
+
+    - type: 'random'
+      name: 'continuity'
+      radius_range: [1.5, 100.0]
+      unit: 'solRad'
+      batch_size: 4096
+      radial_weighted_sampling: False
+
+  valid_datasets:
+    - type: 'COR'
+      key: 'STEREO_A_COR2'
+      instrument_key: 'STEREO_A_COR2'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/cor2/pB/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/cor2/tB/*"
+      correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/masks/stereo_a_cor2_tB_correction.npy", alpha: 0.8, clean: False }
+
+#    - type: 'COR'
+#      key: 'STEREO_A_COR2_CLEAR'
+#      instrument_key: 'STEREO_A_COR2_CLEAR'
+#      data_path_pB: null
+#      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/cor2_clear/*"
+
+    - type: 'punch'
+      key: 'PUNCH'
+      instrument_key: 'PUNCH'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/punch_pam/pB/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/punch_pam/tB/*"
+
+    - type: 'CCOR'
+      key: 'CCOR'
+      instrument_key: 'CCOR'
+      data_path_pB: null
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/ccor/*"
+
+    - key: valid_radial
+      type: radial_slices
+      radii: [3, 6, 9, 12, 15]
+
+    - type: longitude_slices
+      key: valid_lon_slices
+      radius_range: [2.5, 100.0]
+
+  Rs_per_ds: 100
+  seconds_per_dt: 86400
+  batch_size: 4096
+  validation_batch_size: 4096
+  num_workers: 16
+
+callbacks:
+  - type: 'thomson_image'
+    ds_key: 'STEREO_A_COR2'
+#  - type: 'thomson_image'
+#    ds_key: 'STEREO_A_COR2_CLEAR'
+  - type: 'thomson_image'
+    ds_key: 'PUNCH'
+  - type: 'thomson_image'
+    ds_key: 'CCOR'
+
+  - type: 'correction_image'
+    ds_key: 'STEREO_A_COR2'
+#  - type: 'correction_image'
+#    ds_key: 'STEREO_A_COR2_CLEAR'
+  - type: 'correction_image'
+    ds_key: 'PUNCH'
+  - type: 'correction_image'
+    ds_key: 'CCOR'
+
+  - type: radial_slices
+    ds_key: valid_radial
+
+  - type: longitude_density
+    ds_key: valid_lon_slices
+
+logging:
+  entity: "robert_jarolim"
+  project: "sunerf-cme-obs-v2"
+  name: "2025-09-06 to 2025-09-09 12:00 - STEREO A COR2 + PUNCH + CCOR"
+
+sampling:
+  type: "spherical"
+  n_samples: 64
+  max_distance: 100.0
+
+lambda:
+  image: 1.0
+  ratio: 1.0
+  continuity: 1.0e-1
+  radial: 1.0e-3
+  velocity: 1.0e-3
+
+training:
+  meta_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v11/last.ckpt"

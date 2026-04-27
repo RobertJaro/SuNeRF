@@ -1,17 +1,16 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v07"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2025_09_v05'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v12"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2025_09_v12'
 
 instruments:
   - type: 'default'
     key: 'STEREO_A_COR2'
     scaling: { type: 'log' } #{ type: 'asinh', a: 0.001 }
-    correction: { corrections: [ 'f_corona', 'tB_add' ] }
+    correction: { corrections: [ 'f_corona', 'pB_add', 'tB_add' ] }
   - type: 'default'
     key: 'PUNCH'
     scaling: { type: 'log' } #{ type: 'asinh', a: 0.001, vmax: 0.01 }
     correction: { corrections: [ 'f_corona', 'pB_add', 'tB_add' ] }
     calibration: True
-    background: True
   - type: 'default'
     key: 'CCOR'
     scaling: { type: 'log' } #{ type: 'asinh', a: 0.001 }
@@ -19,7 +18,6 @@ instruments:
     calibration: True
 
 model:
-  dim: 128
   static: False
   use_carrington_projection: True
 
@@ -52,9 +50,10 @@ data:
 
     - type: 'random'
       name: 'continuity'
-      radius_range: [1.5, 100.0]
+      radius_range: [1.5, 110.0]
       unit: 'solRad'
       batch_size: 4096
+#      radial_weighted_sampling: True
 
   valid_datasets:
     - type: 'COR'
@@ -113,29 +112,21 @@ callbacks:
 
 logging:
   entity: "robert_jarolim"
-  project: "sunerf-cme-obs-v2"
+  project: "sunerf-cme-obs-v3"
   name: "2025-09 - STEREO A COR2 + PUNCH + CCOR"
 
 sampling:
   type: "spherical"
   n_samples: 64
   max_distance: 100.0
+  radial_weighting: True
 
 lambda:
   image: 1.0
   ratio: 1.0
-  continuity:
-    start: 1.0e-1
-    end: 1.0e-4
-    iterations: 1.0e+5
-  radial:
-    start: 1.0e-1
-    end: 1.0e-4
-    iterations: 1.0e+5
-  velocity:
-    start: 1.0e-1
-    end: 1.0e-4
-    iterations: 1.0e+5
+  continuity: 1.0e-3
+  radial: 1.0e-3
+  velocity: 1.0e-3
 
 training:
   log_every_n_steps: 10000

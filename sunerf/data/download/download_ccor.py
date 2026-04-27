@@ -25,11 +25,14 @@ def parse_iso_datetime(value: str) -> dt.datetime:
     return parsed
 
 
-def parse_cadence(value: str) -> dt.timedelta:
+def parse_cadence(value: str) -> Optional[dt.timedelta]:
+    if value.strip().lower() in {"none", "all"}:
+        return None
+
     match = re.fullmatch(r"(?i)\s*(\d+)\s*([smhd])\s*", value)
     if not match:
         raise argparse.ArgumentTypeError(
-            f"Invalid cadence '{value}'. Use formats like 30m, 1h, 6h, 1d."
+            f"Invalid cadence '{value}'. Use formats like 30m, 1h, 6h, 1d, or 'none'."
         )
 
     qty = int(match.group(1))
@@ -96,8 +99,11 @@ def sample_by_cadence(
     files: List[Tuple[str, Optional[dt.datetime]]],
     start: dt.datetime,
     end: dt.datetime,
-    cadence: dt.timedelta,
+    cadence: Optional[dt.timedelta],
 ) -> List[str]:
+    if cadence is None:
+        return sorted({path for path, _ in files})
+
     parseable = sorted((p, ts) for p, ts in files if ts is not None)
     unparseable = [p for p, ts in files if ts is None]
 
@@ -167,7 +173,7 @@ def main():
         "--cadence",
         default="1h",
         type=parse_cadence,
-        help="Sampling cadence (default: 1h). Examples: 30m, 1h, 6h.",
+        help="Sampling cadence (default: 1h). Use 'none' to download all files.",
     )
     parser.add_argument(
         "--out",

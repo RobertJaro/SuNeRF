@@ -30,6 +30,7 @@ if __name__ == '__main__':
     parser.add_argument('--longitudes', type=float, nargs='+', help='Slices longitudes in degrees', default=None)
     parser.add_argument('--time_range', type=str, nargs=2, help='Time range for visualization in ISO format (e.g., 2024-09-26T00:00:00 2024-09-28T00:00:00)')
     parser.add_argument('--radius_range', type=float, nargs=2, help='Radius range for visualization in Rsun', default=[4, 15])
+    parser.add_argument('--latitude_range', type=float, nargs=2, help='Latitude range for visualization in degrees', default=[-90, 90])
     parser.add_argument('--t_points', type=int, default=30, help='Number of time points between start and end time')
 
     args = parser.parse_args()
@@ -59,6 +60,10 @@ if __name__ == '__main__':
 
     min_radius = args.radius_range[0]
     max_radius = args.radius_range[1]
+    min_latitude = args.latitude_range[0]
+    max_latitude = args.latitude_range[1]
+    min_theta = np.deg2rad(min_latitude)
+    max_theta = np.deg2rad(max_latitude)
 
     longitudes = args.longitudes * u.deg
 
@@ -71,7 +76,7 @@ if __name__ == '__main__':
         carr_longitudes = u.Quantity([carrington_to_inertial(lon, time) for lon in longitudes])
         out = sunerf_loader.load_spherical_cube(radius=np.linspace(min_radius, max_radius, 100) * u.Rsun,
                                                 longitude=carr_longitudes,
-                                                latitude=np.linspace(0, 360, 180, endpoint=False) * u.deg,
+                                                latitude=np.linspace(min_latitude, max_latitude, 180) * u.deg,
                                                 time=time)
         ##########################################################
 
@@ -105,8 +110,11 @@ if __name__ == '__main__':
             # --- Polar plot - density ---
             ax = axd[f"rho{j}"]
             density_pc = ax.pcolormesh(theta, r, rho, shading="auto", norm=density_norm, cmap="RdPu")
+            ax.set_thetamin(min_latitude)
+            ax.set_thetamax(max_latitude)
+            ax.set_xlim(min_theta, max_theta)
             ax.set_title(f"{target_longitude.to_value(u.deg):.1f}° Longitude")
-            ax.set_xlabel("Latitude (rad)")
+            ax.set_xlabel("Latitude")
             ax.set_ylabel(r"Radius (R$_\odot$)")
             ax.tick_params(axis="y", colors='lightgray')
 
@@ -114,8 +122,11 @@ if __name__ == '__main__':
             vel_mag = np.linalg.norm(velocity, axis=-1)
             ax = axd[f"vel{j}"]
             velocity_pc = ax.pcolormesh(theta, r, vel_mag, shading="auto", norm=velocity_norm, cmap="viridis")
+            ax.set_thetamin(min_latitude)
+            ax.set_thetamax(max_latitude)
+            ax.set_xlim(min_theta, max_theta)
             ax.set_title(f"{target_longitude.to_value(u.deg):.1f}° Longitude")
-            ax.set_xlabel("Latitude (rad)")
+            ax.set_xlabel("Latitude")
             ax.set_ylabel(r"Radius (R$_\odot$)")
             ax.tick_params(axis="y", colors='lightgray')
 

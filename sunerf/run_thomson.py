@@ -229,7 +229,6 @@ if __name__ == '__main__':
                 callback = FullStarBackgroundCallback(
                     ds_key=ds_key,
                     image_shape=image_shape,
-                    eps=cb_cfg.get("eps", 1e-12),
                     name=cb_cfg.get("name", ds_key),
                 )
             else:
@@ -237,7 +236,6 @@ if __name__ == '__main__':
                 callback = FullStarBackgroundCallback(
                     ds_key=ds_key,
                     image_shape=base.sky_shape,
-                    eps=cb_cfg.get("eps", 1e-12),
                     name=cb_cfg.get("name", ds_key),
                 )
 

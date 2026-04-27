@@ -23,6 +23,7 @@ python filter_polar_triplets.py \
 import argparse
 import glob
 import os
+import shutil
 
 from astropy.io.fits import getheader
 from dateutil.parser import parse
@@ -32,6 +33,11 @@ def main():
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--glob", required=True, help="Glob pattern for input FITS/FTS files.")
     p.add_argument("--max-dt", type=float, default=300.0, help="Max allowed time difference in seconds.")
+    p.add_argument(
+        "--clear-dir",
+        default=None,
+        help="Optional directory where non-polarized COR files are moved instead of deleted.",
+    )
     p.add_argument("--dry-run", action="store_true", help="Print what would be deleted, but do not delete.")
     args = p.parse_args()
 
@@ -39,19 +45,33 @@ def main():
     if not files:
         raise FileNotFoundError(f"No files matched: {args.glob}")
 
+    if args.clear_dir is not None:
+        os.makedirs(args.clear_dir, exist_ok=True)
+
     def rm(path):
         if args.dry_run:
             print("DRY-RUN delete:", path)
         else:
             os.remove(path)
 
+    def move_to_clear(path):
+        if args.clear_dir is None:
+            rm(path)
+            return
+
+        destination = os.path.join(args.clear_dir, os.path.basename(path))
+        if args.dry_run:
+            print("DRY-RUN move to clear:", path, "->", destination)
+        else:
+            shutil.move(path, destination)
+
     p000, p120, p240 = [], [], []
     for f in files:
         h = getheader(f)
         pol = h.get("POLAR")
         if pol not in (0, 120, 240):
-            print(f'Removing non-polarization file: {f}')
-            rm(f)
+            print(f'Moving non-polarization file to clear: {f}')
+            move_to_clear(f)
             continue
         d = {"file": f, "date": parse(h["DATE-OBS"])}
         (p000 if pol == 0 else p120 if pol == 120 else p240).append(d)

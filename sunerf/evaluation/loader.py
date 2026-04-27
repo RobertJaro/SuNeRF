@@ -25,7 +25,7 @@ class SuNeRFLoader:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if device is None else device
         self.device = device
 
-        state = torch.load(state_path)
+        state = torch.load(state_path, map_location=device)
         self.state = state
         data_config = state['data_config']
         self.ds_keys = list(data_config.keys())
@@ -45,6 +45,10 @@ class SuNeRFLoader:
         self.ref_date = state['ref_date']
 
         self.ref_maps = {k: Map(np.zeros(self.resolution(k)), self.wcs(k)) for k in self.ds_keys}
+
+    def instrument_key(self, ds_key=None):
+        ds_key = ds_key if ds_key is not None else self.ds_keys[0]
+        return self.config[ds_key].get('instrument_key', ds_key)
 
     def start_time(self, ds_key=None):
         ds_key = ds_key if ds_key is not None else self.ds_keys[0]
@@ -233,7 +237,6 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.rho_scaling = 57.80811838603689  # from calibration
         if 'thomson_normalization' not in self.state:
             raise KeyError("Missing 'thomson_normalization' in saved Thomson state.")
 
@@ -249,6 +252,105 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
         self.sigma_ne = normalization['sigma_ne']
         self.c0 = normalization['c0']
         self.msb_norm = normalization['msb_norm']
+        self.correction_modules = self.state.get('correction_modules', nn.ModuleDict()).to(self.device)
+        self.calibration_modules = self.state.get('calibration_modules', nn.ModuleDict()).to(self.device)
+        self.correction_modules.eval()
+        self.calibration_modules.eval()
+
+    def _resolve_correction_instrument_key(self, ds_key=None, instrument_key=None):
+        if instrument_key is not None:
+            return instrument_key
+        return self.instrument_key(ds_key)
+
+    def _get_correction_norms(self, ds_key=None):
+        ds_key = ds_key if ds_key is not None else self.ds_keys[0]
+        cfg = self.config[ds_key]
+        return float(cfg.get('image_norm', 512.0)), float(cfg.get('hpc_norm', 1e4))
+
+    @staticmethod
+    def _get_image_coords(shape, image_norm):
+        ny, nx = shape
+        image_coords = np.stack(np.mgrid[:ny, :nx], axis=-1).astype(np.float32)
+        image_coords[..., 0] -= 0.5 * (ny - 1)
+        image_coords[..., 1] -= 0.5 * (nx - 1)
+        image_coords /= float(image_norm)
+        return image_coords
+
+    def _get_hpc_coords(self, ref_map, hpc_norm):
+        coords = all_coordinates_from_map(ref_map).transform_to(frames.Helioprojective)
+        x = coords.Tx.to_value(u.arcsec)
+        y = coords.Ty.to_value(u.arcsec)
+        distance = np.ones_like(x, dtype=np.float32) * ref_map.dsun.to_value(u.solRad)
+        hpc_coords = np.stack([x, y, distance], axis=-1).astype(np.float32)
+        hpc_coords[..., :2] /= float(hpc_norm)
+        hpc_coords[..., 2] /= float(self.Rs_per_ds)
+        return hpc_coords
+
+    def _build_correction_inputs(self, ref_map, ds_key=None):
+        image_norm, hpc_norm = self._get_correction_norms(ds_key)
+        image_coords = self._get_image_coords(ref_map.data.shape, image_norm)
+        hpc_coords = self._get_hpc_coords(ref_map, hpc_norm)
+        time_value = self.normalize_datetime(ref_map.date.datetime)
+        time = np.full(ref_map.data.shape + (1,), time_value, dtype=np.float32)
+        return image_coords, hpc_coords, time
+
+    @staticmethod
+    def _mask_invalid_coords(output, ref_map):
+        finite_mask = np.isfinite(ref_map.data)
+        for key, value in output.items():
+            if value.shape[:2] != finite_mask.shape:
+                continue
+            value = value.copy()
+            value[~finite_mask] = np.nan
+            output[key] = value
+        return output
+
+    @torch.no_grad()
+    def load_correction_masks(self, ref_map, ds_key=None, instrument_key=None, apply_valid_mask=True):
+        ref_map = Map(ref_map)
+        instrument_key = self._resolve_correction_instrument_key(ds_key, instrument_key)
+        image_coords, hpc_coords, time = self._build_correction_inputs(ref_map, ds_key)
+
+        outputs = {}
+        correction_module = self.correction_modules[instrument_key] if instrument_key in self.correction_modules else None
+        calibration_module = self.calibration_modules[instrument_key] if instrument_key in self.calibration_modules else None
+
+        if correction_module is not None:
+            zero_image = torch.zeros(ref_map.data.shape + (2,), dtype=torch.float32, device=self.device)
+            _, corrections = correction_module(
+                zero_image,
+                torch.from_numpy(image_coords).to(self.device),
+                torch.from_numpy(hpc_coords).to(self.device),
+                torch.from_numpy(time).to(self.device),
+            )
+            outputs.update({k: v.detach().cpu().numpy()[..., 0] for k, v in corrections.items()})
+
+        if calibration_module is not None:
+            calibration_scalar = float(torch.exp(calibration_module.calibration.detach()).cpu().numpy())
+            outputs['instrument_calibration'] = np.full(ref_map.data.shape, calibration_scalar, dtype=np.float32)
+
+        if apply_valid_mask:
+            outputs = self._mask_invalid_coords(outputs, ref_map)
+
+        return {k: Map(v.astype(np.float32), ref_map.meta) for k, v in outputs.items()}
+
+    @torch.no_grad()
+    def load_correction_image(self, lat: u, lon: u, time: datetime,
+                              distance=(1 * u.AU).to(u.solRad),
+                              hpc_lat: u = 0 * u.arcsec, hpc_lon: u = 0 * u.arcsec,
+                              resolution=(256, 256) * u.pix, scale=None,
+                              ds_key=None, instrument_key=None):
+        instrument_key = self._resolve_correction_instrument_key(ds_key, instrument_key)
+        if scale is None:
+            scale = [2400 / resolution[0].to_value(u.pix), 2400 / resolution[1].to_value(u.pix)] * u.arcsec / u.pix
+
+        obs = SkyCoord(lat=lat, lon=lon, distance=distance, frame=frames.HeliocentricInertial, obstime=time)
+        reference_coord = SkyCoord(hpc_lat, hpc_lon, obstime=time, observer=obs, frame=frames.Helioprojective)
+        mock_data = np.zeros([int(r.to_value(u.pix)) for r in resolution], dtype=np.float32)
+        header = make_fitswcs_header(mock_data, reference_coord, scale=scale)
+        ref_map = Map(mock_data, header)
+        return self.load_correction_masks(ref_map, ds_key=ds_key, instrument_key=instrument_key,
+                                          apply_valid_mask=False)
 
     def convert_rho(self, model_rho):
         # convert to electron density in cm^-3

@@ -3,7 +3,7 @@
 #PBS -N SuNeRF
 #PBS -A P22100000
 #PBS -q main
-#PBS -l select=1:ncpus=16:ngpus=4:mem=64gb
+#PBS -l select=1:ncpus=16:ngpus=4:mem=128gb
 #PBS -l walltime=12:00:00
 
 module load conda
@@ -106,20 +106,20 @@ python -m sunerf.data.download.download_aia \
 
 # compare to Carrington maps
 python -m sunerf.evaluation.cme.carrington_map_comparison \
-  --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_fast_v02/save_state.snf" \
+  --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v10/save_state.snf" \
   --aia_glob "/glade/work/rjarolim/data/sunerf-cme/aia_validation/2025_09/*.fits"
 
-python -m sunerf.evaluation.cme.video_polar --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v07/save_state.snf" --occ_range 3 100
-python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_fast_v02/save_state.snf" --occ_range 3 15
-python -m sunerf.evaluation.cme.video_fixed_rotation --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_fast_v02/save_state.snf" --occ_range 3 100
+python -m sunerf.evaluation.cme.video_polar --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v11/save_state.snf" --occ_range 3 100
+python -m sunerf.evaluation.cme.video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v09/save_state.snf" --occ_range 3 15
+python -m sunerf.evaluation.cme.video_fixed_rotation --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v11/save_state.snf" --occ_range 3 100
 python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_fast_v02/save_state.snf" --longitudes 90 100 110 120 130 140 150 160 --time_range "2025-09-06T12:00" "2025-09-07T06:00"
 python -m sunerf.evaluation.cme.plot_radius_map --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v04/save_state.snf" --radius 6 9 12 15 50 80
-python -m sunerf.evaluation.cme.demo_video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v07/save_state.snf"
+python -m sunerf.evaluation.cme.demo_video --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v09/save_state.snf"
 
 python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_fast_v02/save_state.snf" --longitudes 90 100 110 120 130 140 150 160 --time_range "2025-09-06T12:00" "2025-09-07T06:00"
 
-# wiggle
-python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_fast_v02/save_state.snf" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_fast_v02/wiggle" --longitudes 0 30 60 90 120 150 180 --time_range "2025-09-12T18:00" "2025-09-12T23:00"
+# cme
+python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v10/save_state.snf" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v10/cme" --longitudes 0 30 60 90 120 150 180 --time_range "2025-09-12T16:00" "2025-09-14T00:00" --radius_range 3 60 --latitude_range -90 90
 
 
 python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_fast_v02/save_state.snf" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_fast_v02/punch" --ref_map "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/punch_pam/pB/*"

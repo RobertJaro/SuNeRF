@@ -57,7 +57,10 @@ class ThomsonDataModule(BaseDataModule):
             module_config[k] = {'type': 'thomson', 'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt,
                                 'ref_date': ref_date, 'image_scaling': train_ds.scaling,
                                 'wcs': dc['wcs'], 'image_shape': dc['image_shape'], 'times': train_ds.times,
-                                'observers': dc['observers']}
+                                'observers': dc['observers'], 'instrument_key': dc['instrument_key'],
+                                'image_norm': dc['image_norm'], 'hpc_norm': dc['hpc_norm'],
+                                'reference_frame': dc['reference_frame'],
+                                'azimuthal_equidistant': dc['azimuthal_equidistant']}
 
         base_config['batch_size'] = validation_batch_size
         times = np.concatenate(
@@ -123,29 +126,30 @@ class ThomsonDataModule(BaseDataModule):
             config = copy.deepcopy(config)
             ds_type = config.pop('type')
             ds_key = config.pop('key') if 'key' in config else ds_type
+            render_mode = config.pop('render_mode', None)
             ds_config = copy.deepcopy(base_config)
             ds_config.update(config)
             if ds_type.lower() == 'hao':
                 dataset = HAOThomsonDataset(**ds_config, ds_key=ds_key, test=True)
-                dataset = RenderModeDataset(dataset, render_mode=RenderMode.INSTRUMENT)
+                dataset = self._wrap_validation_dataset(dataset, render_mode)
             elif ds_type.lower() == 'cor':
                 dataset = COR2Dataset(**ds_config, ds_key=ds_key, test=True)
-                dataset = RenderModeDataset(dataset, render_mode=RenderMode.INSTRUMENT)
+                dataset = self._wrap_validation_dataset(dataset, render_mode)
             elif ds_type.lower() == 'lasco':
                 dataset = LASCOC2Dataset(**ds_config, ds_key=ds_key, test=True)
-                dataset = RenderModeDataset(dataset, render_mode=RenderMode.INSTRUMENT)
+                dataset = self._wrap_validation_dataset(dataset, render_mode)
             elif ds_type.lower() == 'metis':
                 dataset = MetisDataset(**ds_config, ds_key=ds_key, test=True)
-                dataset = RenderModeDataset(dataset, render_mode=RenderMode.INSTRUMENT)
+                dataset = self._wrap_validation_dataset(dataset, render_mode)
             elif ds_type.lower() == 'ccor':
                 dataset = CCORDataset(**ds_config, ds_key=ds_key, test=True)
-                dataset = RenderModeDataset(dataset, render_mode=RenderMode.INSTRUMENT)
+                dataset = self._wrap_validation_dataset(dataset, render_mode)
             elif ds_type.lower() in {'punchwfi', 'punch_wfi', 'punch'}:
                 dataset = PunchWFIDataset(**ds_config, ds_key=ds_key, test=True)
-                dataset = RenderModeDataset(dataset, render_mode=RenderMode.INSTRUMENT)
+                dataset = self._wrap_validation_dataset(dataset, render_mode)
             elif ds_type.lower() == 'psi_cme':
                 dataset = PSICMEDataset(**ds_config, ds_key=ds_key, test=True)
-                dataset = RenderModeDataset(dataset, render_mode=RenderMode.INSTRUMENT)
+                dataset = self._wrap_validation_dataset(dataset, render_mode)
             elif ds_type.lower() == 'reference_cube':
                 dataset = ReferenceCubeDataset(**ds_config, ds_key=ds_key, shuffle=False, filter_nans=False)
                 dataset = RenderModeDataset(dataset, render_mode=RenderMode.REFERENCE)
@@ -158,11 +162,29 @@ class ThomsonDataModule(BaseDataModule):
             elif ds_type.lower() == "fixed_viewpoint_series":
                 dataset = FixedViewpointSeriesDataset(**ds_config, ds_key=ds_key, time_range=time_range)
                 dataset = RenderModeDataset(dataset, RenderMode.INSTRUMENT)
+            elif ds_type.lower() in {"full_star_background", "star_background_full"}:
+                dataset = FullStarBackgroundDataset(**ds_config, ds_key=ds_key, time_range=time_range)
+                dataset = RenderModeDataset(dataset, RenderMode.BACKGROUND)
             else:
                 raise ValueError(f'Unknown dataset type {ds_type}')
             assert ds_key not in valid_dict, f'Duplicate dataset key {ds_key}'
             valid_dict[ds_key] = dataset
         return valid_dict
+
+    @staticmethod
+    def _wrap_validation_dataset(dataset, render_mode=None):
+        if render_mode is None:
+            mode = RenderMode.INSTRUMENT
+        elif isinstance(render_mode, str):
+            try:
+                mode = RenderMode[render_mode.strip().upper()]
+            except KeyError as exc:
+                valid_modes = ", ".join(mode.name.lower() for mode in RenderMode)
+                raise ValueError(f"Unknown render_mode '{render_mode}'. Expected one of: {valid_modes}") from exc
+        else:
+            mode = RenderMode(int(render_mode))
+
+        return RenderModeDataset(dataset, render_mode=mode)
 
 
 class GenericThomsonDataset(TensorsDataset):
@@ -174,6 +196,11 @@ class GenericThomsonDataset(TensorsDataset):
                  scaling_mask_config=None,
                  **kwargs):
         self.scaling = scaling
+        self.instrument_key = instrument_key
+        self.image_norm = image_norm
+        self.hpc_norm = hpc_norm
+        self.reference_frame = reference_frame
+        self.azimuthal_equidistant = azimuthal_equidistant
         # select files with min diff in dates
         tB_files = sorted(glob.glob(data_path_tB))
         pB_files = sorted(glob.glob(data_path_pB)) if data_path_pB is not None else None
@@ -353,6 +380,11 @@ class GenericThomsonDataset(TensorsDataset):
         data_config['wcs'] = ref_map.wcs
         data_config['wavelength'] = ref_map.wavelength
         data_config['observers'] = observers
+        data_config['instrument_key'] = instrument_key
+        data_config['image_norm'] = image_norm
+        data_config['hpc_norm'] = hpc_norm
+        data_config['reference_frame'] = reference_frame
+        data_config['azimuthal_equidistant'] = azimuthal_equidistant
         self.data_config = data_config
 
         super().__init__(tensors=tensors, batch_size=batch_size, shuffle=not test, filter_nans=not test,
@@ -700,6 +732,50 @@ class FixedViewpointSeriesDataset(TensorsDataset):
         }
 
         super().__init__(tensors=tensors, **kwargs)
+
+
+class FullStarBackgroundDataset(TensorsDataset):
+    """
+    Produces a full 4pi latitude/longitude grid of inertial sky directions for
+    evaluating the star background module directly.
+
+    Output:
+      - rays: (Nlat*Nlon, 2, 3) with zero origins and unit directions
+      - time: (Nlat*Nlon, 1) constant normalized time (midpoint of time_range)
+    """
+
+    def __init__(self,
+                 instrument_key,
+                 time_range=None,
+                 Nlat=181,
+                 Nlon=360,
+                 **kwargs):
+        lat = np.linspace(-np.pi / 2, np.pi / 2, int(Nlat), endpoint=True, dtype=np.float32)
+        lon = np.linspace(0, 2 * np.pi, int(Nlon), endpoint=False, dtype=np.float32)
+        lat_grid, lon_grid = np.meshgrid(lat, lon, indexing="ij")
+
+        cos_lat = np.cos(lat_grid)
+        rays_d = np.stack([
+            cos_lat * np.cos(lon_grid),
+            cos_lat * np.sin(lon_grid),
+            np.sin(lat_grid),
+        ], axis=-1).astype(np.float32)
+        rays_o = np.zeros_like(rays_d, dtype=np.float32)
+        rays = np.stack([rays_o, rays_d], axis=-2)
+
+        t_value = 0.0 if time_range is None else 0.5 * (float(time_range[0]) + float(time_range[1]))
+        time = np.full((*lat_grid.shape, 1), t_value, dtype=np.float32)
+
+        self.sky_shape = lat_grid.shape
+        self.image_shape = self.sky_shape
+        self.latitude = lat
+        self.longitude = lon
+
+        tensors = {
+            "rays": rays.reshape(-1, 2, 3),
+            "time": time.reshape(-1, 1),
+        }
+        super().__init__(tensors=tensors, shuffle=False, filter_nans=False, instrument=instrument_key, **kwargs)
 
 
 def convert_carrington_to_inertial(longitude: list[float], datetimes: list[datetime]) -> list[float]:

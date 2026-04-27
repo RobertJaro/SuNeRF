@@ -186,7 +186,7 @@ if __name__ == '__main__':
     for i, (distance, lat, lon, time, occ_min_i, occ_max_i) in tqdm(enumerate(points), total=len(points)):
         obs_coord = SkyCoord(radius=distance, lat=lat, lon=lon,
                              frame=frames.HeliographicCarrington, obstime=time, observer='self')
-        hci_lon = obs_coord.transform_to(frames.HeliocentricInertial).lon
+        hci_lon = obs_coord.lon #obs_coord.transform_to(frames.HeliocentricInertial).lon
         model_out = sunerf_loader.load_image(
             lat, hci_lon, time,
             distance=distance,

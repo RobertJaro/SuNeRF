@@ -1250,13 +1250,14 @@ class StarBackgroundCallback(BaseCallback):
 
 class FullStarBackgroundCallback(BaseCallback):
     """
-    Plots star background image(s) in log scale.
+    Plots star background image(s) as a full-sky latitude/longitude map in log scale.
     Expects outputs: background (...,C). Usually C=2 for (tB,pB).
     """
 
-    def __init__(self, image_shape, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, ds_key, image_shape, eps=1e-12, name=None):
+        super().__init__(ds_key=ds_key, name=name)
         self.image_shape = image_shape
+        self.eps = float(eps)
 
     @rank_zero_only
     def on_validation_end(self, trainer, pl_module):
@@ -1270,14 +1271,17 @@ class FullStarBackgroundCallback(BaseCallback):
         nC = bg.shape[-1]
         fig, axes = plt.subplots(1, nC, figsize=(6 * nC, 5), squeeze=False)
         axes = axes[0]
+        extent = [0, 360, -90, 90]
 
         for c in range(nC):
             img = np.asarray(bg[..., c])
-            img = np.clip(img, 1e-30, None)
-            axes[c].imshow(img, origin="lower",
+            img = np.clip(img, self.eps, None)
+            axes[c].imshow(img, origin="lower", aspect="auto", extent=extent,
                            norm=LogNorm(vmin=np.nanpercentile(img, 5), vmax=np.nanpercentile(img, 99)))
-            axes[c].set_title(f"Star background ch{c} (log)")
-            axes[c].axis("off")
+            channel = "tB" if c == 0 else "pB" if c == 1 else f"ch{c}"
+            axes[c].set_title(f"Star background {channel} (log)")
+            axes[c].set_xlabel("Longitude [deg]")
+            axes[c].set_ylabel("Latitude [deg]")
 
         fig.tight_layout()
         wandb.log({f"star_background_full.{self.name}": wandb.Image(fig)})
