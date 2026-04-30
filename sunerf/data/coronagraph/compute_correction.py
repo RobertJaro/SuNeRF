@@ -91,19 +91,18 @@ def main():
     plot_output = args.plot_output if args.plot_output is not None else f"{args.output}.png"
     fig, axes = plt.subplots(1, 3, figsize=(15, 5), layout="constrained")
 
-    brightness_norm = ImageNormalize(stretch=AsinhStretch(1e-4))
     subtracted_plot = subtracted.copy()
     subtracted_plot[subtracted_plot < 0] = np.nan
 
-    im0 = axes[0].imshow(reference, cmap=cm.soholasco2, norm=brightness_norm, origin="lower")
+    im0 = axes[0].imshow(reference, cmap=cm.soholasco2, norm=ImageNormalize(stretch=AsinhStretch(1e-4)), origin="lower")
     axes[0].set_title(f"Original (idx={args.reference_index})")
     fig.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
 
-    im1 = axes[1].imshow(mask, cmap=cm.soholasco2, norm=brightness_norm, origin="lower")
+    im1 = axes[1].imshow(mask, cmap=cm.soholasco2, norm=ImageNormalize(stretch=AsinhStretch(1e-4)), origin="lower")
     axes[1].set_title("Correction Mask")
     fig.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
 
-    im2 = axes[2].imshow(subtracted_plot, cmap=cm.soholasco2, norm=brightness_norm, origin="lower")
+    im2 = axes[2].imshow(subtracted_plot, cmap=cm.soholasco2, norm=ImageNormalize(stretch=AsinhStretch(1e-4)), origin="lower")
     axes[2].set_title("Original - Mask")
     fig.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
 

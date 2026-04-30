@@ -1,24 +1,20 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v11"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v10'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v17"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v16'
 
 instruments:
   - type: 'default'
     key: 'STEREO_A_COR2'
     scaling: {type: 'log'}
-    correction: { corrections: ['f_corona', 'pB_straylight'] }
+    correction: { corrections: [ 'f_corona', 'pB_add', 'tB_add' ] }
   - type: 'default'
     key: 'STEREO_B_COR2'
     scaling: { type: 'log' }
-    correction: { corrections: ['f_corona', 'pB_straylight'] }
-    calibration: False
+    correction: { corrections: [ 'f_corona', 'pB_add', 'tB_add' ] }
+    calibration: True
 
 model:
-  dim: 128
-  static: False
-  w0_init: 1.0
-  input_weights: [ 30, 30, 30, 1.0 ]
-  #encoding_config: { type: multi_spectral, weights: [ 30, 30, 30, 1.0 ], num_dims: [32, 32, 32, 4] } #{ type: multi_spectral, weights: [ 10, 10, 10, 1.0e-3 ], num_dims: [32, 32, 32, 4] }
   use_carrington_projection: True
+  model_type: 'split_temporal'
 
 data:
   train_datasets:
@@ -29,6 +25,11 @@ data:
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/tB/*"
       batch_size: 2048
       debug: False
+      correction_config: { type: file,
+                           tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_a_cor2_tB_correction.npy",
+                           pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_a_cor2_pB_correction.npy",
+                           clean: False }
+
     - type: 'COR'
       key: 'STEREO_B_COR2'
       instrument_key: 'STEREO_B_COR2'
@@ -36,11 +37,18 @@ data:
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/tB/*"
       batch_size: 2048
       debug: False
+      correction_config: { type: file,
+                           tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_b_cor2_tB_correction.npy",
+                           pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_b_cor2_pB_correction.npy",
+                           clean: False }
+
     - type: 'random'
       name: 'continuity'
-      radius_range: [ 2.5, 17.0 ]
+      radius_range: [ 2.0, 20.0 ]
       unit: 'solRad'
       batch_size: 8192
+      volume_uniform_sampling: True
+
   valid_datasets:
     # 1) Standard instrument validation (renders images)
     - type: 'COR'
@@ -48,12 +56,20 @@ data:
       instrument_key: 'STEREO_A_COR2'
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/20100319_200815_1P4c2A.fts"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/tB/20100319_200815_1B4c2A.fts"
+      correction_config: { type: file,
+                           tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_a_cor2_tB_correction.npy",
+                           pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_a_cor2_pB_correction.npy",
+                           clean: False }
 
     - type: 'COR'
       key: 'STEREO_B_COR2'
       instrument_key: 'STEREO_B_COR2'
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/pB/20100319_200815_1P4c2B.fts"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/tB/20100319_200815_1B4c2B.fts"
+      correction_config: { type: file,
+                           tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_b_cor2_tB_correction.npy",
+                           pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_b_cor2_pB_correction.npy",
+                           clean: False }
 
 
     - key: valid_radial
@@ -63,8 +79,6 @@ data:
       key: valid_lon_slices
       radius_range: [ 2.5, 17.0 ]
 
-
-  debug: False
   Rs_per_ds: 15
   seconds_per_dt: 86400
   batch_size: 8192
@@ -89,39 +103,20 @@ callbacks:
   - type: longitude_density
     ds_key: valid_lon_slices
 
-#  - type: longitude_time_density
-#    ds_key: valid_lon_time
-#    longitudes_deg: [0, 30, 90, 120, 150]  # optional for labels
-
-#  - type: longitude_time_velocitymag
-#    ds_key: valid_lon_time
-
-#  - type: fixed_viewpoint_series
-#    ds_key: valid_view
-#    n_times: 6  # optional if dataset exposes base.n_times
-
-#  - type: star_background_full
-#    ds_key: valid_star_bg
-#    eps: 1e-12
-
-
 logging:
   entity: "robert_jarolim"
-  project: "sunerf-cme-obs"
-  name: "2010-03 - COR2 - correction"
+  project: "sunerf-cme-obs-v3"
+  name: "2010-03 - COR2"
 
 sampling:
   type: "spherical"
   n_samples: 64
   max_distance: 17.0
+  radial_weighting: False
 
 lambda:
   image: 1.0
-  ratio: 10.0
-  radial: 1.0e-4
-  continuity: 1.0e-4
-  velocity: 1.0e-4
-
-
-training:
-  log_every_n_steps: 10000
+  ratio: 1.0
+  radial: 1.0e-1 #{ start: 1.0e-1,  end: 1.0e-5, iterations: 1.0e+5 }
+  continuity: 1.0e-4 #{ start: 1.0e-1,  end: 1.0e-5, iterations: 1.0e+5 }
+  velocity: 1.0e-1 #{ start: 1.0e-1,  end: 1.0e-5, iterations: 1.0e+5 }

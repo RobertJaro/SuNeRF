@@ -147,6 +147,11 @@ python -m sunerf.data.coronagraph.compute_correction \
 
 python -m sunerf.data.coronagraph.compute_correction \
   --type full-min \
+  --input "${PREP_DIR}/cor2_clear/*" \
+  --output "${PREP_DIR}/masks/stereo_a_cor2_tB_clear_correction.npy"
+
+python -m sunerf.data.coronagraph.compute_correction \
+  --type full-min \
   --input "${PREP_DIR}/ccor/*" \
   --output "${PREP_DIR}/masks/ccor_tB_correction.npy"
 

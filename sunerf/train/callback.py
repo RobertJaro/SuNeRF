@@ -1107,13 +1107,14 @@ class LongitudeSlicesCallback(BaseCallback):
 
 class LongitudeTimeVelocityMagCallback(BaseCallback):
     """
-    Same grid as density but plots |v|.
-    Expects v_pred (...,3)
+    Same grid as density but plots |v| in km/s.
+    Expects v_pred (...,3) in model units (ds/dt).
     """
 
-    def __init__(self, cube_shape, **kwargs):
+    def __init__(self, cube_shape, Rs_per_ds, seconds_per_dt, **kwargs):
         super().__init__(**kwargs)
         self.cube_shape = cube_shape
+        self.velocity_normalization = float((Rs_per_ds * u.solRad / (seconds_per_dt * u.s)).to_value(u.km / u.s))
 
     @rank_zero_only
     def on_validation_end(self, trainer, pl_module):
@@ -1123,7 +1124,7 @@ class LongitudeTimeVelocityMagCallback(BaseCallback):
 
         Nlon, Nt, Nr, Nth = self.cube_shape
         v = out["v_pred"].view(Nlon, Nt, Nr, Nth, 3).cpu().numpy()
-        vmag = np.linalg.norm(v, axis=-1)
+        vmag = np.linalg.norm(v, axis=-1) * self.velocity_normalization
 
         sph = out["spherical_coords"].view(Nlon, Nt, Nr, Nth, 3).cpu().numpy()
         r = sph[0, 0, :, 0, 0]

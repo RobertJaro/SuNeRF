@@ -21,7 +21,7 @@ def plot_radii(ax, s_map, radii=[2, 3, 4, 5], **plot_kwargs):
     radius = np.sqrt(coords.Tx ** 2 + coords.Ty ** 2) / s_map.rsun_obs
     radius = radius.to_value(u.dimensionless_unscaled)
 
-    cs = ax.contour(radius, levels=radii, cmap='cividis', **plot_kwargs)
+    cs = ax.contour(radius, levels=radii, colors='0.2', **plot_kwargs)
     ax.clabel(cs, inline=True, fontsize=8, fmt='%1.1f R☉')
 
 
@@ -93,11 +93,107 @@ def crop_map(s_map, xlim=None, ylim=None):
     return s_map.submap(bottom_left=bottom_left, top_right=top_right)
 
 
+def make_ratio_map(pB_map, tB_map):
+    ratio = np.full_like(pB_map.data, np.nan, dtype=np.float32)
+    valid = np.isfinite(pB_map.data) & np.isfinite(tB_map.data) & (tB_map.data > 0)
+    ratio[valid] = pB_map.data[valid] / tB_map.data[valid]
+    ratio = np.clip(ratio, 0, 1)
+    return Map(ratio, pB_map.meta)
+
+
+def build_reference_paths(tB_pattern=None, pB_pattern=None, legacy_pattern=None, n_samples=20):
+    if legacy_pattern is not None and pB_pattern is None:
+        pB_pattern = legacy_pattern
+
+    tB_paths = sorted(glob.glob(tB_pattern)) if tB_pattern is not None else []
+    pB_paths = sorted(glob.glob(pB_pattern)) if pB_pattern is not None else []
+
+    if not tB_paths and not pB_paths:
+        raise ValueError("Provide at least one reference glob via --ref_tB_path, --ref_pB_path, or --ref_map_path.")
+    if tB_paths and pB_paths and len(tB_paths) != len(pB_paths):
+        raise ValueError(
+            f"Reference tB/pB glob counts differ: {len(tB_paths)} tB paths and {len(pB_paths)} pB paths."
+        )
+
+    n_refs = max(len(tB_paths), len(pB_paths))
+    step = max(1, n_refs // n_samples)
+    ref_items = []
+    for i in range(0, n_refs, step):
+        ref_items.append({
+            'tB': tB_paths[i] if tB_paths else None,
+            'pB': pB_paths[i] if pB_paths else None,
+        })
+    return ref_items
+
+
+def load_reference_map(path):
+    if path is None:
+        return None
+    return Map(path).rotate(order=3)
+
+
+def apply_mask(s_map, mask):
+    if s_map is not None:
+        s_map.data[mask] = np.nan
+
+
+def shared_lognorm(*maps):
+    values = []
+    for s_map in maps:
+        if s_map is None:
+            continue
+        data = s_map.data
+        valid = np.isfinite(data) & (data > 0)
+        if np.any(valid):
+            values.append(data[valid])
+    if not values:
+        return LogNorm()
+    values = np.concatenate(values)
+    vmin = np.nanmin(values)
+    vmax = np.nanmax(values)
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin <= 0 or vmax <= vmin:
+        return LogNorm()
+    return LogNorm(vmin=vmin, vmax=vmax)
+
+
+def plot_map_panel(ax, s_map, radii, norm=None, vmin=None, vmax=None, xlabel=None, ylabel=None, cmap=cm.soholasco2):
+    im = ax.imshow(s_map.data, cmap=cmap, norm=norm, vmin=vmin, vmax=vmax, origin='lower')
+    s_map.draw_grid(ax, color="blue")
+    ax.set_xlabel('' if xlabel is None else xlabel)
+    ax.set_ylabel('' if ylabel is None else ylabel)
+    plot_radii(ax, s_map, radii=radii)
+    return im
+
+
+def set_outer_tick_labels(ax, show_x=False, show_y=False):
+    if hasattr(ax, 'coords'):
+        ax.coords[0].set_ticklabel_visible(show_x)
+        ax.coords[1].set_ticklabel_visible(show_y)
+    else:
+        ax.tick_params(axis='x', which='both', labelbottom=show_x)
+        ax.tick_params(axis='y', which='both', labelleft=show_y)
+
+
+def add_top_colorbar(fig, cax, mappable, label):
+    cbar = fig.colorbar(mappable, cax=cax, orientation="horizontal")
+    cbar.set_label(label)
+    cbar.ax.xaxis.set_label_position("top")
+    cbar.ax.xaxis.set_ticks_position("top")
+    return cbar
+
+
+def hide_panel(ax):
+    ax.set_axis_off()
+
+
 if __name__ == '__main__':
     # parse arguments
     parser = argparse.ArgumentParser(description='Visualize CME')
     parser.add_argument('--sunerf_path', type=str, required=True, help='Path to SuNeRF save state')
-    parser.add_argument('--ref_map_path', type=str, required=False, help='Path to reference maps (glob pattern)')
+    parser.add_argument('--ref_map_path', '--ref_map', dest='ref_map_path', type=str, required=False,
+                        help='Legacy path to reference pB maps (glob pattern)')
+    parser.add_argument('--ref_tB_path', type=str, required=False, help='Path to reference tB maps (glob pattern)')
+    parser.add_argument('--ref_pB_path', type=str, required=False, help='Path to reference pB maps (glob pattern)')
     parser.add_argument('--out_path', type=str, help='Path to output directory', default=None)
     parser.add_argument('--xlim', type=float, nargs=2, default=None,
                         help='Optional x-axis limits in arcsec for the image panels')
@@ -113,20 +209,24 @@ if __name__ == '__main__':
 
     ##########################################################
     sunerf_loader = ThomsonSuNeRFLoader(args.sunerf_path)
-    ref_paths = sorted(glob.glob(args.ref_map_path))
     n_samples = 20
-    ref_paths = ref_paths[::max(1, len(ref_paths) // n_samples)]
+    ref_items = build_reference_paths(args.ref_tB_path, args.ref_pB_path, args.ref_map_path, n_samples=n_samples)
 
     ##########################################################
     # plot settings
-    radii = [2.5, 5, 10, 15]
-    brightness_norm = LogNorm()
+    product_labels = {
+        "tB": "Total Brightness [MSB]",
+        "pB": "Polarized Brightness [MSB]",
+        "ratio": "Polarization Ratio",
+    }
 
     ##########################################################
-    for ref_path in tqdm(ref_paths):
-        ref_map = Map(ref_path)
-        ref_map = ref_map.rotate(order=3)  # rotate to solar north
+    for ref_item in tqdm(ref_items):
+        ref_tB_map = load_reference_map(ref_item['tB'])
+        ref_pB_map = load_reference_map(ref_item['pB'])
+        ref_map = ref_tB_map if ref_tB_map is not None else ref_pB_map
         occultor_mask, ref_min_radius, ref_max_radius = get_occultor_mask_from_ref_map(ref_map)
+        radii = [ref_min_radius, ref_max_radius]
 
         ##########################################################
         # load reference map
@@ -135,11 +235,42 @@ if __name__ == '__main__':
         tB_map = model_out['tB_map']
         pB_map = model_out['pB_map']
         density_map = model_out['density_map']
-        tB_map.data[occultor_mask] = np.nan
-        pB_map.data[occultor_mask] = np.nan
-        density_map.data[occultor_mask] = np.nan
-        ref_plot_map = crop_map(ref_map, args.xlim, args.ylim)
-        model_plot_map = crop_map(pB_map, args.xlim, args.ylim)
+        ratio_map = make_ratio_map(pB_map, tB_map)
+        for s_map in [ref_tB_map, ref_pB_map, tB_map, pB_map, ratio_map, density_map]:
+            apply_mask(s_map, occultor_mask)
+
+        ref_ratio_map = (
+            make_ratio_map(ref_pB_map, ref_tB_map)
+            if ref_tB_map is not None and ref_pB_map is not None
+            else None
+        )
+        apply_mask(ref_ratio_map, occultor_mask)
+
+        tB_norm = shared_lognorm(ref_tB_map, tB_map)
+        pB_norm = shared_lognorm(ref_pB_map, pB_map)
+        reference_panels = [
+            ("ref_tB", None, "tB", None, None, tB_norm, None, None),
+            ("ref_pB", None, "pB", None, None, pB_norm, None, None),
+            ("ref_ratio", None, "ratio", None, None, None, 0, 1),
+        ]
+        if ref_tB_map is not None:
+            reference_panels[0] = ("ref_tB", crop_map(ref_tB_map, args.xlim, args.ylim),
+                                   "tB", None, "Reference\nHelioprojective Y (arcsec)", tB_norm, None, None)
+        if ref_pB_map is not None:
+            reference_panels[1] = ("ref_pB", crop_map(ref_pB_map, args.xlim, args.ylim),
+                                   "pB", None, None, pB_norm, None, None)
+        if ref_ratio_map is not None:
+            reference_panels[2] = ("ref_ratio", crop_map(ref_ratio_map, args.xlim, args.ylim),
+                                   "ratio", None, None, None, 0, 1)
+
+        model_panels = [
+            ("model_tB", crop_map(tB_map, args.xlim, args.ylim), "tB", "Helioprojective X (arcsec)",
+             "Model\nHelioprojective Y (arcsec)", tB_norm, None, None),
+            ("model_pB", crop_map(pB_map, args.xlim, args.ylim), "pB", "Helioprojective X (arcsec)",
+             None, pB_norm, None, None),
+            ("model_ratio", crop_map(ratio_map, args.xlim, args.ylim), "ratio", "Helioprojective X (arcsec)", None,
+             None, 0, 1),
+        ]
 
         ##########################################################
         # observer info
@@ -151,16 +282,24 @@ if __name__ == '__main__':
         obs_distance = observer.radius.to(u.AU)
         obs_hci_lon = observer_hci.lon
 
-        fig = plt.figure(figsize=(12.8, 3.8), constrained_layout=True)
+        fig = plt.figure(figsize=(10.2, 9.8), constrained_layout=True)
+        mosaic = [
+            ["top_left", "observer", "top_right"],
+            ["cbar_tB", "cbar_pB", "cbar_ratio"],
+            [panel[0] for panel in reference_panels],
+            [panel[0] for panel in model_panels],
+        ]
+        subplot_kw = {"observer": {"projection": "3d"}}
+        subplot_kw.update({panel[0]: {"projection": panel[1]} for panel in reference_panels if panel[1] is not None})
+        subplot_kw.update({panel[0]: {"projection": panel[1]} for panel in model_panels})
         axd = fig.subplot_mosaic(
-            [["observer", "im0", "im1"]],
-            per_subplot_kw={
-                "observer": {"projection": "3d"},
-                "im0": {"projection": ref_plot_map},
-                "im1": {"projection": model_plot_map},
-            },
-            width_ratios=[1.05, 1.0, 1.0],
+            mosaic,
+            per_subplot_kw=subplot_kw,
+            height_ratios=[1.0, 0.06, 1.0, 1.0],
+            gridspec_kw={"wspace": 0.05, "hspace": 0.05},
         )
+        hide_panel(axd["top_left"])
+        hide_panel(axd["top_right"])
 
         observer_title_lines = [
             time.isoformat(' ', timespec='minutes'),
@@ -169,24 +308,32 @@ if __name__ == '__main__':
         ]
         plot_observer_geometry(axd["observer"], obs_lat, obs_lon, obs_distance, observer_title_lines)
 
-        ax = axd["im0"]
-        im = ax.imshow(ref_plot_map.data, cmap=cm.soholasco2, norm=brightness_norm, origin='lower')
-        fig.colorbar(im, ax=ax, location="right", fraction=0.046, pad=0.03, label="pB (MSB)")
-        ax.set_title("Polarized Brightness (Reference)")
-        ref_plot_map.draw_grid(ax, color="blue")
-        ax.set_xlabel('Helioprojective X (arcsec)')
-        ax.set_ylabel('Helioprojective Y (arcsec)')
-        plot_radii(ax, ref_plot_map, radii=radii)
+        product_axes = {product: [] for product in product_labels}
+        product_mappables = {}
+        for panel_id, s_map, product, xlabel, ylabel, norm, vmin, vmax in reference_panels + model_panels:
+            if s_map is None:
+                hide_panel(axd[panel_id])
+                continue
+            im = plot_map_panel(
+                axd[panel_id], s_map, radii,
+                norm=norm, vmin=vmin, vmax=vmax, xlabel=xlabel, ylabel=ylabel,
+                cmap='jet' if product == "ratio" else cm.soholasco2,
+            )
+            set_outer_tick_labels(
+                axd[panel_id],
+                show_x=panel_id.startswith("model_"),
+                show_y=panel_id.endswith("tB"),
+            )
+            product_axes[product].append(axd[panel_id])
+            product_mappables.setdefault(product, im)
 
-        ax = axd["im1"]
-        im = ax.imshow(model_plot_map.data, cmap=cm.soholasco2, norm=brightness_norm, origin='lower')
-        fig.colorbar(im, ax=ax, location="right", fraction=0.046, pad=0.03, label="pB (MSB)")
-        ax.set_title(f"Polarized Brightness (Model)\nOcculter {ref_min_radius:.2f}-{ref_max_radius:.2f} R☉")
-        model_plot_map.draw_grid(ax, color="blue")
-        ax.set_xlabel('Helioprojective X (arcsec)')
-        ax.set_ylabel('Helioprojective Y (arcsec)')
-        plot_radii(ax, model_plot_map, radii=radii)
+        for product in ["tB", "pB", "ratio"]:
+            if product not in product_mappables:
+                hide_panel(axd[f"cbar_{product}"])
+                continue
+            add_top_colorbar(fig, axd[f"cbar_{product}"], product_mappables[product], product_labels[product])
 
+        ref_path = ref_item['pB'] or ref_item['tB']
         img_path = os.path.join(args.out_path, Path(ref_path).stem + '.jpg')
         fig.savefig(img_path, dpi=150)
         plt.close('all')

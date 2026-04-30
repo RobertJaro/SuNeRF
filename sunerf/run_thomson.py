@@ -201,6 +201,8 @@ if __name__ == '__main__':
             callback = LongitudeTimeVelocityMagCallback(
                 ds_key=ds_key,
                 cube_shape=base.cube_shape,
+                Rs_per_ds=data_module.Rs_per_ds,
+                seconds_per_dt=data_module.seconds_per_dt,
                 name=cb_cfg.get("name", ds_key),
             )
 
@@ -252,7 +254,7 @@ if __name__ == '__main__':
                       logger=logger,
                       devices=N_GPUS,
                       accelerator='gpu' if N_GPUS >= 1 else None,
-                      strategy=DDPStrategy(find_unused_parameters=False) if n_gpus > 1 else 'auto',
+                      strategy=DDPStrategy(find_unused_parameters=True) if n_gpus > 1 else 'auto',
                       num_sanity_val_steps=0,  # validate all points to check the first image
                       val_check_interval=log_every_n_steps,
                       check_val_every_n_epoch=check_val_every_n_epoch,

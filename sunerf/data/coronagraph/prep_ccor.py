@@ -37,7 +37,7 @@ def _header_flag_is_true(value):
 
 
 def _validate_ccor_quality(ext_header, primary_header, file_path):
-    quality_keys = ("ISVIABLE", "ISNORMAL", "DCMPRS_Q", "IMGBLK_Q")
+    quality_keys = ("ISVIABLE", "ISNORMAL", "DCMPRS_Q", "IMGBLK_Q", "BORSGT_Q", "EARFOV_Q")
     failed = []
     for key in quality_keys:
         value = ext_header.get(key, primary_header.get(key))

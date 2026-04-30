@@ -30,26 +30,20 @@ def build_parser():
     )
     parser.add_argument('--sunerf_path', type=str, required=True, help='Path to SuNeRF save state')
     parser.add_argument('--out_path', type=str, default=None, help='Path to output directory')
-    parser.add_argument('--lon_range', type=float, nargs=2, metavar=('START_DEG', 'END_DEG'),
-                        action='append', default=None,
-                        help='Longitude sweep in degrees; repeat for multiple path segments')
-    parser.add_argument('--lat_range', type=float, nargs=2, metavar=('START_DEG', 'END_DEG'),
-                        action='append', default=None,
-                        help='Carrington latitude sweep in degrees; repeat for multiple path segments')
+    parser.add_argument('--lon', type=float, action='append', default=None,
+                        help='Longitude target in degrees; the first entry is the start value, later entries are interpolation targets')
+    parser.add_argument('--lat', type=float, action='append', default=None,
+                        help='Latitude target in degrees; the first entry is the start value, later entries are interpolation targets')
     parser.add_argument('--lon_frame', type=str, choices=['carrington', 'hci'], default='carrington',
-                        help='Longitude frame used by --lon_range')
-    parser.add_argument('--time_range', type=parse_time, nargs=2, metavar=('START', 'END'),
-                        action='append', default=None,
-                        help='Time sweep in ISO format; repeat for multiple path segments')
-    range_group = parser.add_mutually_exclusive_group()
-    range_group.add_argument('--occ_range', type=float, nargs=2, metavar=('INNER_RS', 'OUTER_RS'),
-                             action='append', default=None,
-                             help='Occulting range in solar radii; repeat once per segment if needed')
-    range_group.add_argument('--radius_range', type=float, nargs=2, metavar=('INNER_RS', 'OUTER_RS'),
-                             action='append', default=None,
-                             help='Projected plane-of-sky radial range in solar radii; repeat once per segment if needed')
+                        help='Longitude frame used by --lon')
+    parser.add_argument('--time', type=parse_time, action='append', default=None,
+                        help='Time target in ISO format; the first entry is the start value, later entries are interpolation targets')
+    parser.add_argument('--radius_min', type=float, action='append', default=None,
+                        help='Inner projected radius target in solar radii; the first entry is the start value, later entries are interpolation targets')
+    parser.add_argument('--radius_max', type=float, action='append', default=None,
+                        help='Outer projected radius target in solar radii; the first entry is the start value, later entries are interpolation targets')
     parser.add_argument('--steps', type=int, action='append', default=None,
-                        help='Number of frames in each segment; repeat to match the number of path segments')
+                        help='Frames per waypoint; first entry should normally be 1, later entries interpolate from the previous waypoint to the new target')
     parser.add_argument('--distance_au', type=float, default=1.0, help='Observer distance in AU')
     parser.add_argument('--resolution', type=int, default=256, help='Square output resolution in pixels')
     parser.add_argument('--dpi', type=int, default=300, help='Saved frame DPI')
@@ -63,70 +57,75 @@ def resolve_time_range(loader, time_range):
     max_time = observer_times[-1]
     if time_range is None:
         return min_time, max_time
-    if isinstance(time_range[0], (list, tuple)):
-        return time_range[0][0], time_range[0][1]
-    return time_range[0], time_range[1]
+    return time_range[0], time_range[-1]
 
 
-def resolve_segments(args, default_start_time, default_end_time):
-    lon_ranges = args.lon_range if args.lon_range is not None else [[-90.0, 270.0]]
-    lat_ranges = args.lat_range if args.lat_range is not None else [[0.0, 0.0]]
-    time_ranges = args.time_range if args.time_range is not None else [[default_start_time, default_end_time]]
-    steps_list = args.steps if args.steps is not None else [80]
-    if args.radius_range is not None:
-        projected_ranges = args.radius_range
-    elif args.occ_range is not None:
-        projected_ranges = args.occ_range
-    else:
-        projected_ranges = [[2.5, 15.0]]
+def resolve_waypoints(args, default_start_time, default_end_time):
+    lons = args.lon if args.lon is not None else [-90.0, 270.0]
+    lats = args.lat if args.lat is not None else [0.0, 0.0]
+    times = args.time if args.time is not None else [default_start_time, default_end_time]
+    steps_list = args.steps if args.steps is not None else [1, 80]
+    radius_mins = args.radius_min if args.radius_min is not None else [2.5, 2.5]
+    radius_maxs = args.radius_max if args.radius_max is not None else [15.0, 15.0]
 
-    n_segments = max(len(lon_ranges), len(lat_ranges), len(time_ranges), len(steps_list), len(projected_ranges))
+    n_waypoints = max(len(lons), len(lats), len(times), len(steps_list), len(radius_mins), len(radius_maxs))
 
     def expand(values, name):
         if len(values) == 1:
-            return values * n_segments
-        if len(values) != n_segments:
-            raise ValueError(f'{name} must be provided once or once per segment')
+            return values * n_waypoints
+        if len(values) != n_waypoints:
+            raise ValueError(f'{name} must be provided once or once per waypoint')
         return values
 
-    lon_ranges = expand(lon_ranges, '--lon_range')
-    lat_ranges = expand(lat_ranges, '--lat_range')
-    time_ranges = expand(time_ranges, '--time_range')
+    lons = expand(lons, '--lon')
+    lats = expand(lats, '--lat')
+    times = expand(times, '--time')
     steps_list = expand(steps_list, '--steps')
-    projected_ranges = expand(projected_ranges, '--radius_range/--occ_range')
+    radius_mins = expand(radius_mins, '--radius_min')
+    radius_maxs = expand(radius_maxs, '--radius_max')
 
-    segments = []
-    for lon_range, lat_range, time_range, steps, projected_range in zip(
-        lon_ranges, lat_ranges, time_ranges, steps_list, projected_ranges
+    waypoints = []
+    for lon, lat, time, steps, radius_min, radius_max in zip(
+        lons, lats, times, steps_list, radius_mins, radius_maxs
     ):
         if steps < 1:
             raise ValueError('--steps values must be at least 1')
-        segments.append({
-            'lon_range': lon_range,
-            'lat_range': lat_range,
-            'time_range': time_range,
+        waypoints.append({
+            'lon': lon,
+            'lat': lat,
+            'time': time,
             'steps': steps,
-            'projected_range': projected_range,
+            'radius_min': radius_min,
+            'radius_max': radius_max,
         })
-    return segments
+    if len(waypoints) < 1:
+        raise ValueError('At least one waypoint is required')
+    waypoints[0]['steps'] = 1
+    return waypoints
 
 
-def build_points(args, segments):
+def build_points(args, waypoints):
     points = []
-    for segment_index, segment in enumerate(segments):
+    first = waypoints[0]
+    points.append((
+        args.distance_au * u.AU,
+        first['lat'] * u.deg,
+        first['lon'] * u.deg,
+        first['time'],
+        first['radius_min'] * u.R_sun,
+        first['radius_max'] * u.R_sun,
+    ))
+
+    for previous, current in zip(waypoints[:-1], waypoints[1:]):
         segment_points = list(zip(
-            np.full(segment['steps'], args.distance_au) * u.AU,
-            np.linspace(segment['lat_range'][0], segment['lat_range'][1], segment['steps']) * u.deg,
-            np.linspace(segment['lon_range'][0], segment['lon_range'][1], segment['steps']) * u.deg,
-            pd.date_range(
-                start=segment['time_range'][0],
-                end=segment['time_range'][1],
-                periods=segment['steps'],
-            ).to_pydatetime(),
-            np.full(segment['steps'], segment['projected_range'][0]) * u.R_sun,
-            np.full(segment['steps'], segment['projected_range'][1]) * u.R_sun,
+            np.full(current['steps'], args.distance_au) * u.AU,
+            np.linspace(previous['lat'], current['lat'], current['steps']) * u.deg,
+            np.linspace(previous['lon'], current['lon'], current['steps']) * u.deg,
+            pd.date_range(start=previous['time'], end=current['time'], periods=current['steps']).to_pydatetime(),
+            np.linspace(previous['radius_min'], current['radius_min'], current['steps']) * u.R_sun,
+            np.linspace(previous['radius_max'], current['radius_max'], current['steps']) * u.R_sun,
         ))
-        if segment_index > 0 and segment_points:
+        if segment_points:
             segment_points = segment_points[1:]
         points.extend(segment_points)
     return points
@@ -241,9 +240,9 @@ def main():
     os.makedirs(args.out_path, exist_ok=True)
 
     sunerf_loader = ThomsonSuNeRFLoader(args.sunerf_path)
-    start_time, end_time = resolve_time_range(sunerf_loader, args.time_range)
-    segments = resolve_segments(args, start_time, end_time)
-    points = build_points(args, segments)
+    start_time, end_time = resolve_time_range(sunerf_loader, args.time)
+    waypoints = resolve_waypoints(args, start_time, end_time)
+    points = build_points(args, waypoints)
 
     resolution = (args.resolution, args.resolution) * u.pix
 

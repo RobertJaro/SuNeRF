@@ -6,10 +6,11 @@ instruments:
     key: 'STEREO_A_COR2'
     scaling: { type: 'log' }
     correction: { corrections: [ 'f_corona', 'pB_add', 'tB_add' ] }
-#  - type: 'default'
-#    key: 'STEREO_A_COR2_CLEAR'
-#    scaling: { type: 'log' }
-#    correction: { corrections: [ 'f_corona', 'tB_add' ] }
+  - type: 'default'
+    key: 'STEREO_A_COR2_CLEAR'
+    scaling: { type: 'log' }
+    correction: { corrections: [ 'f_corona', 'tB_add' ] }
+    calibration: True
   - type: 'default'
     key: 'PUNCH'
     scaling: { type: 'log' }
@@ -27,6 +28,33 @@ model:
 
 data:
   train_datasets:
+    #################### Background datasets ####################
+    - type: 'COR'
+      key: 'STEREO_A_COR2_BG'
+      instrument_key: 'STEREO_A_COR2'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/cor2/pB/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/cor2/tB/*"
+      batch_size: 1024
+      debug: False
+      correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/masks/stereo_a_cor2_tB_correction.npy", alpha: 0.8, clean: False }
+
+    - type: 'punch'
+      key: 'PUNCH_BG'
+      instrument_key: 'PUNCH'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/punch_pam/pB/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/punch_pam/tB/*"
+      batch_size: 1024
+      debug: False
+
+    - type: 'CCOR'
+      key: 'CCOR_BG'
+      instrument_key: 'CCOR'
+      data_path_pB: null
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/ccor/*"
+      batch_size: 1024
+      debug: False
+
+    #################### CME datasets ####################
     - type: 'COR'
       key: 'STEREO_A_COR2'
       instrument_key: 'STEREO_A_COR2'
@@ -34,15 +62,16 @@ data:
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/cor2/tB/*"
       batch_size: 1024
       debug: False
-      correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/masks/stereo_a_cor2_tB_correction.npy", alpha: 0.8, clean: False }
+      correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/masks/stereo_a_cor2_tB_correction.npy", alpha: 0.8, clean: False }
 
-#    - type: 'COR'
-#      key: 'STEREO_A_COR2_CLEAR'
-#      instrument_key: 'STEREO_A_COR2_CLEAR'
-#      data_path_pB: null
-#      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/cor2_clear/*"
-#      batch_size: 1024
-#      debug: False
+    - type: 'COR'
+      key: 'STEREO_A_COR2_CLEAR'
+      instrument_key: 'STEREO_A_COR2_CLEAR'
+      data_path_pB: null
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/cor2_clear/*"
+      batch_size: 1024
+      debug: False
+      correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/masks/stereo_a_cor2_tB_clear_correction.npy", alpha: 0.8, clean: False }
 
     - type: 'punch'
       key: 'PUNCH'
@@ -60,12 +89,14 @@ data:
       batch_size: 1024
       debug: False
 
+      #################### Random sampling datasets ####################
+
     - type: 'random'
       name: 'continuity'
-      radius_range: [1.5, 100.0]
+      radius_range: [1.5, 110.0]
       unit: 'solRad'
       batch_size: 4096
-      radial_weighted_sampling: False
+      volume_uniform_sampling: True
 
   valid_datasets:
     - type: 'COR'
@@ -73,13 +104,14 @@ data:
       instrument_key: 'STEREO_A_COR2'
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/cor2/pB/*"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/cor2/tB/*"
-      correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/masks/stereo_a_cor2_tB_correction.npy", alpha: 0.8, clean: False }
+      correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/masks/stereo_a_cor2_tB_correction.npy", alpha: 0.8, clean: False }
 
-#    - type: 'COR'
-#      key: 'STEREO_A_COR2_CLEAR'
-#      instrument_key: 'STEREO_A_COR2_CLEAR'
-#      data_path_pB: null
-#      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/cor2_clear/*"
+    - type: 'COR'
+      key: 'STEREO_A_COR2_CLEAR'
+      instrument_key: 'STEREO_A_COR2_CLEAR'
+      data_path_pB: null
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/cor2_clear/*"
+      correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09_06_09_1200/prep/masks/stereo_a_cor2_tB_clear_correction.npy", alpha: 0.8, clean: False }
 
     - type: 'punch'
       key: 'PUNCH'
@@ -110,8 +142,8 @@ data:
 callbacks:
   - type: 'thomson_image'
     ds_key: 'STEREO_A_COR2'
-#  - type: 'thomson_image'
-#    ds_key: 'STEREO_A_COR2_CLEAR'
+  - type: 'thomson_image'
+    ds_key: 'STEREO_A_COR2_CLEAR'
   - type: 'thomson_image'
     ds_key: 'PUNCH'
   - type: 'thomson_image'
@@ -119,8 +151,8 @@ callbacks:
 
   - type: 'correction_image'
     ds_key: 'STEREO_A_COR2'
-#  - type: 'correction_image'
-#    ds_key: 'STEREO_A_COR2_CLEAR'
+  - type: 'correction_image'
+    ds_key: 'STEREO_A_COR2_CLEAR'
   - type: 'correction_image'
     ds_key: 'PUNCH'
   - type: 'correction_image'
@@ -134,20 +166,21 @@ callbacks:
 
 logging:
   entity: "robert_jarolim"
-  project: "sunerf-cme-obs-v2"
+  project: "sunerf-cme-obs-v3"
   name: "2025-09-06 to 2025-09-09 12:00 - STEREO A COR2 + PUNCH + CCOR"
 
 sampling:
   type: "spherical"
   n_samples: 64
   max_distance: 100.0
+  radial_weighting: True
 
 lambda:
   image: 1.0
   ratio: 1.0
-  continuity: 1.0e-1
+  continuity: 1.0e-3
   radial: 1.0e-3
   velocity: 1.0e-3
 
 training:
-  meta_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v11/last.ckpt"
+  log_every_n_steps: 10000
