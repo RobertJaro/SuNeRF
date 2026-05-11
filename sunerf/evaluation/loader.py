@@ -24,7 +24,7 @@ class SuNeRFLoader:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if device is None else device
         self.device = device
 
-        state = torch.load(state_path)
+        state = torch.load(state_path, weights_only=False)
         data_config = state['data_config']
         self.ds_keys = list(data_config.keys())
         self.config = data_config
@@ -268,7 +268,7 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
 class PlasmaSuNeRFLoader(SuNeRFLoader):
 
     def __init__(self, state_path, *args, **kwargs):
-        state = torch.load(state_path)
+        state = torch.load(state_path, weights_only=False)
         self.log_T_range = state['log_T_range']
         super().__init__(state_path, *args, **kwargs)
 
@@ -279,7 +279,7 @@ class ConditionedSuNeRFLoader:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if device is None else device
         self.device = device
 
-        state = torch.load(state_path)
+        state = torch.load(state_path, weights_only=False)
         data_config = state['data_config']
         self.ds_keys = list(data_config.keys())
         self.config = data_config
@@ -302,14 +302,31 @@ class ConditionedSuNeRFLoader:
     @torch.no_grad()
     def load_image(self, data_file: str, lat: u, lon: u,
                    distance=(1 * u.AU).to(u.solRad),
-                   hpc_lat: u = 0 * u.arcsec, hpc_lon: u = 0 * u.arcsec,
-                   resolution=(256, 256) * u.pix, scale=[2400 / 256, 2400 / 256] * u.arcsec / u.pix, **kwargs):
+                   hpc_lat: u = None, hpc_lon: u = None,
+                   resolution=None, scale=None, **kwargs):
 
-        time = Map(data_file).date
+        source_map = Map(data_file)
+        time = source_map.date
+        source_shape = source_map.data.shape
+        if resolution is None:
+            output_shape = source_shape
+        else:
+            output_shape = tuple(int(r.to_value(u.pix)) if hasattr(r, "to_value") else int(r) for r in resolution)
+
+        if scale is None:
+            scale = u.Quantity([
+                source_map.scale[0] * source_shape[1] / output_shape[1],
+                source_map.scale[1] * source_shape[0] / output_shape[0],
+            ])
+
+        # hpc_lat/hpc_lon are legacy names; they map to Helioprojective Tx/Ty.
+        reference_hpc = source_map.reference_coordinate.transform_to(frames.Helioprojective)
+        hpc_lat = reference_hpc.Tx if hpc_lat is None else hpc_lat
+        hpc_lon = reference_hpc.Ty if hpc_lon is None else hpc_lon
         obs = SkyCoord(0 * u.deg, 0 * u.deg, distance, frame=frames.HeliographicStonyhurst, obstime=time)
         reference_coord = SkyCoord(hpc_lat, hpc_lon, obstime=time, observer=obs,
                                    frame=frames.Helioprojective)
-        mock_data = np.zeros([int(r.to_value(u.pix)) for r in resolution])
+        mock_data = np.zeros(output_shape)
         header = make_fitswcs_header(mock_data, reference_coord, scale=scale)
         ref_map = Map(mock_data, header)
 
