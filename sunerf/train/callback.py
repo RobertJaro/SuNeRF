@@ -76,7 +76,7 @@ class AbsorptionCallback(BaseCallback):
         ax.set_ylabel('log(n_e)')
 
         fig.tight_layout()
-        wandb.log({'absorption': fig})
+        wandb.log({'absorption': wandb.Image(fig)})
         plt.close('all')
 
 
@@ -133,7 +133,7 @@ class TestImageCallback(BaseCallback):
         y, x = z_vals_stratified.shape[0] // 4, z_vals_stratified.shape[1] // 4  # select point in first quadrant
         plot_ray_sampling(z_vals_stratified[y, x], z_vals_hierach[y, x], ax[-1])
 
-        wandb.log({"Comparison": fig})
+        wandb.log({"Comparison": wandb.Image(fig)})
         plt.close('all')
 
 
@@ -181,7 +181,7 @@ class PlasmaImageCallback(BaseCallback):
         [ax.set_axis_off() for ax in axs.flatten()]
 
         fig.tight_layout()
-        wandb.log({f'images.{self.ds_key}': fig})
+        wandb.log({f'images.{self.ds_key}': wandb.Image(fig)})
         plt.close('all')
 
         self.plot_integrated_quantities(outputs['height_map'], outputs['mean_T'], outputs['total_ne'],
@@ -237,7 +237,7 @@ class PlasmaImageCallback(BaseCallback):
         plot_ray_sampling(z_vals_stratified[y, x], z_vals_hierach[y, x], axs[-1])
 
         fig.tight_layout()
-        wandb.log({f'integrated_quantities.{self.ds_key}': fig})
+        wandb.log({f'integrated_quantities.{self.ds_key}': wandb.Image(fig)})
         plt.close('all')
 
 
@@ -315,7 +315,7 @@ class ThomsonImageCallback(BaseCallback):
         axs[2, 0].set_ylabel('Ratio')
 
         fig.tight_layout()
-        wandb.log({f'images.{self.ds_key}': fig})
+        wandb.log({f'images.{self.ds_key}': wandb.Image(fig)})
         plt.close('all')
 
         # self.plot_integrated_quantities(outputs['density'], outputs['distance'],
@@ -483,7 +483,7 @@ class CorrectionImageCallback(BaseCallback):
             ax.set_axis_off()
 
         fig.tight_layout()
-        wandb.log({f"correction.{self.ds_key}": fig})
+        wandb.log({f"correction.{self.ds_key}": wandb.Image(fig)})
         plt.close(fig)
 
 
@@ -504,6 +504,10 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
             return None
         vmin = float(np.nanmin(positive))
         vmax = float(np.nanmax(positive))
+        if not np.isfinite(vmin) or not np.isfinite(vmax):
+            return None
+        if vmax <= vmin:
+            vmax = np.nextafter(vmin, np.inf)
         return LogNorm(vmin=vmin, vmax=vmax)
 
     tb_norm = _channel_lognorm(images[..., 0] if images.ndim == 4 else images)
@@ -580,7 +584,7 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
             ax = plt.subplot(1, 2 + int(has_pb), 3)
             _imshow_log(ax, img[..., 1], f"pB | Time: {tstr}", pb_norm)
 
-        wandb.log({f'Overview.{ds_key}': fig})
+        wandb.log({f'Overview.{ds_key}': wandb.Image(fig)})
         plt.close(fig)
 
 
@@ -757,7 +761,7 @@ class VelocitySliceCallback(BaseCallback):
         plt.colorbar(im_v, cax=cax, label='km/s')
 
         fig.tight_layout()
-        wandb.log({f"Velocity Slice - {self.name}": fig})
+        wandb.log({f"Velocity Slice - {self.name}": wandb.Image(fig)})
         plt.close('all')
 
 
@@ -1245,7 +1249,7 @@ class StarBackgroundCallback(BaseCallback):
             _imshow_log(axs[1], bg[..., 1], "Star background (pB)")
 
         fig.tight_layout()
-        wandb.log({f"star_background.{self.ds_key}": fig})
+        wandb.log({f"star_background.{self.ds_key}": wandb.Image(fig)})
         plt.close(fig)
 
 

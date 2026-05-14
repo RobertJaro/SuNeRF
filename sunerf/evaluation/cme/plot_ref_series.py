@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 import numpy as np
+import torch
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 from matplotlib import pyplot as plt
@@ -101,6 +102,80 @@ def make_ratio_map(pB_map, tB_map):
     return Map(ratio, pB_map.meta)
 
 
+def path_tokens(path):
+    if path is None:
+        return set()
+    tokens = set()
+    for part in Path(path).parts:
+        part = part.lower()
+        tokens.add(part)
+        tokens.update(token for token in part.replace("-", "_").split("_") if token)
+    return tokens
+
+
+def resolve_reference_ds_key(sunerf_loader, ref_item, explicit_ds_key=None):
+    if explicit_ds_key is not None:
+        if explicit_ds_key not in sunerf_loader.ds_keys:
+            raise ValueError(
+                f"Unknown ds_key '{explicit_ds_key}'. Available dataset keys: {', '.join(sunerf_loader.ds_keys)}"
+            )
+        return explicit_ds_key
+
+    if len(sunerf_loader.ds_keys) == 1:
+        return sunerf_loader.ds_keys[0]
+
+    tokens = path_tokens(ref_item['tB']) | path_tokens(ref_item['pB'])
+    matches = []
+    for ds_key in sunerf_loader.ds_keys:
+        instrument_key = sunerf_loader.instrument_key(ds_key)
+        key_tokens = path_tokens(ds_key) | path_tokens(instrument_key)
+        if tokens & key_tokens:
+            matches.append(ds_key)
+
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(
+            f"Could not uniquely infer ds_key for reference paths {ref_item}: matched {matches}. "
+            "Pass --ds_key explicitly."
+        )
+    raise ValueError(
+        f"Could not infer ds_key for reference paths {ref_item}. "
+        f"Available dataset keys: {', '.join(sunerf_loader.ds_keys)}. Pass --ds_key explicitly."
+    )
+
+
+def make_learned_corrected_model_maps(sunerf_loader, ref_map, tB_map, pB_map, ds_key):
+    instrument_key = sunerf_loader._resolve_correction_instrument_key(ds_key=ds_key)
+    correction_module = (
+        sunerf_loader.correction_modules[instrument_key]
+        if instrument_key in sunerf_loader.correction_modules
+        else None
+    )
+    if correction_module is None:
+        corrected_tB_map = Map(np.array(tB_map.data, dtype=np.float32, copy=True), tB_map.meta)
+        corrected_pB_map = Map(np.array(pB_map.data, dtype=np.float32, copy=True), pB_map.meta)
+        corrected_ratio_map = make_ratio_map(corrected_pB_map, corrected_tB_map)
+        return corrected_tB_map, corrected_pB_map, corrected_ratio_map
+
+    image = np.stack([tB_map.data, pB_map.data], axis=-1).astype(np.float32) / sunerf_loader.msb_norm
+    image_coords, hpc_coords, time = sunerf_loader._build_correction_inputs(ref_map, ds_key=ds_key)
+
+    with torch.no_grad():
+        corrected_image, _ = correction_module(
+            torch.from_numpy(image).to(sunerf_loader.device),
+            torch.from_numpy(image_coords).to(sunerf_loader.device),
+            torch.from_numpy(hpc_coords).to(sunerf_loader.device),
+            torch.from_numpy(time).to(sunerf_loader.device),
+        )
+
+    corrected_image = corrected_image.detach().cpu().numpy() * sunerf_loader.msb_norm
+    corrected_tB_map = Map(corrected_image[..., 0].astype(np.float32), tB_map.meta)
+    corrected_pB_map = Map(corrected_image[..., 1].astype(np.float32), pB_map.meta)
+    corrected_ratio_map = make_ratio_map(corrected_pB_map, corrected_tB_map)
+    return corrected_tB_map, corrected_pB_map, corrected_ratio_map
+
+
 def build_reference_paths(tB_pattern=None, pB_pattern=None, legacy_pattern=None, n_samples=20):
     if legacy_pattern is not None and pB_pattern is None:
         pB_pattern = legacy_pattern
@@ -147,17 +222,30 @@ def shared_lognorm(*maps):
         if np.any(valid):
             values.append(data[valid])
     if not values:
-        return LogNorm()
+        raise ValueError("Cannot create logarithmic normalization: no positive finite pixels in any input map.")
+
     values = np.concatenate(values)
+    values = values[np.isfinite(values) & (values > 0)]
+    if values.size == 0:
+        raise ValueError("Cannot create logarithmic normalization: no positive finite pixels in any input map.")
+
     vmin = np.nanmin(values)
     vmax = np.nanmax(values)
-    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin <= 0 or vmax <= vmin:
-        return LogNorm()
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin <= 0:
+        raise ValueError(f"Invalid logarithmic normalization range: vmin={vmin}, vmax={vmax}.")
+    if vmax <= vmin:
+        raise ValueError(f"Invalid logarithmic normalization range: vmin={vmin}, vmax={vmax}.")
     return LogNorm(vmin=vmin, vmax=vmax)
 
 
 def plot_map_panel(ax, s_map, radii, norm=None, vmin=None, vmax=None, xlabel=None, ylabel=None, cmap=cm.soholasco2):
-    im = ax.imshow(s_map.data, cmap=cmap, norm=norm, vmin=vmin, vmax=vmax, origin='lower')
+    if isinstance(norm, LogNorm):
+        data = s_map.data
+        if not np.any(np.isfinite(data) & (data > 0)):
+            raise ValueError("Cannot plot logarithmic panel with no positive finite pixels.")
+        im = ax.imshow(data, cmap=cmap, norm=norm, origin='lower')
+    else:
+        im = ax.imshow(s_map.data, cmap=cmap, norm=norm, vmin=vmin, vmax=vmax, origin='lower')
     s_map.draw_grid(ax, color="blue")
     ax.set_xlabel('' if xlabel is None else xlabel)
     ax.set_ylabel('' if ylabel is None else ylabel)
@@ -194,6 +282,8 @@ if __name__ == '__main__':
                         help='Legacy path to reference pB maps (glob pattern)')
     parser.add_argument('--ref_tB_path', type=str, required=False, help='Path to reference tB maps (glob pattern)')
     parser.add_argument('--ref_pB_path', type=str, required=False, help='Path to reference pB maps (glob pattern)')
+    parser.add_argument('--ds_key', type=str, required=False,
+                        help='Dataset key to use for rendering/corrections; inferred from reference path if omitted')
     parser.add_argument('--out_path', type=str, help='Path to output directory', default=None)
     parser.add_argument('--xlim', type=float, nargs=2, default=None,
                         help='Optional x-axis limits in arcsec for the image panels')
@@ -227,16 +317,27 @@ if __name__ == '__main__':
         ref_map = ref_tB_map if ref_tB_map is not None else ref_pB_map
         occultor_mask, ref_min_radius, ref_max_radius = get_occultor_mask_from_ref_map(ref_map)
         radii = [ref_min_radius, ref_max_radius]
+        ds_key = resolve_reference_ds_key(sunerf_loader, ref_item, args.ds_key)
+        instrument_key = sunerf_loader.instrument_key(ds_key)
 
         ##########################################################
         # load reference map
-        model_out = sunerf_loader.load_map(ref_map, progress=False, filter_occ=False)
+        model_out = sunerf_loader.load_map(
+            ref_map, progress=False, filter_occ=False, instrument_key=instrument_key
+        )
 
         tB_map = model_out['tB_map']
         pB_map = model_out['pB_map']
         density_map = model_out['density_map']
         ratio_map = make_ratio_map(pB_map, tB_map)
-        for s_map in [ref_tB_map, ref_pB_map, tB_map, pB_map, ratio_map, density_map]:
+        corrected_tB_map, corrected_pB_map, corrected_ratio_map = make_learned_corrected_model_maps(
+            sunerf_loader, ref_map, tB_map, pB_map, ds_key=ds_key
+        )
+        for s_map in [
+            ref_tB_map, ref_pB_map,
+            tB_map, pB_map, ratio_map, density_map,
+            corrected_tB_map, corrected_pB_map, corrected_ratio_map,
+        ]:
             apply_mask(s_map, occultor_mask)
 
         ref_ratio_map = (
@@ -246,8 +347,10 @@ if __name__ == '__main__':
         )
         apply_mask(ref_ratio_map, occultor_mask)
 
-        tB_norm = shared_lognorm(ref_tB_map, tB_map)
-        pB_norm = shared_lognorm(ref_pB_map, pB_map)
+        tB_norm = shared_lognorm(ref_tB_map, corrected_tB_map)
+        pB_norm = shared_lognorm(ref_pB_map, corrected_pB_map)
+        clean_tB_norm = shared_lognorm(tB_map)
+        clean_pB_norm = shared_lognorm(pB_map)
         reference_panels = [
             ("ref_tB", None, "tB", None, None, tB_norm, None, None),
             ("ref_pB", None, "pB", None, None, pB_norm, None, None),
@@ -263,13 +366,22 @@ if __name__ == '__main__':
             reference_panels[2] = ("ref_ratio", crop_map(ref_ratio_map, args.xlim, args.ylim),
                                    "ratio", None, None, None, 0, 1)
 
-        model_panels = [
-            ("model_tB", crop_map(tB_map, args.xlim, args.ylim), "tB", "Helioprojective X (arcsec)",
-             "Model\nHelioprojective Y (arcsec)", tB_norm, None, None),
-            ("model_pB", crop_map(pB_map, args.xlim, args.ylim), "pB", "Helioprojective X (arcsec)",
+        corrected_model_panels = [
+            ("corrected_model_tB", crop_map(corrected_tB_map, args.xlim, args.ylim), "tB", None,
+             "Corrected SuNeRF\nHelioprojective Y (arcsec)", tB_norm, None, None),
+            ("corrected_model_pB", crop_map(corrected_pB_map, args.xlim, args.ylim), "pB", None,
              None, pB_norm, None, None),
-            ("model_ratio", crop_map(ratio_map, args.xlim, args.ylim), "ratio", "Helioprojective X (arcsec)", None,
-             None, 0, 1),
+            ("corrected_model_ratio", crop_map(corrected_ratio_map, args.xlim, args.ylim), "ratio", None,
+             None, None, 0, 1),
+        ]
+
+        clean_model_panels = [
+            ("clean_model_tB", crop_map(tB_map, args.xlim, args.ylim), "tB", "Helioprojective X (arcsec)",
+             "Clean SuNeRF\nHelioprojective Y (arcsec)", clean_tB_norm, None, None),
+            ("clean_model_pB", crop_map(pB_map, args.xlim, args.ylim), "pB", "Helioprojective X (arcsec)",
+             None, clean_pB_norm, None, None),
+            ("clean_model_ratio", crop_map(ratio_map, args.xlim, args.ylim), "ratio", "Helioprojective X (arcsec)",
+             None, None, 0, 1),
         ]
 
         ##########################################################
@@ -282,20 +394,23 @@ if __name__ == '__main__':
         obs_distance = observer.radius.to(u.AU)
         obs_hci_lon = observer_hci.lon
 
-        fig = plt.figure(figsize=(10.2, 9.8), constrained_layout=True)
+        fig = plt.figure(figsize=(10.2, 12.8), constrained_layout=True)
         mosaic = [
             ["top_left", "observer", "top_right"],
             ["cbar_tB", "cbar_pB", "cbar_ratio"],
             [panel[0] for panel in reference_panels],
-            [panel[0] for panel in model_panels],
+            [panel[0] for panel in corrected_model_panels],
+            ["clean_cbar_tB", "clean_cbar_pB", "clean_cbar_ratio"],
+            [panel[0] for panel in clean_model_panels],
         ]
         subplot_kw = {"observer": {"projection": "3d"}}
         subplot_kw.update({panel[0]: {"projection": panel[1]} for panel in reference_panels if panel[1] is not None})
-        subplot_kw.update({panel[0]: {"projection": panel[1]} for panel in model_panels})
+        subplot_kw.update({panel[0]: {"projection": panel[1]} for panel in corrected_model_panels})
+        subplot_kw.update({panel[0]: {"projection": panel[1]} for panel in clean_model_panels})
         axd = fig.subplot_mosaic(
             mosaic,
             per_subplot_kw=subplot_kw,
-            height_ratios=[1.0, 0.06, 1.0, 1.0],
+            height_ratios=[1.0, 0.06, 1.0, 1.0, 0.06, 1.0],
             gridspec_kw={"wspace": 0.05, "hspace": 0.05},
         )
         hide_panel(axd["top_left"])
@@ -309,8 +424,10 @@ if __name__ == '__main__':
         plot_observer_geometry(axd["observer"], obs_lat, obs_lon, obs_distance, observer_title_lines)
 
         product_axes = {product: [] for product in product_labels}
-        product_mappables = {}
-        for panel_id, s_map, product, xlabel, ylabel, norm, vmin, vmax in reference_panels + model_panels:
+        top_product_mappables = {}
+        clean_product_mappables = {}
+        image_panels = reference_panels + corrected_model_panels + clean_model_panels
+        for panel_id, s_map, product, xlabel, ylabel, norm, vmin, vmax in image_panels:
             if s_map is None:
                 hide_panel(axd[panel_id])
                 continue
@@ -321,17 +438,27 @@ if __name__ == '__main__':
             )
             set_outer_tick_labels(
                 axd[panel_id],
-                show_x=panel_id.startswith("model_"),
+                show_x=panel_id.startswith("clean_model_"),
                 show_y=panel_id.endswith("tB"),
             )
             product_axes[product].append(axd[panel_id])
-            product_mappables.setdefault(product, im)
+            if panel_id.startswith("clean_model_"):
+                clean_product_mappables.setdefault(product, im)
+            else:
+                top_product_mappables.setdefault(product, im)
 
         for product in ["tB", "pB", "ratio"]:
-            if product not in product_mappables:
+            if product not in top_product_mappables:
                 hide_panel(axd[f"cbar_{product}"])
-                continue
-            add_top_colorbar(fig, axd[f"cbar_{product}"], product_mappables[product], product_labels[product])
+            else:
+                add_top_colorbar(fig, axd[f"cbar_{product}"], top_product_mappables[product], product_labels[product])
+
+            if product not in clean_product_mappables:
+                hide_panel(axd[f"clean_cbar_{product}"])
+            else:
+                add_top_colorbar(
+                    fig, axd[f"clean_cbar_{product}"], clean_product_mappables[product], product_labels[product]
+                )
 
         ref_path = ref_item['pB'] or ref_item['tB']
         img_path = os.path.join(args.out_path, Path(ref_path).stem + '.jpg')

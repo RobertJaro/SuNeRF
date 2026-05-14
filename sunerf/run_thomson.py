@@ -80,7 +80,7 @@ if __name__ == '__main__':
 
 
     _load_data_module()  # ensure only rank 0 loads/saves the data module
-    data_module = torch.load(data_module_save_path)  # all ranks load the data module
+    data_module = torch.load(data_module_save_path, weights_only=False)  # all ranks load the data module
 
     # initialize SuNeRF model
     sunerf = ThomsonSuNeRFModule(instruments=instruments,

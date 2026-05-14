@@ -17,32 +17,40 @@ import os
 from glob import glob
 
 import numpy as np
-from astropy import units as u
 from astropy.io import fits
 from sunpy.map import Map
 from tqdm import tqdm
 
-from sunerf.data.coronagraph.prep_coronagraph import _prep_coronagraph_map
+from sunerf.data.coronagraph.prep_common import (
+    MapPreprocessor,
+    add_common_prep_arguments,
+    common_kwargs_from_args,
+    ensure_tb_pb_output_dirs,
+)
 
 
 class PunchPamPrep:
     """Callable helper for multiprocessing conversion of PUNCH PAM FITS files."""
 
-    def __init__(self, out_path, overwrite=True, occ_min=None, occ_max=None, max_radius=None, resize=None, value_min=None,
-                 value_max=None):
+    def __init__(self, out_path, overwrite=True, occ_min=None, occ_max=None, max_radius=None, resize=None,
+                 clip_min=None, clip_max=None, value_min=None, value_max=None,
+                 filter_bright_objects=False, bright_object_threshold=10.0):
         self.out_path = out_path
         self.overwrite = overwrite
-        self.occ_min = occ_min
-        self.occ_max = occ_max
-        self.max_radius = max_radius
-        self.resize = resize
-        self.value_min = value_min
-        self.value_max = value_max
+        self.map_preprocessor = MapPreprocessor(
+            occ_min=occ_min,
+            occ_max=occ_max,
+            max_radius=max_radius,
+            resize=resize,
+            clip_min=clip_min,
+            clip_max=clip_max,
+            value_min=value_min,
+            value_max=value_max,
+            filter_bright_objects=filter_bright_objects,
+            bright_object_threshold=bright_object_threshold,
+        )
 
-        self.tb_out_path = os.path.join(out_path, "tB")
-        self.pb_out_path = os.path.join(out_path, "pB")
-        os.makedirs(self.tb_out_path, exist_ok=True)
-        os.makedirs(self.pb_out_path, exist_ok=True)
+        self.tb_out_path, self.pb_out_path = ensure_tb_pb_output_dirs(out_path)
 
     @staticmethod
     def _load_punch_pam_maps(file_path):
@@ -57,16 +65,6 @@ class PunchPamPrep:
         pb = np.sqrt(np.square(data[1]) + np.square(data[2]))
         return Map(tb, header), Map(pb, header)
 
-    def _prepare_map(self, s_map):
-        s_map = _prep_coronagraph_map(s_map, occ_min=self.occ_min, occ_max=self.occ_max, max_radius=self.max_radius)
-        if self.resize is not None:
-            s_map = s_map.resample(self.resize * u.pixel)
-        if self.value_min is not None:
-            s_map.data[s_map.data < self.value_min] = np.nan
-        if self.value_max is not None:
-            s_map.data[s_map.data > self.value_max] = np.nan
-        return s_map
-
     def convert(self, file_path):
         """Load, preprocess, and save one PAM tB/pB pair."""
         basename = os.path.basename(file_path)
@@ -77,8 +75,8 @@ class PunchPamPrep:
 
         try:
             tb_map, pb_map = self._load_punch_pam_maps(file_path)
-            tb_map = self._prepare_map(tb_map)
-            pb_map = self._prepare_map(pb_map)
+            tb_map = self.map_preprocessor.prepare_map(tb_map)
+            pb_map = self.map_preprocessor.prepare_map(pb_map)
             tb_map.save(tb_out, overwrite=True)
             pb_map.save(pb_out, overwrite=True)
         except Exception as exc:
@@ -91,42 +89,11 @@ def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--data_path", type=str, required=True, help="Glob pattern for PUNCH PAM FITS files.")
     parser.add_argument("--out_path", type=str, required=True, help="Output directory for preprocessed maps.")
-    parser.add_argument(
-        "--occ_min",
-        type=float,
-        default=None,
-        help="Minimum occulter radius in arcseconds.",
-    )
-    parser.add_argument(
-        "--occ_max",
-        type=float,
-        default=None,
-        help="Maximum occulter radius in arcseconds.",
-    )
-    parser.add_argument(
-        "--max_radius",
-        type=float,
-        default=None,
-        help="Maximum projected radius in solar radii.",
-    )
-    parser.add_argument(
-        "--no_overwrite",
-        action="store_true",
-        help="Skip outputs that already exist.",
-    )
-    parser.add_argument("--value_min", type=float, default=None, help="Optional minimum allowed data value.")
-    parser.add_argument("--value_max", type=float, default=None, help="Optional maximum allowed data value.")
+    add_common_prep_arguments(parser, include_max_radius=True, include_value_limits=True)
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=os.cpu_count(),
-    )
-    parser.add_argument(
-        "--resize",
-        type=int,
-        nargs=2,
-        default=None,
-        help="Optional resize to (width height) in pixels.",
+        default=32,
     )
     args = parser.parse_args()
 
@@ -137,12 +104,7 @@ def main():
     prepper = PunchPamPrep(
         args.out_path,
         overwrite=not args.no_overwrite,
-        occ_min=args.occ_min * u.arcsec if args.occ_min is not None else None,
-        occ_max=args.occ_max * u.arcsec if args.occ_max is not None else None,
-        max_radius=args.max_radius * u.solRad if args.max_radius is not None else None,
-        resize=args.resize,
-        value_min=args.value_min,
-        value_max=args.value_max,
+        **common_kwargs_from_args(args),
     )
 
     with multiprocessing.Pool(args.num_workers) as pool:

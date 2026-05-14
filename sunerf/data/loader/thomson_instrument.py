@@ -127,6 +127,18 @@ class ThomsonDataModule(BaseDataModule):
             ds_type = config.pop('type')
             ds_key = config.pop('key') if 'key' in config else ds_type
             render_mode = config.pop('render_mode', None)
+            validation_time = config.pop('validation_time', None)
+            validation_time_range = config.pop('validation_time_range', None)
+            ds_time_range = time_range
+            if validation_time is not None:
+                t = normalize_datetime(parse(validation_time), seconds_per_dt, ref_date)
+                ds_time_range = [t, t]
+            elif validation_time_range is not None:
+                ds_time_range = [
+                    normalize_datetime(parse(t), seconds_per_dt, ref_date)
+                    if isinstance(t, str) else float(t)
+                    for t in validation_time_range
+                ]
             ds_config = copy.deepcopy(base_config)
             ds_config.update(config)
             if ds_type.lower() == 'hao':
@@ -154,16 +166,16 @@ class ThomsonDataModule(BaseDataModule):
                 dataset = ReferenceCubeDataset(**ds_config, ds_key=ds_key, shuffle=False, filter_nans=False)
                 dataset = RenderModeDataset(dataset, render_mode=RenderMode.REFERENCE)
             elif ds_type.lower() == "radial_slices":
-                dataset = RadialSlicesDataset(**ds_config, ds_key=ds_key, time_range=time_range)
+                dataset = RadialSlicesDataset(**ds_config, ds_key=ds_key, time_range=ds_time_range)
                 dataset = RenderModeDataset(dataset, RenderMode.QUERY_POINTS)
             elif ds_type.lower() == "longitude_slices":
-                dataset = LongitudeSlicesDataset(**ds_config, ds_key=ds_key, time_range=time_range)
+                dataset = LongitudeSlicesDataset(**ds_config, ds_key=ds_key, time_range=ds_time_range)
                 dataset = RenderModeDataset(dataset, RenderMode.QUERY_POINTS)
             elif ds_type.lower() == "fixed_viewpoint_series":
-                dataset = FixedViewpointSeriesDataset(**ds_config, ds_key=ds_key, time_range=time_range)
+                dataset = FixedViewpointSeriesDataset(**ds_config, ds_key=ds_key, time_range=ds_time_range)
                 dataset = RenderModeDataset(dataset, RenderMode.INSTRUMENT)
             elif ds_type.lower() in {"full_star_background", "star_background_full"}:
-                dataset = FullStarBackgroundDataset(**ds_config, ds_key=ds_key, time_range=time_range)
+                dataset = FullStarBackgroundDataset(**ds_config, ds_key=ds_key, time_range=ds_time_range)
                 dataset = RenderModeDataset(dataset, RenderMode.BACKGROUND)
             else:
                 raise ValueError(f'Unknown dataset type {ds_type}')
@@ -264,12 +276,13 @@ class GenericThomsonDataset(TensorsDataset):
             else:
                 raise ValueError(f'Unknown correction type {correction_config["type"]}')
 
-            min_value = correction_config.get('min_value', 0)
-            pB_below = int(np.count_nonzero(pB_image_stack <= min_value))
-            tB_below = int(np.count_nonzero(tB_image_stack <= min_value))
-            print(f'Filtering {pB_below} pB pixels and {tB_below} tB pixels below min value {min_value}')
-            pB_image_stack[pB_image_stack <= min_value] = np.nan
-            tB_image_stack[tB_image_stack <= min_value] = np.nan
+            min_value = correction_config.get('min_value', None)
+            if min_value is not None:
+                pB_below = int(np.count_nonzero(pB_image_stack <= min_value))
+                tB_below = int(np.count_nonzero(tB_image_stack <= min_value))
+                print(f'Filtering {pB_below} pB pixels and {tB_below} tB pixels below min value {min_value}')
+                pB_image_stack[pB_image_stack <= min_value] = np.nan
+                tB_image_stack[tB_image_stack <= min_value] = np.nan
 
             if correction_config.get('clean', False):
                 clean_min_size = correction_config.get('clean_min_size', 128)
@@ -297,7 +310,7 @@ class GenericThomsonDataset(TensorsDataset):
 
         image_stack = np.stack([tB_image_stack, pB_image_stack], axis=-1)
         image_stack = image_stack / scaling
-        image_stack[image_stack <= 0] = np.nan  # set non-positive values to NaN = unphysical
+        # image_stack[image_stack <= 0] = np.nan  # set non-positive values to NaN = unphysical
 
         if noise_level:
             mean_B = np.nanmean(image_stack)

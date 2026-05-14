@@ -7,6 +7,7 @@ from astropy import units as u
 from astropy.coordinates import SkyCoord
 from matplotlib import pyplot as plt
 from matplotlib.colors import LogNorm
+from matplotlib import patheffects
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from sunpy.coordinates import frames, get_horizons_coord
 from sunpy.coordinates.ephemeris import get_body_heliographic_stonyhurst
@@ -48,6 +49,7 @@ def build_parser():
     parser.add_argument('--resolution', type=int, default=256, help='Square output resolution in pixels')
     parser.add_argument('--dpi', type=int, default=300, help='Saved frame DPI')
     parser.add_argument('--overwrite', action='store_true', help='Re-render frames even if output files already exist')
+    parser.add_argument('--no_observer', action='store_true', help='Do not plot the observer geometry panel')
     return parser
 
 
@@ -140,7 +142,16 @@ def spherical_to_cartesian(radius, lat, lon):
     return x, y, z
 
 
+def add_front_text(ax, x, y, z, text, **kwargs):
+    label = ax.text(x, y, z, text, zorder=1000, **kwargs)
+    label.set_path_effects([
+        patheffects.withStroke(linewidth=2.5, foreground='white', alpha=0.85),
+    ])
+    return label
+
+
 def plot_observer_geometry(ax, lat, lon, distance, time, earth_position=None, stereo_a_position=None):
+    ax.computed_zorder = False
     sphere_u = np.linspace(0, 2 * np.pi, 120)
     sphere_v = np.linspace(0, np.pi, 60)
     x = np.outer(np.cos(sphere_u), np.sin(sphere_v))
@@ -152,13 +163,14 @@ def plot_observer_geometry(ax, lat, lon, distance, time, earth_position=None, st
     distance_au = distance.to_value(u.AU)
     display_radius = 1.08 + 0.08 * np.log10(max(distance_au, 1e-3) * 10)
     obs_x, obs_y, obs_z = spherical_to_cartesian(display_radius, lat, lon)
+    labels = []
     if earth_position is not None:
         earth_lat, earth_lon, earth_distance = earth_position
         earth_display_radius = 1.08 + 0.08 * np.log10(max(earth_distance.to_value(u.AU), 1e-3) * 10)
         earth_x, earth_y, earth_z = spherical_to_cartesian(earth_display_radius, earth_lat, earth_lon)
         ax.scatter(earth_x, earth_y, earth_z, color='#b3d9ff', s=220, alpha=0.28, depthshade=False)
         ax.scatter(earth_x, earth_y, earth_z, color='dodgerblue', s=50, edgecolors='white', linewidths=0.6, depthshade=False)
-        ax.text(earth_x, earth_y, earth_z, ' Earth', color='dodgerblue', fontsize=9)
+        labels.append((earth_x, earth_y, earth_z, ' Earth', {'color': 'dodgerblue', 'fontsize': 9}))
 
     if stereo_a_position is not None:
         stereo_a_lat, stereo_a_lon, stereo_a_distance = stereo_a_position
@@ -166,12 +178,15 @@ def plot_observer_geometry(ax, lat, lon, distance, time, earth_position=None, st
         stereo_a_x, stereo_a_y, stereo_a_z = spherical_to_cartesian(stereo_a_display_radius, stereo_a_lat, stereo_a_lon)
         ax.scatter(stereo_a_x, stereo_a_y, stereo_a_z, color='#ffd8a8', s=220, alpha=0.28, depthshade=False)
         ax.scatter(stereo_a_x, stereo_a_y, stereo_a_z, color='darkorange', s=50, edgecolors='white', linewidths=0.6, depthshade=False)
-        ax.text(stereo_a_x, stereo_a_y, stereo_a_z, ' STEREO-A', color='darkorange', fontsize=9)
+        labels.append((stereo_a_x, stereo_a_y, stereo_a_z, ' STEREO-A', {'color': 'darkorange', 'fontsize': 9}))
 
     ax.plot([0, obs_x], [0, obs_y], [0, obs_z], color='red', linewidth=1.6, alpha=0.45, linestyle=':')
     ax.scatter(obs_x, obs_y, obs_z, color='#ffb3b3', s=220, alpha=0.28, depthshade=False)
     ax.scatter(obs_x, obs_y, obs_z, color='red', s=55, edgecolors='white', linewidths=0.6, depthshade=False)
-    ax.text(obs_x, obs_y, obs_z - 0.08, 'SuNeRF', color='red', fontsize=9, ha='center')
+    labels.append((obs_x, obs_y, obs_z - 0.08, 'SuNeRF', {'color': 'red', 'fontsize': 9, 'ha': 'center'}))
+
+    for label_x, label_y, label_z, label_text, label_kwargs in labels:
+        add_front_text(ax, label_x, label_y, label_z, label_text, **label_kwargs)
 
     ax.set_title(time.isoformat(' ', timespec='minutes'))
     ax.set_box_aspect((1, 1, 1), zoom=1.45)
@@ -246,9 +261,6 @@ def main():
 
     resolution = (args.resolution, args.resolution) * u.pix
 
-    brightness_norm = LogNorm()
-    density_norm = LogNorm()
-
     for i, (distance, lat, lon_value, time, occ_min, occ_max) in tqdm(enumerate(points), total=len(points)):
         frame_path = os.path.join(args.out_path, f'cme_frame{i:03d}.jpg')
         if os.path.exists(frame_path) and not args.overwrite:
@@ -282,28 +294,39 @@ def main():
         pB_map = model_out['pB_map']
         density_map = model_out['density_map']
 
-        fig = plt.figure(figsize=(12, 4))
-        observer_ax = fig.add_subplot(1, 3, 1, projection='3d')
+        # re-initialize the colormap normalizers for each frame to adjust scaling for changing observer distance
+        brightness_norm = LogNorm()
+        density_norm = LogNorm()
+
+        n_cols = 2 if args.no_observer else 3
+        fig = plt.figure(figsize=(4 * n_cols, 4))
         axs = [
-            fig.add_subplot(1, 3, 2, projection=pB_map),
-            fig.add_subplot(1, 3, 3, projection=pB_map),
+            fig.add_subplot(1, n_cols, 1, projection=pB_map),
+            fig.add_subplot(1, n_cols, 2, projection=pB_map),
         ]
 
-        earth_position = get_earth_position(time, args.lon_frame)
-        stereo_a_position = get_stereo_a_position(time, args.lon_frame)
         observer_position = (
             plot_obs_coord.lat.to(u.deg),
             plot_obs_coord.lon.to(u.deg),
             plot_distance,
         )
-        print(
-            f'[{time.isoformat(sep=" ", timespec="minutes")}] {args.lon_frame.upper()} | '
-            f'{format_position("Observer", observer_position)} | '
-            f'{format_position("Earth", earth_position)} | '
-            f'{format_position("STEREO-A", stereo_a_position)}'
-        )
-        plot_observer_geometry(observer_ax, plot_obs_coord.lat, plot_obs_coord.lon, plot_distance, time,
-                               earth_position=earth_position, stereo_a_position=stereo_a_position)
+        if args.no_observer:
+            print(
+                f'[{time.isoformat(sep=" ", timespec="minutes")}] {args.lon_frame.upper()} | '
+                f'{format_position("Observer", observer_position)}'
+            )
+        else:
+            observer_ax = fig.add_subplot(1, n_cols, 3, projection='3d')
+            earth_position = get_earth_position(time, args.lon_frame)
+            stereo_a_position = get_stereo_a_position(time, args.lon_frame)
+            print(
+                f'[{time.isoformat(sep=" ", timespec="minutes")}] {args.lon_frame.upper()} | '
+                f'{format_position("Observer", observer_position)} | '
+                f'{format_position("Earth", earth_position)} | '
+                f'{format_position("STEREO-A", stereo_a_position)}'
+            )
+            plot_observer_geometry(observer_ax, plot_obs_coord.lat, plot_obs_coord.lon, plot_distance, time,
+                                   earth_position=earth_position, stereo_a_position=stereo_a_position)
 
         ax = axs[0]
         im = ax.imshow(pB_map.data, cmap=cm.soholasco2, norm=brightness_norm, origin='lower')
@@ -326,8 +349,8 @@ def main():
         ax.coords[1].set_axislabel(' ')
 
         fig.suptitle(
-            f'Latitude ({args.lon_frame.upper()}): {plot_obs_coord.lat.to_value(u.deg):.1f} deg, '
-            f'Longitude ({args.lon_frame.upper()}): {plot_obs_coord.lon.to_value(u.deg):.1f} deg, '
+            f'Lat. ({args.lon_frame.upper()}): {plot_obs_coord.lat.to_value(u.deg):.1f} deg, '
+            f'Lon. ({args.lon_frame.upper()}): {plot_obs_coord.lon.to_value(u.deg):.1f} deg, '
             f'Time: {time.isoformat(" ", timespec="minutes")}',
             fontsize=16,
         )

@@ -13,7 +13,7 @@ The script:
    - tB = I
    - pB = sqrt(Q^2 + U^2)
 5) Optionally reprojects each input map to a TAN WCS before combining.
-6) Applies the shared coronagraph base preprocessing (_prep_coronagraph_map).
+6) Applies shared map preprocessing.
 7) Saves outputs to:
    - <out_path>/tB/<basename>.fits
    - <out_path>/pB/<basename>.fits
@@ -35,22 +35,15 @@ from sunpy.map import Map
 from sunpy.map.header_helper import make_fitswcs_header
 from tqdm import tqdm
 
-from sunerf.data.coronagraph.prep_coronagraph import _prep_coronagraph_map
+from sunerf.data.coronagraph.prep_common import (
+    MapPreprocessor,
+    add_common_prep_arguments,
+    common_kwargs_from_args,
+    ensure_tb_pb_output_dirs,
+    parse_duration,
+)
 
 FILENAME_RE = re.compile(r"P(?P<pol>[MZP])(?P<sc>[1-4])_(?P<ts>\d{14})")
-
-
-def parse_duration(value: str) -> dt.timedelta:
-    match = re.fullmatch(r"(?i)\s*(\d+)\s*([smhd])\s*", value)
-    if not match:
-        raise argparse.ArgumentTypeError(
-            f"Invalid duration '{value}'. Use formats like 30s, 3m, 1h."
-        )
-
-    qty = int(match.group(1))
-    unit = match.group(2).lower()
-    seconds_per_unit = {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
-    return dt.timedelta(seconds=qty * seconds_per_unit)
 
 
 def parse_l1_polarization_file(file_path: str):
@@ -116,22 +109,33 @@ class PunchTripletPrep:
         overwrite=True,
         occ_min=None,
         occ_max=None,
+        max_radius=None,
         resize=None,
+        clip_min=None,
         clip_max=None,
+        value_min=None,
+        value_max=None,
+        filter_bright_objects=False,
+        bright_object_threshold=10.0,
         reproject=False,
     ):
         self.out_path = out_path
         self.overwrite = overwrite
-        self.occ_min = occ_min
-        self.occ_max = occ_max
-        self.resize = resize
-        self.clip_max = clip_max
         self.reproject = reproject
+        self.map_preprocessor = MapPreprocessor(
+            occ_min=occ_min,
+            occ_max=occ_max,
+            max_radius=max_radius,
+            resize=resize,
+            clip_min=clip_min,
+            clip_max=clip_max,
+            value_min=value_min,
+            value_max=value_max,
+            filter_bright_objects=filter_bright_objects,
+            bright_object_threshold=bright_object_threshold,
+        )
 
-        self.tb_out_path = os.path.join(out_path, "tB")
-        self.pb_out_path = os.path.join(out_path, "pB")
-        os.makedirs(self.tb_out_path, exist_ok=True)
-        os.makedirs(self.pb_out_path, exist_ok=True)
+        self.tb_out_path, self.pb_out_path = ensure_tb_pb_output_dirs(out_path)
 
     @staticmethod
     def _to_output_name(pm_basename: str):
@@ -163,14 +167,6 @@ class PunchTripletPrep:
         )
         target_wcs = WCS(target_header)
         return smap.reproject_to(target_wcs)
-
-    def _prepare_map(self, s_map):
-        s_map = _prep_coronagraph_map(s_map, occ_min=self.occ_min, occ_max=self.occ_max)
-        if self.resize is not None:
-            s_map = s_map.resample(self.resize * u.pixel)
-        if self.clip_max is not None:
-            s_map.data[:] = np.clip(s_map.data, a_max=self.clip_max, a_min=None)
-        return s_map
 
     def convert(self, triplet):
         pm, pz, pp = triplet
@@ -204,8 +200,8 @@ class PunchTripletPrep:
             tb = i_stokes
             pb = np.sqrt(q_stokes ** 2 + u_stokes ** 2)
 
-            tb_map = self._prepare_map(Map(tb, header))
-            pb_map = self._prepare_map(Map(pb, header))
+            tb_map = self.map_preprocessor.prepare_map(Map(tb, header))
+            pb_map = self.map_preprocessor.prepare_map(Map(pb, header))
 
             tb_map.save(tb_out, overwrite=True)
             pb_map.save(pb_out, overwrite=True)
@@ -225,29 +221,7 @@ def main():
         default=parse_duration("3m"),
         help="Maximum timestamp separation when building PM/PZ/PP triplets.",
     )
-    parser.add_argument(
-        "--occ_min",
-        type=float,
-        default=None,
-        help="Minimum occulter radius in arcseconds.",
-    )
-    parser.add_argument(
-        "--occ_max",
-        type=float,
-        default=None,
-        help="Maximum occulter radius in arcseconds.",
-    )
-    parser.add_argument(
-        "--no_overwrite",
-        action="store_true",
-        help="Skip outputs that already exist.",
-    )
-    parser.add_argument(
-        "--clip_max",
-        type=float,
-        default=None,
-        help="Optional maximum value to clip data to.",
-    )
+    add_common_prep_arguments(parser, include_clip=True)
     parser.add_argument(
         "--reproject",
         action="store_true",
@@ -257,13 +231,6 @@ def main():
         "--num_workers",
         type=int,
         default=os.cpu_count(),
-    )
-    parser.add_argument(
-        "--resize",
-        type=int,
-        nargs=2,
-        default=None,
-        help="Optional resize to (width height) in pixels.",
     )
     args = parser.parse_args()
 
@@ -284,10 +251,7 @@ def main():
     prepper = PunchTripletPrep(
         args.out_path,
         overwrite=not args.no_overwrite,
-        occ_min=args.occ_min * u.arcsec if args.occ_min is not None else None,
-        occ_max=args.occ_max * u.arcsec if args.occ_max is not None else None,
-        resize=args.resize,
-        clip_max=args.clip_max,
+        **common_kwargs_from_args(args),
         reproject=args.reproject,
     )
 

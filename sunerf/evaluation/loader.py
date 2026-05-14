@@ -25,7 +25,7 @@ class SuNeRFLoader:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if device is None else device
         self.device = device
 
-        state = torch.load(state_path, map_location=device)
+        state = torch.load(state_path, map_location=device, weights_only=False)
         self.state = state
         data_config = state['data_config']
         self.ds_keys = list(data_config.keys())
@@ -597,7 +597,7 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
 class PlasmaSuNeRFLoader(SuNeRFLoader):
 
     def __init__(self, state_path, *args, **kwargs):
-        state = torch.load(state_path)
+        state = torch.load(state_path, map_location=device, weights_only=False)
         self.log_T_range = state['log_T_range']
         super().__init__(state_path, *args, **kwargs)
 

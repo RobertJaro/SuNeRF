@@ -26,7 +26,14 @@ from sunpy.map import Map
 from sunpy.sun import constants
 from tqdm import tqdm
 
-from sunerf.data.coronagraph.prep_coronagraph import _get_observation_time, _prep_coronagraph_map, parse_duration
+from sunerf.data.coronagraph.prep_common import (
+    MapPreprocessor,
+    add_common_prep_arguments,
+    common_kwargs_from_args,
+    ensure_tb_pb_output_dirs,
+    get_observation_time,
+    parse_duration,
+)
 
 
 PAIR_STEM_RE = re.compile(r"^(?P<prefix>\d{8}_\d{6})_1(?P<kind>[PB])(?P<suffix>.+)$")
@@ -55,8 +62,8 @@ def sample_pairs_at_cadence(pairs, cadence):
 
     timed_pairs = []
     for tb_path, pb_path in tqdm(pairs, desc="Loading observation times"):
-        tb_time = _get_observation_time(tb_path)
-        pb_time = _get_observation_time(pb_path)
+        tb_time = get_observation_time(tb_path)
+        pb_time = get_observation_time(pb_path)
         obs_time = min(tb_time, pb_time)
         timed_pairs.append((obs_time, (tb_path, pb_path)))
     timed_pairs.sort(key=lambda item: item[0])
@@ -88,28 +95,26 @@ def load_stereo_map(file_path: str):
 
 
 class StereoCorPrep:
-    def __init__(self, out_path, overwrite=True, occ_min=None, occ_max=None, resize=None, clip_max=None,
-                 nan_threshold=0.5):
+    def __init__(self, out_path, overwrite=True, occ_min=None, occ_max=None, max_radius=None, resize=None,
+                 clip_min=None, clip_max=None, value_min=None, value_max=None,
+                 filter_bright_objects=False, bright_object_threshold=10.0, nan_threshold=0.5):
         self.out_path = out_path
         self.overwrite = overwrite
-        self.occ_min = occ_min
-        self.occ_max = occ_max
-        self.resize = resize
-        self.clip_max = clip_max
         self.nan_threshold = nan_threshold
+        self.map_preprocessor = MapPreprocessor(
+            occ_min=occ_min,
+            occ_max=occ_max,
+            max_radius=max_radius,
+            resize=resize,
+            clip_min=clip_min,
+            clip_max=clip_max,
+            value_min=value_min,
+            value_max=value_max,
+            filter_bright_objects=filter_bright_objects,
+            bright_object_threshold=bright_object_threshold,
+        )
 
-        self.tb_out_path = os.path.join(out_path, "tB")
-        self.pb_out_path = os.path.join(out_path, "pB")
-        os.makedirs(self.tb_out_path, exist_ok=True)
-        os.makedirs(self.pb_out_path, exist_ok=True)
-
-    def _prepare_map(self, s_map):
-        s_map = _prep_coronagraph_map(s_map, occ_min=self.occ_min, occ_max=self.occ_max)
-        if self.resize is not None:
-            s_map = s_map.resample(self.resize * u.pixel)
-        if self.clip_max is not None:
-            s_map.data[:] = np.clip(s_map.data, a_max=self.clip_max, a_min=None)
-        return s_map
+        self.tb_out_path, self.pb_out_path = ensure_tb_pb_output_dirs(out_path)
 
     def _validate_pair(self, tb_path: str, pb_path: str):
         tb_data, tb_header, tb_map = load_stereo_map(tb_path)
@@ -154,8 +159,8 @@ class StereoCorPrep:
             }
 
         try:
-            tb_map = self._prepare_map(tb_map)
-            pb_map = self._prepare_map(pb_map)
+            tb_map = self.map_preprocessor.prepare_map(tb_map)
+            pb_map = self.map_preprocessor.prepare_map(pb_map)
             tb_map.save(tb_out, overwrite=True)
             pb_map.save(pb_out, overwrite=True)
         except Exception as exc:
@@ -173,40 +178,11 @@ def main():
     parser.add_argument("--tb_path", type=str, required=True, help="Glob pattern for STEREO/COR tB FITS files.")
     parser.add_argument("--pb_path", type=str, required=True, help="Glob pattern for STEREO/COR pB FITS files.")
     parser.add_argument("--out_path", type=str, required=True, help="Output directory for preprocessed maps.")
-    parser.add_argument(
-        "--occ_min",
-        type=float,
-        default=None,
-        help="Minimum occulter radius in arcseconds.",
-    )
-    parser.add_argument(
-        "--occ_max",
-        type=float,
-        default=None,
-        help="Maximum occulter radius in arcseconds.",
-    )
-    parser.add_argument(
-        "--no_overwrite",
-        action="store_true",
-        help="Skip outputs that already exist.",
-    )
-    parser.add_argument(
-        "--clip_max",
-        type=float,
-        default=None,
-        help="Optional maximum value to clip data to.",
-    )
+    add_common_prep_arguments(parser, include_clip=True)
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=os.cpu_count(),
-    )
-    parser.add_argument(
-        "--resize",
-        type=int,
-        nargs=2,
-        default=None,
-        help="Optional resize to (width height) in pixels.",
+        default=32,
     )
     parser.add_argument(
         "--cadence",
@@ -235,10 +211,7 @@ def main():
     prepper = StereoCorPrep(
         args.out_path,
         overwrite=not args.no_overwrite,
-        occ_min=args.occ_min * u.arcsec if args.occ_min is not None else None,
-        occ_max=args.occ_max * u.arcsec if args.occ_max is not None else None,
-        resize=args.resize,
-        clip_max=args.clip_max,
+        **common_kwargs_from_args(args),
         nan_threshold=args.nan_threshold,
     )
 

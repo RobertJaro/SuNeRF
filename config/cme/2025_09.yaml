@@ -1,21 +1,21 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v15"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2025_09_v15'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v18"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2025_09_v18'
 
 instruments:
   - type: 'default'
     key: 'STEREO_A_COR2'
     scaling: { type: 'log' }
-    correction: { corrections: [ 'f_corona', 'pB_add', 'tB_add' ] }
+    correction: { corrections: [ 'f_corona', 'pB_add', 'tB_add', 'pB_mul', 'tB_mul' ] }
   - type: 'default'
     key: 'PUNCH'
     scaling: { type: 'log' }
-    correction: { corrections: [ 'f_corona', 'pB_add', 'tB_add' ] }
-    calibration: True
+    correction: { corrections: [ 'f_corona', 'pB_add', 'tB_add', 'pB_mul', 'tB_mul' ] }
+#    calibration: True
   - type: 'default'
     key: 'CCOR'
     scaling: { type: 'log' }
-    correction: { corrections: [ 'f_corona', 'tB_add' ] }
-    calibration: True
+    correction: { corrections: [ 'f_corona', 'tB_add', 'tB_mul' ] }
+#    calibration: True
 
 model:
   use_carrington_projection: True
@@ -117,7 +117,7 @@ callbacks:
 
 logging:
   entity: "robert_jarolim"
-  project: "sunerf-cme-obs-v3"
+  project: "sunerf-cme-obs-v4"
   name: "2025-09 - STEREO A COR2 + PUNCH + CCOR"
 
 sampling:
@@ -130,5 +130,5 @@ lambda:
   image: 1.0
   ratio: 1.0
   radial: 1.0e-3 #{ start: 1.0e-1,  end: 1.0e-5, iterations: 1.0e+5 }
-  continuity: 1.0e-3 #{ start: 1.0e-1,  end: 1.0e-5, iterations: 1.0e+5 }
+  continuity: 1.0e-2 #{ start: 1.0e-1,  end: 1.0e-5, iterations: 1.0e+5 }
   velocity: 1.0e-1 #{ start: 1.0e-1,  end: 1.0e-5, iterations: 1.0e+5 }
