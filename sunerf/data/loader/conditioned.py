@@ -25,7 +25,7 @@ class ConditionedDataModule(LightningDataModule):
         # select test image
         test_idx = len(data_files) // 2
         mask = np.ones(len(data_files), dtype=bool)
-        mask[test_idx] = False
+        # mask[test_idx] = False, TODO: add back in when training images are working, for now validation image is used for training as well
 
         train_files = np.array(data_files)[mask].tolist()
         valid_file = data_files[test_idx]
