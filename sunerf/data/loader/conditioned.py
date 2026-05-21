@@ -38,7 +38,8 @@ class ConditionedDataModule(LightningDataModule):
                                               image_norm=self.image_norm, arcsec_norm=self.arcsec_norm)
         self.validation_dataset_mapping = {0: 'image'}
 
-        self.config = {'type': 'conditioned', 'Rs_per_ds': Rs_per_ds, 'cmap': cmap, 'resolution': (256, 256),
+        self.config = {'type': 'conditioned', 'Rs_per_ds': Rs_per_ds, 'cmap': cmap,
+                       'resolution': self.valid_dataset.image_shape,
                        'channels': self.train_dataset.channels}
         self.batch_size = batch_size
         super().__init__()
@@ -163,6 +164,7 @@ class FullImageDataset(Dataset):
         self.flat_rays = rays.reshape(-1, *rays.shape[-2:])
         self.input_image = input_image
         self.n_pixels = input_image.shape[1] * input_image.shape[2]
+        self.image_shape = input_image.shape[1:3]
 
         super().__init__()
 
