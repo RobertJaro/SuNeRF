@@ -25,7 +25,7 @@ class CorrectionModule(nn.Module):
         temporal_corrections = [c for c in self.corrections if c in possible_temporal_corrections]
 
         if len(img_corrections) > 0:
-            self.img_correction_module = SirenModel(in_dim=2, out_dim=len(img_corrections), dim=64, n_layers=4, w0_init=30)
+            self.img_correction_module = SirenModel(in_dim=2, out_dim=len(img_corrections), dim=64, n_layers=4, w0_init=3)
         else:
             self.img_correction_module = None
         if len(hpc_corrections) > 0:
@@ -159,8 +159,8 @@ class CalibrationModule(nn.Module):
         super().__init__()
         self.calibration = nn.Parameter(torch.ones(1, dtype=torch.float32) * start_value, requires_grad=True)
 
-    def forward(self, brightness):
-        calibrated = brightness * torch.exp(self.calibration)
+    def forward(self, value):
+        calibrated = value * torch.exp(self.calibration)
         return calibrated
 
 class AlignmentModule(nn.Module):

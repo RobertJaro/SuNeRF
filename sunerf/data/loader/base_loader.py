@@ -6,8 +6,8 @@ import uuid
 import numpy as np
 import torch
 from astropy import units as u
-from pytorch_lightning import LightningDataModule
-from pytorch_lightning.utilities import CombinedLoader
+from lightning.pytorch import LightningDataModule
+from lightning.pytorch.utilities.combined_loader import CombinedLoader
 from sunpy.coordinates import frames
 from sunpy.map import Map, all_coordinates_from_map
 from torch.utils.data import DataLoader, RandomSampler, Dataset

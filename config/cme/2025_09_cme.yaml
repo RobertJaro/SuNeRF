@@ -1,0 +1,194 @@
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_cme_v02"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2025_09_cme_v02"
+
+instruments:
+  - type: "default"
+    key: "STEREO_A_COR2"
+    scaling: { type: "asinh", a: 1.0e-3 }
+    correction: { corrections: [ "f_corona", "pB_add", "tB_add", "pB_mul", "tB_mul" ], trainable: false }
+  - type: "default"
+    key: "PUNCH"
+    scaling: { type: "asinh", a: 1.0e-5 }
+    correction: { corrections: [ "f_corona", "pB_add", "tB_add", "pB_mul", "tB_mul" ], trainable: false }
+  - type: "default"
+    key: "CCOR"
+    scaling: { type: "asinh", a: 1.0e-3 }
+    correction: { corrections: [ "f_corona", "tB_add", "tB_mul" ], trainable: false }
+  - type: "insitu"
+    key: "PSP"
+    calibration: false
+  - type: "insitu"
+    key: "SOLO"
+    calibration: false
+
+model:
+  use_carrington_projection: true
+  model_type: "split_temporal"
+  cold_steps: 0
+  warm_steps: 0
+  freeze_static: true
+
+data:
+  # This must match the coarse/background stage so checkpoint time coordinates agree.
+  ref_date: "2025-09-01T00:00:00"
+  train_datasets:
+    - type: "COR"
+      key: "STEREO_A_COR2"
+      instrument_key: "STEREO_A_COR2"
+      data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/cor2/pB/*"
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/cor2/tB/*"
+      time_range: &cme_time [ "2025-09-06T00:00:00", "2025-09-08T00:00:00" ]
+      batch_size: 1024
+      debug: false
+      correction_config: { type: file,
+                           tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/stereo_a_cor2_tB_correction.npy",
+                           pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/stereo_a_cor2_pB_correction.npy",
+                           clean: false }
+
+    - type: "punch"
+      key: "PUNCH"
+      instrument_key: "PUNCH"
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/punch_pam/pB/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/punch_pam/tB/*"
+      time_range: *cme_time
+      batch_size: 1024
+      debug: false
+
+    - type: "CCOR"
+      key: "CCOR"
+      instrument_key: "CCOR"
+      data_path_pB: null
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/ccor/*"
+      time_range: *cme_time
+      batch_size: 1024
+      debug: false
+
+    - type: "psp"
+      key: "PSP"
+      instrument_key: "PSP"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/psp/psp_insitu_20250901_20251001.npz"
+      time_range: *cme_time
+      batch_size: 512
+      max_distance: 100.0
+
+    - type: "solar_orbiter"
+      key: "SOLO"
+      instrument_key: "SOLO"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/solo/solo_insitu_20250901_20251001.npz"
+      time_range: *cme_time
+      batch_size: 512
+      max_distance: 100.0
+
+    - type: "random"
+      name: "continuity"
+      radius_range: [ 1.5, 110.0 ]
+      unit: "solRad"
+      batch_size: 4096
+      volume_uniform_sampling: true
+      radial_sampling_exponent: 2
+
+  valid_datasets:
+    - type: "COR"
+      key: "STEREO_A_COR2"
+      instrument_key: "STEREO_A_COR2"
+      data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/cor2/pB/*"
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/cor2/tB/*"
+      time_range: *cme_time
+      correction_config: { type: file,
+                           tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/stereo_a_cor2_tB_correction.npy",
+                           pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/stereo_a_cor2_pB_correction.npy",
+                           clean: false }
+
+    - type: "punch"
+      key: "PUNCH"
+      instrument_key: "PUNCH"
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/punch_pam/pB/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/punch_pam/tB/*"
+      time_range: *cme_time
+
+    - type: "CCOR"
+      key: "CCOR"
+      instrument_key: "CCOR"
+      data_path_pB: null
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/ccor/*"
+      time_range: *cme_time
+
+    - key: "valid_radial"
+      type: "radial_slices"
+      radii: [ 3, 5, 10, 20, 50, 80 ]
+
+    - type: "longitude_slices"
+      key: "valid_lon_slices"
+      radius_range: [ 2.5, 100.0 ]
+
+    - type: "psp"
+      key: "valid_psp"
+      instrument_key: "PSP"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/psp/psp_insitu_20250901_20251001.npz"
+      time_range: *cme_time
+      batch_size: 4096
+      max_distance: 100.0
+
+    - type: "solar_orbiter"
+      key: "valid_solo"
+      instrument_key: "SOLO"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/solo/solo_insitu_20250901_20251001.npz"
+      time_range: *cme_time
+      batch_size: 4096
+      max_distance: 100.0
+
+  Rs_per_ds: 100
+  seconds_per_dt: 86400
+  batch_size: 4096
+  validation_batch_size: 4096
+  num_workers: 16
+
+callbacks:
+  - type: "thomson_image"
+    ds_key: "STEREO_A_COR2"
+  - type: "thomson_image"
+    ds_key: "PUNCH"
+  - type: "thomson_image"
+    ds_key: "CCOR"
+  - type: "correction_image"
+    ds_key: "STEREO_A_COR2"
+  - type: "correction_image"
+    ds_key: "PUNCH"
+  - type: "correction_image"
+    ds_key: "CCOR"
+  - type: "radial_slices"
+    ds_key: "valid_radial"
+  - type: "longitude_density"
+    ds_key: "valid_lon_slices"
+  - type: "insitu_timeseries"
+    ds_key: "valid_psp"
+    name: "PSP"
+  - type: "insitu_timeseries"
+    ds_key: "valid_solo"
+    name: "SOLO"
+
+logging:
+  entity: "robert_jarolim"
+  project: "sunerf-cme-obs-v4"
+  name: "2025-09-06 CME - fixed instrument corrections"
+
+sampling:
+  type: "spherical"
+  n_samples: 64
+  max_distance: 100.0
+  radial_weighting: True
+
+lambda:
+  image: 1.0
+  ratio: 0.0
+  radial: 0.0 #1.0e-4
+  continuity: 1.0e-4
+  ballistic: 1.0e-4
+  velocity: 1.0e-1
+  insitu_density: 1.0e-2
+  insitu_velocity_radial: 1.0e-2
+
+training:
+  # Load only model weights: the CME stage gets a fresh optimizer and step count.
+  init_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v30/last.ckpt"
+  ignore_unexpected_state_prefixes: [ "running_difference_scaling." ]

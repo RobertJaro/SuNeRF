@@ -8,11 +8,9 @@ class ThomsonScattering(nn.Module):
 
     def __init__(self, Rs_per_ds, **kwargs):
         super().__init__(**kwargs)
-        c_0 = 1
         solar_radius = 1 / Rs_per_ds
         #
         self.limb_darkening_coeff = nn.Parameter(torch.tensor(0.63, dtype=torch.float32), requires_grad=False)
-        self.C_0 = nn.Parameter(torch.tensor(c_0, dtype=torch.float32), requires_grad=False)
         self.solar_radius = nn.Parameter(torch.tensor(solar_radius, dtype=torch.float32), requires_grad=False)
 
     def forward(self, rho, z_vals, rays_d, rays_o, query_points, **kwargs):
@@ -83,8 +81,8 @@ class ThomsonScattering(nn.Module):
         # intensity (total and polarised) from all electrons
         # for one electron * electron density * weighted by line element ds- separation between sampling points
         rho = rho[..., 0]  # squeeze last dimension
-        point_tB = self.C_0 * rho * intensity_tB
-        point_pB = self.C_0 * rho * intensity_pB
+        point_tB = rho * intensity_tB
+        point_pB = rho * intensity_pB
 
         # integrate all intensity contributions along LOS
         image_tB = (point_tB * dists).sum(1)

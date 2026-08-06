@@ -41,6 +41,8 @@ from sunerf.data.coronagraph.prep_common import (
     common_kwargs_from_args,
     ensure_tb_pb_output_dirs,
     parse_duration,
+    select_items_by_time,
+    should_write_output,
 )
 
 FILENAME_RE = re.compile(r"P(?P<pol>[MZP])(?P<sc>[1-4])_(?P<ts>\d{14})")
@@ -106,34 +108,14 @@ class PunchTripletPrep:
     def __init__(
         self,
         out_path,
-        overwrite=True,
-        occ_min=None,
-        occ_max=None,
-        max_radius=None,
-        resize=None,
-        clip_min=None,
-        clip_max=None,
-        value_min=None,
-        value_max=None,
-        filter_bright_objects=False,
-        bright_object_threshold=10.0,
+        overwrite=False,
         reproject=False,
+        **preprocess_kwargs,
     ):
         self.out_path = out_path
         self.overwrite = overwrite
         self.reproject = reproject
-        self.map_preprocessor = MapPreprocessor(
-            occ_min=occ_min,
-            occ_max=occ_max,
-            max_radius=max_radius,
-            resize=resize,
-            clip_min=clip_min,
-            clip_max=clip_max,
-            value_min=value_min,
-            value_max=value_max,
-            filter_bright_objects=filter_bright_objects,
-            bright_object_threshold=bright_object_threshold,
-        )
+        self.map_preprocessor = MapPreprocessor(**preprocess_kwargs)
 
         self.tb_out_path, self.pb_out_path = ensure_tb_pb_output_dirs(out_path)
 
@@ -176,7 +158,9 @@ class PunchTripletPrep:
         tb_out = os.path.join(self.tb_out_path, tb_name)
         pb_out = os.path.join(self.pb_out_path, pb_name)
 
-        if os.path.exists(tb_out) and os.path.exists(pb_out) and not self.overwrite:
+        write_tb = should_write_output(tb_out, self.overwrite)
+        write_pb = should_write_output(pb_out, self.overwrite)
+        if not write_tb and not write_pb:
             return tb_out, pb_out
 
         try:
@@ -189,10 +173,6 @@ class PunchTripletPrep:
             pp_data = np.asarray(pp_map.data, dtype=float)
             header = pm_map.meta
 
-            pm_data[pm_data <= 0] = 0
-            pz_data[pz_data <= 0] = 0
-            pp_data[pp_data <= 0] = 0
-
             i_stokes = (2.0 / 3.0) * (pm_data + pz_data + pp_data)
             q_stokes = (2.0 / 3.0) * ((2.0 * pz_data) - pm_data - pp_data)
             u_stokes = (2.0 / np.sqrt(3.0)) * (pp_data - pm_data)
@@ -203,8 +183,10 @@ class PunchTripletPrep:
             tb_map = self.map_preprocessor.prepare_map(Map(tb, header))
             pb_map = self.map_preprocessor.prepare_map(Map(pb, header))
 
-            tb_map.save(tb_out, overwrite=True)
-            pb_map.save(pb_out, overwrite=True)
+            if write_tb:
+                tb_map.save(tb_out, overwrite=self.overwrite)
+            if write_pb:
+                pb_map.save(pb_out, overwrite=self.overwrite)
         except Exception as exc:
             print(f"[{os.getpid()}] ERROR processing {pm_basename}: {exc}", flush=True)
             raise
@@ -221,7 +203,7 @@ def main():
         default=parse_duration("3m"),
         help="Maximum timestamp separation when building PM/PZ/PP triplets.",
     )
-    add_common_prep_arguments(parser, include_clip=True)
+    add_common_prep_arguments(parser)
     parser.add_argument(
         "--reproject",
         action="store_true",
@@ -247,10 +229,19 @@ def main():
     triplets = build_triplets(entries, tolerance=args.pair_tolerance)
     if not triplets:
         raise RuntimeError("No valid PM/PZ/PP triplets found. Try increasing --pair_tolerance.")
+    original_count = len(triplets)
+    triplets = select_items_by_time(
+        triplets,
+        start=args.start,
+        end=args.end,
+        get_time=lambda triplet: triplet[0]["ts"],
+    )
+    if len(triplets) != original_count:
+        print(f"Time-range filtering kept {len(triplets)} of {original_count} triplets.")
 
     prepper = PunchTripletPrep(
         args.out_path,
-        overwrite=not args.no_overwrite,
+        overwrite=args.overwrite,
         **common_kwargs_from_args(args),
         reproject=args.reproject,
     )

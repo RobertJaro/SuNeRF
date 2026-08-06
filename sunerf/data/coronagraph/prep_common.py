@@ -5,16 +5,25 @@ import argparse
 import datetime as dt
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 from astropy import units as u
+from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.time import Time
+from sunpy import log as sunpy_log
 from sunpy.coordinates import frames
+from sunpy.coordinates.ephemeris import get_body_heliographic_stonyhurst
 from sunpy.map import Map, all_coordinates_from_map
 from tqdm import tqdm
 
 
+DEFAULT_SOLAR_SYSTEM_OBJECTS = (
+    "venus",
+    "mercury",
+    "moon",
+)
 FILENAME_TS_PATTERNS = (
     re.compile(r"(?P<ts>\d{8}T\d{6})"),
     re.compile(r"(?P<ts>\d{8}_\d{6})"),
@@ -39,6 +48,13 @@ def parse_duration(value: str) -> dt.timedelta:
     unit = match.group(2).lower()
     seconds_per_unit = {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
     return dt.timedelta(seconds=quantity * seconds_per_unit)
+
+
+def parse_time(value: str) -> dt.datetime:
+    try:
+        return Time(value).to_datetime()
+    except Exception as exc:
+        raise argparse.ArgumentTypeError(f"Invalid time '{value}': {exc}") from exc
 
 
 def datetime_from_filename(file_path: str):
@@ -72,32 +88,75 @@ def get_observation_time(file_path: str):
     raise RuntimeError(f"Could not determine observation time for {file_path}")
 
 
-def sample_files_at_cadence(files, cadence: dt.timedelta):
-    if cadence.total_seconds() <= 0:
+def _get_item_observation_time(item):
+    if isinstance(item, (str, os.PathLike)):
+        return get_observation_time(item)
+    return min(get_observation_time(file_path) for file_path in item)
+
+
+def select_items_by_time(items, start=None, end=None, cadence=None, get_time=_get_item_observation_time):
+    items = list(items)
+    if start is None and end is None and cadence is None:
+        return items
+    if start is not None and end is not None and start >= end:
+        raise ValueError("Start time must be earlier than end time.")
+    if cadence is not None and cadence.total_seconds() <= 0:
         raise ValueError("Cadence must be positive.")
 
-    timed_files = []
-    for file_path in tqdm(files, desc="Loading observation times"):
-        obs_time = get_observation_time(file_path)
-        timed_files.append((obs_time, file_path))
-    timed_files.sort(key=lambda item: item[0])
+    with ThreadPoolExecutor() as executor:
+        observation_times = list(
+            tqdm(
+                executor.map(get_time, items),
+                total=len(items),
+                desc="Loading observation times",
+            )
+        )
+
+    timed_items = sorted(zip(observation_times, items), key=lambda item: item[0])
+    timed_items = [
+        (obs_time, item)
+        for obs_time, item in timed_items
+        if (start is None or obs_time >= start) and (end is None or obs_time < end)
+    ]
+    if cadence is None or not timed_items:
+        return [item for _, item in timed_items]
 
     sampled = []
-    next_time = timed_files[0][0]
-    last_added_path = None
-
-    for obs_time, file_path in timed_files:
+    next_time = timed_items[0][0]
+    for obs_time, item in timed_items:
         if obs_time < next_time:
             continue
-        if file_path != last_added_path:
-            sampled.append(file_path)
-            last_added_path = file_path
+        sampled.append(item)
         next_time = obs_time + cadence
-
     return sampled
 
 
-def add_common_prep_arguments(parser, *, include_max_radius=False, include_clip=False, include_value_limits=False):
+def sample_files_at_cadence(files, cadence: dt.timedelta):
+    return select_items_by_time(files, cadence=cadence)
+
+
+def add_cadence_argument(parser):
+    parser.add_argument(
+        "--cadence",
+        type=parse_duration,
+        default=None,
+        help="Optional preprocessing cadence such as 15m, 1h, or 1d.",
+    )
+
+
+def add_common_prep_arguments(parser, *, include_max_radius=False):
+    parser.add_argument(
+        "--start",
+        type=parse_time,
+        default=None,
+        help="Inclusive preprocessing start time.",
+    )
+    parser.add_argument(
+        "--end",
+        type=parse_time,
+        default=None,
+        help="Exclusive preprocessing end time.",
+    )
     parser.add_argument(
         "--occ_min",
         type=float,
@@ -118,9 +177,9 @@ def add_common_prep_arguments(parser, *, include_max_radius=False, include_clip=
             help="Maximum projected radius in solar radii.",
         )
     parser.add_argument(
-        "--no_overwrite",
+        "--overwrite",
         action="store_true",
-        help="Skip outputs that already exist.",
+        help="Overwrite existing outputs. By default existing outputs are skipped.",
     )
     parser.add_argument(
         "--resize",
@@ -129,35 +188,22 @@ def add_common_prep_arguments(parser, *, include_max_radius=False, include_clip=
         default=None,
         help="Optional resize to (width height) in pixels.",
     )
-    if include_clip:
-        parser.add_argument(
-            "--clip_min",
-            type=float,
-            default=None,
-            help="Optional minimum value to clip data to.",
-        )
-        parser.add_argument(
-            "--clip_max",
-            type=float,
-            default=None,
-            help="Optional maximum value to clip data to.",
-        )
-    if include_value_limits:
-        parser.add_argument(
-            "--value_min",
-            type=float,
-            default=None,
-            help="Optional minimum allowed data value.",
-        )
-        parser.add_argument(
-            "--value_max",
-            type=float,
-            default=None,
-            help="Optional maximum allowed data value.",
-        )
+    parser.add_argument(
+        "--value_min",
+        type=float,
+        default=None,
+        help="Optional minimum allowed data value; smaller values are set to NaN.",
+    )
+    parser.add_argument(
+        "--value_max",
+        type=float,
+        default=None,
+        help="Optional maximum allowed data value; larger values are set to NaN.",
+    )
     parser.add_argument(
         "--filter_bright_objects",
         action="store_true",
+        default=False,
         help=(
             "Mask bright background stars/planets by fitting each image's radial "
             "brightness profile and setting outliers to NaN."
@@ -184,6 +230,33 @@ def add_common_prep_arguments(parser, *, include_max_radius=False, include_clip=
         type=positive_float,
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--remove_solar_system_objects",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Locate projected solar-system objects in the image and apply "
+            "circular NaN masks around them."
+        ),
+    )
+    parser.add_argument(
+        "--solar_system_objects",
+        nargs="+",
+        default=DEFAULT_SOLAR_SYSTEM_OBJECTS,
+        help="Solar-system body names to mask when --remove_solar_system_objects is enabled.",
+    )
+    parser.add_argument(
+        "--solar_system_object_mask_radius",
+        type=positive_float,
+        default=1000.0,
+        help="Circular helioprojective mask radius in arcseconds for non-lunar objects.",
+    )
+    parser.add_argument(
+        "--moon_mask_radius",
+        type=positive_float,
+        default=2000.0,
+        help="Circular helioprojective mask radius in arcseconds for the Moon.",
+    )
 
 
 def common_kwargs_from_args(args):
@@ -196,12 +269,14 @@ def common_kwargs_from_args(args):
             else None
         ),
         "resize": args.resize,
-        "clip_min": getattr(args, "clip_min", None),
-        "clip_max": getattr(args, "clip_max", None),
         "value_min": getattr(args, "value_min", None),
         "value_max": getattr(args, "value_max", None),
         "filter_bright_objects": args.filter_bright_objects,
         "bright_object_threshold": args.bright_object_threshold,
+        "remove_solar_system_objects": args.remove_solar_system_objects,
+        "solar_system_objects": args.solar_system_objects,
+        "solar_system_object_mask_radius": args.solar_system_object_mask_radius,
+        "moon_mask_radius": args.moon_mask_radius,
     }
 
 
@@ -213,6 +288,11 @@ def ensure_tb_pb_output_dirs(out_path):
     return tb_out_path, pb_out_path
 
 
+def should_write_output(path, overwrite=False):
+    """Return whether an output may be written without violating overwrite policy."""
+    return overwrite or not os.path.exists(path)
+
+
 class MapPreprocessor:
     """Applies shared map-level preprocessing after instrument-specific loading."""
 
@@ -222,23 +302,27 @@ class MapPreprocessor:
         occ_max=None,
         max_radius=None,
         resize=None,
-        clip_min=None,
-        clip_max=None,
         value_min=None,
         value_max=None,
         filter_bright_objects=False,
         bright_object_threshold=10.0,
+        remove_solar_system_objects=True,
+        solar_system_objects=DEFAULT_SOLAR_SYSTEM_OBJECTS,
+        solar_system_object_mask_radius=1000.0,
+        moon_mask_radius=2000.0,
     ):
         self.occ_min = occ_min
         self.occ_max = occ_max
         self.max_radius = max_radius
         self.resize = resize
-        self.clip_min = clip_min
-        self.clip_max = clip_max
         self.value_min = value_min
         self.value_max = value_max
         self.filter_bright_objects = filter_bright_objects
         self.bright_object_threshold = bright_object_threshold
+        self.remove_solar_system_objects = remove_solar_system_objects
+        self.solar_system_objects = tuple(solar_system_objects or DEFAULT_SOLAR_SYSTEM_OBJECTS)
+        self.solar_system_object_mask_radius = solar_system_object_mask_radius
+        self.moon_mask_radius = moon_mask_radius
 
     def prepare_map(self, s_map):
         if self._needs_radial_preprocessing:
@@ -250,10 +334,15 @@ class MapPreprocessor:
                 filter_bright_objects=self.filter_bright_objects,
                 bright_object_threshold=self.bright_object_threshold,
             )
+        if self.remove_solar_system_objects:
+            s_map = mask_solar_system_objects(
+                s_map,
+                objects=self.solar_system_objects,
+                object_mask_radius=self.solar_system_object_mask_radius,
+                moon_mask_radius=self.moon_mask_radius,
+            )
         if self.resize is not None:
             s_map = s_map.resample(self.resize * u.pixel)
-        if self.clip_min is not None or self.clip_max is not None:
-            s_map.data[:] = np.clip(s_map.data, a_min=self.clip_min, a_max=self.clip_max)
         if self.value_min is not None:
             s_map.data[s_map.data < self.value_min] = np.nan
         if self.value_max is not None:
@@ -333,6 +422,88 @@ def prep_coronagraph_map(
             data,
             projected_radius,
             threshold=bright_object_threshold,
+        )
+
+    return Map(data, s_map.meta)
+
+
+def _hpc_circle_mask(coordinates, center, radius):
+    radius = u.Quantity(radius, u.arcsec)
+    separation = np.hypot(coordinates.Tx - center.Tx, coordinates.Ty - center.Ty)
+    return separation <= radius
+
+
+def mask_solar_system_objects(
+    s_map,
+    objects=DEFAULT_SOLAR_SYSTEM_OBJECTS,
+    object_mask_radius=1000.0,
+    moon_mask_radius=2000.0,
+):
+    observer = s_map.observer_coordinate
+    hpc_frame = frames.Helioprojective(observer=observer, obstime=s_map.date)
+
+    # Fetch the projected HPC location of each requested body.
+    object_locations = []
+    for body in objects:
+        body_name = body.lower()
+        try:
+            previous_log_level = sunpy_log.level
+            sunpy_log.setLevel("WARNING")
+            try:
+                coord = get_body_heliographic_stonyhurst(
+                    body_name,
+                    s_map.date,
+                    observer=observer,
+                )
+            finally:
+                sunpy_log.setLevel(previous_log_level)
+            hpc_coord = SkyCoord(coord.transform_to(hpc_frame))
+        except Exception as exc:
+            print(
+                f"[solar-system-mask] Failed to project {body_name} "
+                f"at {s_map.date.isot}: {exc}",
+                flush=True,
+            )
+            continue
+        object_locations.append((body_name, hpc_coord))
+
+    # Build one combined mask for all bodies whose centers fall inside the FOV.
+    mask = np.zeros(s_map.data.shape, dtype=bool)
+    coordinates = None
+    height, width = s_map.data.shape
+    for body_name, hpc_coord in object_locations:
+        x, y = s_map.world_to_pixel(hpc_coord)
+        x_value = x.to_value(u.pixel)
+        y_value = y.to_value(u.pixel)
+        if not np.isfinite(x_value) or not np.isfinite(y_value):
+            continue
+        if not (0 <= x_value < width and 0 <= y_value < height):
+            continue
+
+        mask_radius = moon_mask_radius if body_name == "moon" else object_mask_radius
+        if coordinates is None:
+            coordinates = all_coordinates_from_map(s_map)
+        object_mask = _hpc_circle_mask(coordinates, hpc_coord, mask_radius)
+        mask |= object_mask
+        print(
+            f"[solar-system-mask] {body_name} is in the FOV at {s_map.date.isot}: "
+            f"HPC=({hpc_coord.Tx.to_value(u.arcsec):.1f}, "
+            f"{hpc_coord.Ty.to_value(u.arcsec):.1f}) arcsec, "
+            f"pixel=({x_value:.1f}, {y_value:.1f}), "
+            f"mask_radius={u.Quantity(mask_radius, u.arcsec).to_value(u.arcsec):.1f} arcsec, "
+            f"mask_pixels={np.count_nonzero(object_mask)}",
+            flush=True,
+        )
+
+    # Apply the combined mask to the frame once.
+    data = np.array(s_map.data, dtype=float, copy=True)
+    newly_masked = np.count_nonzero(mask & np.isfinite(data))
+    data[mask] = np.nan
+    if np.any(mask):
+        print(
+            f"[solar-system-mask] Applied combined mask: "
+            f"mask_pixels={np.count_nonzero(mask)}, newly_masked={newly_masked}",
+            flush=True,
         )
 
     return Map(data, s_map.meta)

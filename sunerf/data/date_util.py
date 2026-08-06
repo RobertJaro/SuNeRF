@@ -27,4 +27,4 @@ def unnormalize_datetime(norm_date: float, seconds_per_dt, ref_date) -> datetime
     -------
     real datetime
     """
-    return ref_date + timedelta(seconds=norm_date * seconds_per_dt)
+    return ref_date + timedelta(seconds=float(norm_date) * seconds_per_dt)

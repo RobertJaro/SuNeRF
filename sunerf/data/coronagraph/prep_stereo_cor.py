@@ -28,11 +28,12 @@ from tqdm import tqdm
 
 from sunerf.data.coronagraph.prep_common import (
     MapPreprocessor,
+    add_cadence_argument,
     add_common_prep_arguments,
     common_kwargs_from_args,
     ensure_tb_pb_output_dirs,
-    get_observation_time,
-    parse_duration,
+    select_items_by_time,
+    should_write_output,
 )
 
 
@@ -56,31 +57,15 @@ def collect_pairs(tb_path: str, pb_path: str):
     return [(tb_files[key], pb_files[key]) for key in pair_keys]
 
 
-def sample_pairs_at_cadence(pairs, cadence):
-    if cadence.total_seconds() <= 0:
-        raise ValueError("Cadence must be positive.")
-
-    timed_pairs = []
-    for tb_path, pb_path in tqdm(pairs, desc="Loading observation times"):
-        tb_time = get_observation_time(tb_path)
-        pb_time = get_observation_time(pb_path)
-        obs_time = min(tb_time, pb_time)
-        timed_pairs.append((obs_time, (tb_path, pb_path)))
-    timed_pairs.sort(key=lambda item: item[0])
-
-    sampled = []
-    next_time = timed_pairs[0][0]
-    for obs_time, pair in timed_pairs:
-        if obs_time < next_time:
-            continue
-        sampled.append(pair)
-        next_time = obs_time + cadence
-
-    return sampled
-
-
 def header_is_normal(header) -> bool:
     return str(header.get("SEB_PROG", "")).strip().upper() == "NORMAL"
+
+
+def invalid_pixel_fraction(data) -> float:
+    """Count NaN and non-positive pixels without modifying the input data."""
+    if not data.size:
+        return 1.0
+    return float(np.count_nonzero(np.isnan(data) | (data <= 0)) / data.size)
 
 
 def load_stereo_map(file_path: str):
@@ -95,24 +80,11 @@ def load_stereo_map(file_path: str):
 
 
 class StereoCorPrep:
-    def __init__(self, out_path, overwrite=True, occ_min=None, occ_max=None, max_radius=None, resize=None,
-                 clip_min=None, clip_max=None, value_min=None, value_max=None,
-                 filter_bright_objects=False, bright_object_threshold=10.0, nan_threshold=0.5):
+    def __init__(self, out_path, overwrite=False, nan_threshold=0.5, **preprocess_kwargs):
         self.out_path = out_path
         self.overwrite = overwrite
         self.nan_threshold = nan_threshold
-        self.map_preprocessor = MapPreprocessor(
-            occ_min=occ_min,
-            occ_max=occ_max,
-            max_radius=max_radius,
-            resize=resize,
-            clip_min=clip_min,
-            clip_max=clip_max,
-            value_min=value_min,
-            value_max=value_max,
-            filter_bright_objects=filter_bright_objects,
-            bright_object_threshold=bright_object_threshold,
-        )
+        self.map_preprocessor = MapPreprocessor(**preprocess_kwargs)
 
         self.tb_out_path, self.pb_out_path = ensure_tb_pb_output_dirs(out_path)
 
@@ -122,17 +94,14 @@ class StereoCorPrep:
 
         reasons = []
         if not header_is_normal(tb_header):
-            reasons.append("tB SEB_PROG!=NORMAL")
+            reasons.append(f"tB SEB_PROG={tb_header.get('SEB_PROG')!r}, required 'NORMAL'")
         if not header_is_normal(pb_header):
-            reasons.append("pB SEB_PROG!=NORMAL")
+            reasons.append(f"pB SEB_PROG={pb_header.get('SEB_PROG')!r}, required 'NORMAL'")
 
-        tb_invalid = np.array(tb_data, copy=True)
-        pb_invalid = np.array(pb_data, copy=True)
-        tb_invalid[tb_invalid <= 0] = np.nan
-        pb_invalid[pb_invalid <= 0] = np.nan
-
-        tb_nan_fraction = float(np.isnan(tb_invalid).mean()) if tb_invalid.size else 1.0
-        pb_nan_fraction = float(np.isnan(pb_invalid).mean()) if pb_invalid.size else 1.0
+        # Non-positive values count toward file rejection, but are not replaced
+        # in the maps that continue through preprocessing.
+        tb_nan_fraction = invalid_pixel_fraction(tb_data)
+        pb_nan_fraction = invalid_pixel_fraction(pb_data)
 
         if tb_nan_fraction > self.nan_threshold:
             reasons.append(f"tB NaN={tb_nan_fraction:.3f}")
@@ -145,10 +114,11 @@ class StereoCorPrep:
         tb_path, pb_path = pair
         tb_out = os.path.join(self.tb_out_path, os.path.basename(tb_path))
         pb_out = os.path.join(self.pb_out_path, os.path.basename(pb_path))
+        write_tb = should_write_output(tb_out, self.overwrite)
+        write_pb = should_write_output(pb_out, self.overwrite)
 
-        if os.path.exists(tb_out) and os.path.exists(pb_out) and not self.overwrite:
-            return {"status": "skipped_existing", "tb_out": tb_out, "pb_out": pb_out}
-
+        # Validate every input pair before considering existing outputs so that
+        # the observing-program requirement cannot be bypassed by --no-overwrite.
         reasons, tb_map, pb_map = self._validate_pair(tb_path, pb_path)
         if reasons:
             return {
@@ -158,11 +128,16 @@ class StereoCorPrep:
                 "reason": ", ".join(reasons),
             }
 
+        if not write_tb and not write_pb:
+            return {"status": "skipped_existing", "tb_out": tb_out, "pb_out": pb_out}
+
         try:
             tb_map = self.map_preprocessor.prepare_map(tb_map)
             pb_map = self.map_preprocessor.prepare_map(pb_map)
-            tb_map.save(tb_out, overwrite=True)
-            pb_map.save(pb_out, overwrite=True)
+            if write_tb:
+                tb_map.save(tb_out, overwrite=self.overwrite)
+            if write_pb:
+                pb_map.save(pb_out, overwrite=self.overwrite)
         except Exception as exc:
             print(
                 f"[{os.getpid()}] ERROR in {os.path.basename(tb_path)} / {os.path.basename(pb_path)}: {exc}",
@@ -178,18 +153,13 @@ def main():
     parser.add_argument("--tb_path", type=str, required=True, help="Glob pattern for STEREO/COR tB FITS files.")
     parser.add_argument("--pb_path", type=str, required=True, help="Glob pattern for STEREO/COR pB FITS files.")
     parser.add_argument("--out_path", type=str, required=True, help="Output directory for preprocessed maps.")
-    add_common_prep_arguments(parser, include_clip=True)
+    add_common_prep_arguments(parser)
     parser.add_argument(
         "--num_workers",
         type=int,
         default=32,
     )
-    parser.add_argument(
-        "--cadence",
-        type=parse_duration,
-        default=None,
-        help="Optional fixed sampling cadence like 15m, 1h, or 30s.",
-    )
+    add_cadence_argument(parser)
     parser.add_argument(
         "--nan_threshold",
         type=float,
@@ -200,17 +170,19 @@ def main():
 
     os.makedirs(args.out_path, exist_ok=True)
     pairs = collect_pairs(args.tb_path, args.pb_path)
-    if args.cadence is not None:
+    if args.start is not None or args.end is not None or args.cadence is not None:
         original_count = len(pairs)
-        pairs = sample_pairs_at_cadence(pairs, args.cadence)
-        print(
-            f"Cadence sampling kept {len(pairs)} of {original_count} pairs "
-            f"at {args.cadence} spacing."
+        pairs = select_items_by_time(
+            pairs,
+            start=args.start,
+            end=args.end,
+            cadence=args.cadence,
         )
+        print(f"Time selection kept {len(pairs)} of {original_count} pairs.")
 
     prepper = StereoCorPrep(
         args.out_path,
-        overwrite=not args.no_overwrite,
+        overwrite=args.overwrite,
         **common_kwargs_from_args(args),
         nan_threshold=args.nan_threshold,
     )

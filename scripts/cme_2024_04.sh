@@ -27,7 +27,7 @@ exit
 #python -m sunerf.data.coronagraph.prep_coronagraph --data_path "/glade/work/rjarolim/data/sunerf-cme/2024_10/cor/COR2_prep/pB/*.fts" --out_path "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/pB" --occ_min 3000 --occ_max 15000 --resize 512 512
 #python -m sunerf.data.coronagraph.prep_coronagraph --data_path "/glade/work/rjarolim/data/sunerf-cme/2024_10/cor/COR2_prep/tB/*.fts" --out_path "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/cor2/tB" --occ_min 3000 --occ_max 15000 --resize 512 512
 
-#python -m sunerf.data.coronagraph.prep_coronagraph --data_path "/glade/work/rjarolim/data/sunerf-cme/2024_10/lasco/C2_prep_fixed/*.fts" --out_path "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/lasco_c2" --occ_min 2100 --occ_max 8000 --resize 512 512 --clip_max 1e+5
+#python -m sunerf.data.coronagraph.prep_coronagraph --data_path "/glade/work/rjarolim/data/sunerf-cme/2024_10/lasco/C2_prep_fixed/*.fts" --out_path "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/lasco_c2" --occ_min 2100 --occ_max 8000 --resize 512 512 --value_max 1e+5
 
 # SOHO/LASCO C3
 #python -m sunerf.data.coronagraph.prep_coronagraph --data_path "/glade/work/rjarolim/data/sunerf-cme/2024_10/lasco/C3_prep/*.fts" --out_path "/glade/work/rjarolim/data/sunerf-cme/2024_10/prep/lasco_c3" --occ_min 4500 --occ_max 30000 --resize 512 512

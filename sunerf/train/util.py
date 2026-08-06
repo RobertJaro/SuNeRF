@@ -1,7 +1,7 @@
 import torch
 import wandb
 import yaml
-from lightning.pytorch.utilities.distributed import rank_zero_only
+from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from torch import nn
 
 

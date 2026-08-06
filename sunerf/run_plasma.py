@@ -3,9 +3,9 @@ import os
 import warnings
 
 import torch
-from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint, LambdaCallback
-from pytorch_lightning.loggers import WandbLogger
+from lightning.pytorch import Trainer
+from lightning.pytorch.callbacks import ModelCheckpoint, LambdaCallback
+from lightning.pytorch.loggers import WandbLogger
 
 from sunerf.data.loader.multi_instrument import MultiInstrumentDataModule
 from sunerf.model.plasma import PlasmaSuNeRFModule, save_plasma_sunerf

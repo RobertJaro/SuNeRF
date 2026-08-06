@@ -26,29 +26,18 @@ from sunerf.data.coronagraph.prep_common import (
     add_common_prep_arguments,
     common_kwargs_from_args,
     ensure_tb_pb_output_dirs,
+    select_items_by_time,
+    should_write_output,
 )
 
 
 class PunchPrep:
     """Callable helper for multiprocessing conversion of PUNCH FITS files."""
 
-    def __init__(self, out_path, overwrite=True, occ_min=None, occ_max=None, max_radius=None, resize=None,
-                 clip_min=None, clip_max=None, value_min=None, value_max=None,
-                 filter_bright_objects=False, bright_object_threshold=10.0):
+    def __init__(self, out_path, overwrite=False, **preprocess_kwargs):
         self.out_path = out_path
         self.overwrite = overwrite
-        self.map_preprocessor = MapPreprocessor(
-            occ_min=occ_min,
-            occ_max=occ_max,
-            max_radius=max_radius,
-            resize=resize,
-            clip_min=clip_min,
-            clip_max=clip_max,
-            value_min=value_min,
-            value_max=value_max,
-            filter_bright_objects=filter_bright_objects,
-            bright_object_threshold=bright_object_threshold,
-        )
+        self.map_preprocessor = MapPreprocessor(**preprocess_kwargs)
 
         self.tb_out_path, self.pb_out_path = ensure_tb_pb_output_dirs(out_path)
 
@@ -77,7 +66,9 @@ class PunchPrep:
         tb_out = os.path.join(self.tb_out_path, basename)
         pb_out = os.path.join(self.pb_out_path, basename)
 
-        if os.path.exists(tb_out) and os.path.exists(pb_out) and not self.overwrite:
+        write_tb = should_write_output(tb_out, self.overwrite)
+        write_pb = should_write_output(pb_out, self.overwrite)
+        if not write_tb and not write_pb:
             return tb_out, pb_out
 
         try:
@@ -85,8 +76,10 @@ class PunchPrep:
             tb_map = self.map_preprocessor.prepare_map(tb_map)
             pb_map = self.map_preprocessor.prepare_map(pb_map)
 
-            tb_map.save(tb_out, overwrite=True)
-            pb_map.save(pb_out, overwrite=True)
+            if write_tb:
+                tb_map.save(tb_out, overwrite=self.overwrite)
+            if write_pb:
+                pb_map.save(pb_out, overwrite=self.overwrite)
         except Exception as e:
             print(f"[{os.getpid()}] ERROR in {basename}: {e}", flush=True)
             raise
@@ -97,7 +90,7 @@ def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--data_path", type=str, required=True, help="Glob pattern for PUNCH FITS files.")
     parser.add_argument("--out_path", type=str, required=True, help="Output directory for preprocessed maps.")
-    add_common_prep_arguments(parser, include_clip=True)
+    add_common_prep_arguments(parser)
     parser.add_argument(
         "--num_workers",
         type=int,
@@ -109,10 +102,14 @@ def main():
     files = sorted(glob(args.data_path))
     if not files:
         raise FileNotFoundError(f"No files matched: {args.data_path}")
+    original_count = len(files)
+    files = select_items_by_time(files, start=args.start, end=args.end)
+    if len(files) != original_count:
+        print(f"Time-range filtering kept {len(files)} of {original_count} files.")
 
     prepper = PunchPrep(
         args.out_path,
-        overwrite=not args.no_overwrite,
+        overwrite=args.overwrite,
         **common_kwargs_from_args(args),
     )
 

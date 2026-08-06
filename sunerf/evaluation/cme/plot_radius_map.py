@@ -19,6 +19,8 @@ if __name__ == '__main__':
     parser.add_argument('--radius', type=float, nargs='+', help='Radii to plot in solar radii', default=[3, 5, 8, 10])
     parser.add_argument('--projection', type=str, choices=['lat', 'sinlat'], default='sinlat',
                         help='Latitude projection for radius maps')
+    parser.add_argument('--time_range', type=str, nargs=2, metavar=('START', 'END'), default=None,
+                        help='Render maps within this ISO time range instead of the full observation range')
 
     args = parser.parse_args()
 
@@ -35,9 +37,13 @@ if __name__ == '__main__':
 
     observer_longitudes = set([o['longitude'] % (360 * u.deg) for o in observers])
     observer_times = set([o['time'] for o in observers])
-    min_time = min(observer_times)
-    max_time = max(observer_times)
-    mid_time = (max_time - min_time) / 2 + min_time
+    if args.time_range is None:
+        min_time = min(observer_times)
+        max_time = max(observer_times)
+    else:
+        min_time, max_time = [pd.to_datetime(value) for value in args.time_range]
+        if min_time > max_time:
+            raise ValueError('--time_range start must be earlier than or equal to end.')
 
     n_points = 100
     radius = args.radius * u.R_sun

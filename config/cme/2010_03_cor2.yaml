@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_v01"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2010_03_cor2_v01'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_v17"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2010_03_cor2_v02'
 
 instruments:
   - type: 'default'
@@ -10,28 +10,43 @@ instruments:
     key: 'STEREO_B_COR2'
     scaling: {type: 'asinh', a: 1.0e-3 }
     correction: { corrections: [ 'f_corona', 'pB_add', 'tB_add', 'pB_mul', 'tB_mul' ] }
+  - type: 'default'
+    key: 'LASCO_C2'
+    scaling: {type: 'asinh', a: 1.0e-3 }
+    correction: { corrections: [ 'f_corona', 'pB_add', 'tB_add', 'pB_mul', 'tB_mul' ] }
 
 model:
   use_carrington_projection: True
+  model_type: 'split_temporal'
+  cold_steps: 2000
+  warm_steps: 2000
 
 data:
   train_datasets:
     - type: 'COR'
       key: 'STEREO_A_COR2'
       instrument_key: 'STEREO_A_COR2'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/*"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/tB/*"
+      data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03/prep/stereo_a_cor2/pB/*"
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03/prep/stereo_a_cor2/tB/*"
       batch_size: 1024
       debug: False
-      correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_a_cor2_tB_correction.npy", pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_a_cor2_pB_correction.npy" }
+      correction_config: { type: file, tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03/prep/masks/stereo_a_cor2_tB_correction.npy", pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03/prep/masks/stereo_a_cor2_pB_correction.npy" }
     - type: 'COR'
       key: 'STEREO_B_COR2'
       instrument_key: 'STEREO_B_COR2'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/pB/*"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/tB/*"
+      data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03/prep/stereo_b_cor2/pB/*"
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03/prep/stereo_b_cor2/tB/*"
       batch_size: 1024
       debug: False
-      correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_b_cor2_tB_correction.npy", pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_b_cor2_pB_correction.npy" }
+      correction_config: { type: file, tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03/prep/masks/stereo_b_cor2_tB_correction.npy", pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03/prep/masks/stereo_b_cor2_pB_correction.npy" }
+    - type: 'LASCO'
+      key: 'LASCO_C2'
+      instrument_key: 'LASCO_C2'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/lasco_c2/pB/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/lasco_c2/tB/*"
+      batch_size: 1024
+      debug: False
+
     - type: 'random'
       name: 'continuity'
       radius_range: [ 1.5, 17.0 ]
@@ -44,17 +59,22 @@ data:
     - type: 'COR'
       key: 'STEREO_A_COR2'
       instrument_key: 'STEREO_A_COR2'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/20100319_200815_1P4c2A.fts"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/tB/20100319_200815_1B4c2A.fts"
-      correction_config: {type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_a_cor2_tB_correction.npy", pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_a_cor2_pB_correction.npy" }
+      data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03/prep/stereo_a_cor2/pB/20100319_200815_1P4c2A.fts"
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03/prep/stereo_a_cor2/tB/20100319_200815_1B4c2A.fts"
+      correction_config: {type: file, tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03/prep/masks/stereo_a_cor2_tB_correction.npy", pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03/prep/masks/stereo_a_cor2_pB_correction.npy" }
 
     - type: 'COR'
       key: 'STEREO_B_COR2'
       instrument_key: 'STEREO_B_COR2'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/pB/20100319_200815_1P4c2B.fts"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/tB/20100319_200815_1B4c2B.fts"
-      correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_b_cor2_tB_correction.npy", pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/masks/stereo_b_cor2_pB_correction.npy" }
-
+      data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03/prep/stereo_b_cor2/pB/20100319_200815_1P4c2B.fts"
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03/prep/stereo_b_cor2/tB/20100319_200815_1B4c2B.fts"
+      correction_config: { type: file, tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03/prep/masks/stereo_b_cor2_tB_correction.npy", pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03/prep/masks/stereo_b_cor2_pB_correction.npy" }
+    - type: 'LASCO'
+      key: 'LASCO_C2'
+      instrument_key: 'LASCO_C2'
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/lasco_c2/pB/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/lasco_c2/tB/*"
+      time_range: "2010-03-19T20:08:15"
 
     - key: valid_radial
       type: radial_slices
@@ -79,11 +99,15 @@ callbacks:
     ds_key: 'STEREO_A_COR2'
   - type: 'thomson_image'
     ds_key: 'STEREO_B_COR2'
+  - type: 'thomson_image'
+    ds_key: 'LASCO_C2'
   # correction images
   - type: 'correction_image'
     ds_key: 'STEREO_A_COR2'
   - type: 'correction_image'
     ds_key: 'STEREO_B_COR2'
+  - type: 'correction_image'
+    ds_key: 'LASCO_C2'
 
   - type: radial_slices
     ds_key: valid_radial
@@ -104,10 +128,11 @@ sampling:
 
 lambda:
   image: 1.0
-  ratio: 1.0
-  radial: 1.0e-4
-  continuity: 1.0e-4
-  velocity: 1.0e-1
+  ratio: 0 # 1.0
+  radial: 0 # 1.0e-4
+  continuity: 0 # 1.0e-4
+  velocity: 0 # 1.0e-1
 
 training:
   log_every_n_steps: 10000
+  physics_update_interval: 10

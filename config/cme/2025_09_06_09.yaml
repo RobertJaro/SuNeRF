@@ -97,6 +97,7 @@ data:
       unit: 'solRad'
       batch_size: 4096
       volume_uniform_sampling: True
+      radial_sampling_exponent: 2
 
   valid_datasets:
     - type: 'COR'

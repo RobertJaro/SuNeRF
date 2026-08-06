@@ -10,13 +10,13 @@ from matplotlib import pyplot as plt
 from matplotlib.cm import get_cmap
 from matplotlib.colors import Normalize, LogNorm, TwoSlopeNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from pytorch_lightning import Callback
+from lightning.pytorch import Callback
+from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from skimage.metrics import structural_similarity
 from sklearn.linear_model import LinearRegression
 
 from sunerf.data.date_util import unnormalize_datetime
 from sunerf.data.utils import sdo_img_norm
-from pytorch_lightning.utilities import rank_zero_only
 
 class BaseCallback(Callback):
 
@@ -438,16 +438,17 @@ class CorrectionImageCallback(BaseCallback):
                 cmap = "Reds"
 
             # ------------------------------------------------
-            # 3) Multiplicative corrections -> centered at 1
+            # 3) Multiplicative corrections -> log scale centered at 1
             # ------------------------------------------------
             elif k in self.multiplicative_fields:
-                deviation = img2d - 1.0
-                vmax_abs = np.nanmax(np.abs(deviation))
-                if not np.isfinite(vmax_abs) or vmax_abs <= 0.0:
-                    vmax_abs = 1e-8
-                norm = TwoSlopeNorm(vcenter=1.0,
-                                    vmin=1.0 - vmax_abs,
-                                    vmax=1.0 + vmax_abs)
+                positive_values = img2d[np.isfinite(img2d) & (img2d > 0.0)]
+                if positive_values.size:
+                    max_abs_log = float(np.max(np.abs(np.log(positive_values))))
+                    factor = max(float(np.exp(max_abs_log)), 1.0 + 1e-6)
+                else:
+                    factor = 1.0 + 1e-6
+                # Reciprocal limits place 1 exactly at the midpoint of LogNorm.
+                norm = LogNorm(vmin=1.0 / factor, vmax=factor)
                 cmap = "RdBu_r"
 
             # ------------------------------------------------
@@ -525,7 +526,7 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
         cm = copy.deepcopy(get_cmap(cmap))
         cm.set_bad('green', 1.)
         masked = np.ma.array(data2d, mask=~good)
-        im = ax.imshow(masked, norm=norm, cmap=cm, origin='lower')
+        im = ax.imshow(masked, norm=norm, cmap=cm, origin='lower', interpolation='nearest')
         ax.set_axis_off()
         ax.set_title(title)
         cb = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
@@ -658,11 +659,11 @@ class CubeCallback(BaseCallback):
 
 class LatitudeSliceCallback(BaseCallback):
 
-    def __init__(self, cube_shape, latitude, rho_normalization, Rs_per_ds, seconds_per_dt, **kwargs):
+    def __init__(self, cube_shape, latitude, drho_cm3, Rs_per_ds, seconds_per_dt, **kwargs):
         super().__init__(**kwargs)
         self.latitude = np.deg2rad(latitude)
         self.cube_shape = cube_shape
-        self.rho_normalization = 1.12e6  # TODO: rho_normalization
+        self.drho_cm3 = float(drho_cm3)
         self.velocity_normalization = (Rs_per_ds / seconds_per_dt) * (1 * u.solRad / u.s).to_value(u.km / u.s)
 
     @rank_zero_only
@@ -673,7 +674,7 @@ class LatitudeSliceCallback(BaseCallback):
 
         spherical_coords = outputs['spherical_coords'].reshape(self.cube_shape + (3,)).cpu().numpy()
         rho_true = outputs['rho_true'].reshape(self.cube_shape).cpu().numpy()
-        rho_pred = outputs['rho_pred'].reshape(self.cube_shape).cpu().numpy() * self.rho_normalization
+        rho_pred = outputs['rho_pred'].reshape(self.cube_shape).cpu().numpy() * self.drho_cm3
         velocity = outputs['v_pred'].reshape(self.cube_shape + (3,)).cpu().numpy() * self.velocity_normalization
 
         lat_idx = np.argmin(np.abs(spherical_coords[0, :, 0, 1] - self.latitude))
@@ -702,12 +703,12 @@ class LatitudeSliceCallback(BaseCallback):
 
 class VelocitySliceCallback(BaseCallback):
 
-    def __init__(self, cube_shape, latitude, rho_normalization, Rs_per_ds, seconds_per_dt, plot_velocities=True,
+    def __init__(self, cube_shape, latitude, drho_cm3, Rs_per_ds, seconds_per_dt, plot_velocities=True,
                  **kwargs):
         super().__init__(**kwargs)
         self.latitude = np.deg2rad(latitude)
         self.cube_shape = cube_shape
-        self.rho_normalization = 1.12e6  # TODO: rho_normalization
+        self.drho_cm3 = float(drho_cm3)
         self.velocity_normalization = (Rs_per_ds / seconds_per_dt) * (1 * u.solRad / u.s).to_value(u.km / u.s)
         self.Rs_per_ds = Rs_per_ds
         self.plot_velocities = plot_velocities
@@ -720,7 +721,7 @@ class VelocitySliceCallback(BaseCallback):
 
         query_points = outputs['query_points'].reshape(self.cube_shape + (4,)).cpu().numpy()
         query_points[..., :3] = query_points[..., :3] * self.Rs_per_ds
-        rho_pred = outputs['rho_pred'].reshape(self.cube_shape).cpu().numpy() * self.rho_normalization
+        rho_pred = outputs['rho_pred'].reshape(self.cube_shape).cpu().numpy() * self.drho_cm3
         velocity = outputs['v_pred'].reshape(self.cube_shape + (3,)).cpu().numpy() * self.velocity_normalization
 
         n_times = query_points.shape[3]
@@ -767,11 +768,11 @@ class VelocitySliceCallback(BaseCallback):
 
 class LongitudeSliceCallback(BaseCallback):
 
-    def __init__(self, cube_shape, longitude, rho_normalization, Rs_per_ds, seconds_per_dt, **kwargs):
+    def __init__(self, cube_shape, longitude, drho_cm3, Rs_per_ds, seconds_per_dt, **kwargs):
         super().__init__(**kwargs)
         self.longitude = np.deg2rad(longitude)
         self.cube_shape = cube_shape
-        self.rho_normalization = 1.12e6  # TODO: rho_normalization
+        self.drho_cm3 = float(drho_cm3)
         self.velocity_normalization = (Rs_per_ds / seconds_per_dt) * (1 * u.solRad / u.s).to_value(u.km / u.s)
 
     @rank_zero_only
@@ -782,7 +783,7 @@ class LongitudeSliceCallback(BaseCallback):
 
         spherical_coords = outputs['spherical_coords'].reshape(self.cube_shape + (3,)).cpu().numpy()
         rho_true = outputs['rho_true'].reshape(self.cube_shape).cpu().numpy()
-        rho_pred = outputs['rho_pred'].reshape(self.cube_shape).cpu().numpy() * self.rho_normalization
+        rho_pred = outputs['rho_pred'].reshape(self.cube_shape).cpu().numpy() * self.drho_cm3
         velocity = outputs['v_pred'].reshape(self.cube_shape + (3,)).cpu().numpy() * self.velocity_normalization
 
         lon_idx = np.argmin(np.abs(spherical_coords[0, 0, :, 2] - self.longitude))
@@ -822,7 +823,7 @@ class RadialSlicesCallback(BaseCallback):
       - uses constrained_layout
     """
 
-    def __init__(self, cube_shape, radii, rho_normalization, **kwargs):
+    def __init__(self, cube_shape, radii, drho_cm3, **kwargs):
         """
         Parameters
         ----------
@@ -834,7 +835,7 @@ class RadialSlicesCallback(BaseCallback):
         super().__init__(**kwargs)
         self.cube_shape = cube_shape
         self.radii = np.asarray(radii, dtype=np.float32)
-        self.rho_normalization = float(rho_normalization)
+        self.drho_cm3 = float(drho_cm3)
 
         if len(self.radii) != cube_shape[0]:
             raise ValueError(
@@ -849,7 +850,7 @@ class RadialSlicesCallback(BaseCallback):
 
         Nr, Nlat, Nlon, Nt = self.cube_shape
 
-        rho = out["rho_pred"].detach().cpu().numpy().reshape(-1) * self.rho_normalization
+        rho = out["rho_pred"].detach().cpu().numpy().reshape(-1) * self.drho_cm3
         rho = rho.reshape(Nr, Nlat, Nlon, Nt)
 
         sph = out["spherical_coords"].detach().cpu().numpy().reshape(-1, 3)
@@ -943,12 +944,12 @@ class LongitudeSlicesCallback(BaseCallback):
       - Colorbars sit in the dedicated last column (all the way to the right).
     """
 
-    def __init__(self, cube_shape, rho_normalization, Rs_per_ds, seconds_per_dt,
+    def __init__(self, cube_shape, drho_cm3, Rs_per_ds, seconds_per_dt,
                  longitude_deg=(0, 30, 60, 90, 120, 150), **kwargs):
         super().__init__(**kwargs)
         self.cube_shape = cube_shape
         self.longitude_deg = np.asarray(longitude_deg, dtype=np.float32)
-        self.rho_normalization = float(rho_normalization)
+        self.drho_cm3 = float(drho_cm3)
         self.velocity_normalization = float((Rs_per_ds * u.solRad / (seconds_per_dt * u.s)).to_value(u.km / u.s))
 
     @rank_zero_only
@@ -959,7 +960,7 @@ class LongitudeSlicesCallback(BaseCallback):
 
         Nr, Nlat, Nlon, Nt = self.cube_shape
 
-        rho = out["rho_pred"].detach().cpu().numpy().reshape(-1) * self.rho_normalization
+        rho = out["rho_pred"].detach().cpu().numpy().reshape(-1) * self.drho_cm3
         rho = rho.reshape(Nr, Nlat, Nlon, Nt)
 
         sph = out["spherical_coords"].detach().cpu().numpy().reshape(-1, 3)
@@ -1026,7 +1027,7 @@ class LongitudeSlicesCallback(BaseCallback):
                         ha="right",
                     )
 
-                ax.set_xlabel("Latitude (rad)")
+                ax.set_xlabel("Polar angle (rad)")
                 ax.set_ylabel(r"Radius (R$_\odot$)")
                 ax.set_rlim((0, None))
 
@@ -1093,7 +1094,7 @@ class LongitudeSlicesCallback(BaseCallback):
                         ha="right",
                     )
 
-                ax.set_xlabel("Latitude (rad)")
+                ax.set_xlabel("Polar angle (rad)")
                 ax.set_ylabel(r"Radius (R$_\odot$)")
                 ax.set_rlim((0, None))
 
@@ -1200,6 +1201,115 @@ class FixedViewpointSeriesCallback(BaseCallback):
         plt.close(fig)
 
 
+class InSituTimeSeriesCallback(BaseCallback):
+    """
+    Plot in-situ observations against SuNeRF samples along the spacecraft trajectory.
+    Expects validation outputs from InSituDataset wrapped as QUERY_POINTS.
+    """
+
+    def __init__(self, drho_cm3, Rs_per_ds, seconds_per_dt, **kwargs):
+        super().__init__(**kwargs)
+        self.drho_cm3 = float(drho_cm3)
+        self.velocity_normalization = float((Rs_per_ds * u.solRad / (seconds_per_dt * u.s)).to_value(u.km / u.s))
+
+    @rank_zero_only
+    def on_validation_end(self, trainer, pl_module):
+        out = self.get_validation_outputs(pl_module)
+        if out is None or "density_cm3" not in out:
+            return
+
+        t_days = out.get("time_days", None)
+        if t_days is not None:
+            x = t_days.detach().cpu().numpy().reshape(-1).astype(np.float64)
+            xlabel = "days from first in-situ sample"
+        else:
+            t = out.get("time_unix", None)
+            if t is not None:
+                t = t.detach().cpu().numpy().reshape(-1).astype(np.float64)
+                x = (t - np.nanmin(t)) / 86400.0
+                xlabel = "days from first in-situ sample"
+            else:
+                x = np.arange(out["density_cm3"].shape[0], dtype=np.float32)
+                xlabel = "sample"
+
+        density_obs = out["density_cm3"].detach().cpu().numpy().reshape(-1)
+        density_pred = out["rho_pred"].detach().cpu().numpy().reshape(-1) * self.drho_cm3
+        has_density = out.get("has_density", None)
+        if has_density is not None:
+            has_density = has_density.detach().cpu().numpy().reshape(-1) > 0.5
+        else:
+            has_density = np.isfinite(density_obs)
+
+        fig, axs = plt.subplots(3, 2, figsize=(12, 10), dpi=150)
+
+        ax = axs[0, 0]
+        ax.plot(x[has_density], density_obs[has_density], color="black", lw=1.0, label=self.name)
+        ax.plot(x, density_pred, color="tab:orange", lw=1.0, label="SuNeRF")
+        ax.set_yscale("log")
+        ax.set_ylabel(r"$n_e$ [cm$^{-3}$]")
+        ax.set_xlabel(xlabel)
+        ax.legend()
+
+        ax = axs[0, 1]
+        good_density = has_density & np.isfinite(density_obs) & np.isfinite(density_pred) & (density_obs > 0) & (density_pred > 0)
+        if np.any(good_density):
+            ax.scatter(density_obs[good_density], density_pred[good_density], s=4, alpha=0.35)
+            lo = np.nanmin([density_obs[good_density].min(), density_pred[good_density].min()])
+            hi = np.nanmax([density_obs[good_density].max(), density_pred[good_density].max()])
+            ax.plot([lo, hi], [lo, hi], "r--", lw=1)
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+        ax.set_xlabel(r"In-situ $n_e$ [cm$^{-3}$]")
+        ax.set_ylabel(r"SuNeRF $n_e$ [cm$^{-3}$]")
+
+        if "velocity_radial_kms" in out and "velocity_radial_pred" in out:
+            vr_obs = out["velocity_radial_kms"].detach().cpu().numpy().reshape(-1)
+            vr_pred = out["velocity_radial_pred"].detach().cpu().numpy().reshape(-1) * self.velocity_normalization
+            has_velocity = out.get("has_velocity", None)
+            if has_velocity is not None:
+                has_velocity = has_velocity.detach().cpu().numpy().reshape(-1) > 0.5
+            else:
+                has_velocity = np.isfinite(vr_obs)
+
+            ax = axs[1, 0]
+            ax.plot(x[has_velocity], vr_obs[has_velocity], color="black", lw=1.0, label=self.name)
+            ax.plot(x, vr_pred, color="tab:blue", lw=1.0, label="SuNeRF")
+            ax.set_ylabel(r"$v_r$ [km s$^{-1}$]")
+            ax.set_xlabel(xlabel)
+            ax.legend()
+
+            ax = axs[1, 1]
+            good_v = has_velocity & np.isfinite(vr_obs) & np.isfinite(vr_pred)
+            if np.any(good_v):
+                ax.scatter(vr_obs[good_v], vr_pred[good_v], s=4, alpha=0.35)
+                lo = np.nanmin([vr_obs[good_v].min(), vr_pred[good_v].min()])
+                hi = np.nanmax([vr_obs[good_v].max(), vr_pred[good_v].max()])
+                ax.plot([lo, hi], [lo, hi], "r--", lw=1)
+            ax.set_xlabel(r"In-situ $v_r$ [km s$^{-1}$]")
+            ax.set_ylabel(r"SuNeRF $v_r$ [km s$^{-1}$]")
+        else:
+            axs[1, 0].set_axis_off()
+            axs[1, 1].set_axis_off()
+
+        if "radius_rsun" in out:
+            radius = out["radius_rsun"].detach().cpu().numpy().reshape(-1)
+            axs[2, 0].plot(x, radius, color="tab:green", lw=1.0)
+            axs[2, 0].set_ylabel(r"In-situ radius [R$_\odot$]")
+            axs[2, 0].set_xlabel(xlabel)
+        else:
+            axs[2, 0].set_axis_off()
+
+        density_residual = np.log10(np.clip(density_pred, 1e-30, None)) - np.log10(np.clip(density_obs, 1e-30, None))
+        axs[2, 1].plot(x, density_residual, color="tab:red", lw=1.0)
+        axs[2, 1].axhline(0.0, color="black", lw=0.8, ls="--")
+        axs[2, 1].set_ylabel(r"$\Delta \log_{10}(n_e)$")
+        axs[2, 1].set_xlabel(xlabel)
+
+        fig.tight_layout()
+        wandb.log({f"insitu.timeseries.{self.name}": wandb.Image(fig)})
+        plt.close(fig)
+
+
 class StarBackgroundCallback(BaseCallback):
     """
     Visualize StarBackgroundModule output (additive background) in log scale.
@@ -1289,5 +1399,5 @@ class FullStarBackgroundCallback(BaseCallback):
             axes[c].set_ylabel("Latitude [deg]")
 
         fig.tight_layout()
-        wandb.log({f"star_background_full.{self.name}": wandb.Image(fig)})
+        wandb.log({f"full_star_background.{self.name}": wandb.Image(fig)})
         plt.close(fig)

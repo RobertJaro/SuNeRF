@@ -3,23 +3,20 @@ import os
 import warnings
 
 import torch
-import numpy as np
-from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint, LambdaCallback
-from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.strategies import DDPStrategy
-from pytorch_lightning.utilities import rank_zero_only
+from lightning.pytorch import Trainer
+from lightning.pytorch.callbacks import ModelCheckpoint, LambdaCallback
+from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.strategies import DDPStrategy
+from lightning.pytorch.utilities.rank_zero import rank_zero_only
 
 from sunerf.data.loader.thomson_instrument import ThomsonDataModule
 from sunerf.model.thomson import ThomsonSuNeRFModule, save_thomson_sunerf
+from sunerf.physics.thomson import MSB, SIGMA_NE, electron_density_normalization_cm3
 from sunerf.train.callback import ThomsonImageCallback, LatitudeSliceCallback, LongitudeSliceCallback, CubeCallback, \
     VelocitySliceCallback, CorrectionImageCallback, FullStarBackgroundCallback, RadialSlicesCallback, \
     LongitudeTimeVelocityMagCallback, FixedViewpointSeriesCallback, \
-    LongitudeSlicesCallback
+    LongitudeSlicesCallback, InSituTimeSeriesCallback
 from sunerf.train.util import load_yaml_config
-
-MSB = 4.67E+20  # ph / cm^2 / s / sr
-SIGMA_NE = 7.95e-26
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -52,7 +49,12 @@ if __name__ == '__main__':
     log_every_n_steps = training_config['log_every_n_steps'] if 'log_every_n_steps' in training_config else None
     check_val_every_n_epoch = training_config[
         'check_val_every_n_epoch'] if 'check_val_every_n_epoch' in training_config else 1
-    ckpt_path = training_config['meta_path'] if 'meta_path' in training_config else 'last'
+    init_path = training_config.get('init_path')
+    ignore_unexpected_state_prefixes = tuple(training_config.get('ignore_unexpected_state_prefixes', ()))
+    ckpt_path = training_config.get('meta_path', None if init_path else 'last')
+    if init_path is not None and 'meta_path' in training_config:
+        raise ValueError("training.init_path and training.meta_path are mutually exclusive.")
+    physics_update_interval = training_config.get('physics_update_interval', 1)
 
     # initialize logger
     logger = WandbLogger(**logging_config, save_dir=work_directory)
@@ -81,6 +83,11 @@ if __name__ == '__main__':
 
     _load_data_module()  # ensure only rank 0 loads/saves the data module
     data_module = torch.load(data_module_save_path, weights_only=False)  # all ranks load the data module
+    if not hasattr(data_module, "drho_cm3") or data_module.drho_cm3 is None:
+        raise RuntimeError(
+            "Loaded data module does not define drho_cm3. "
+            "Remove the cached data_module.pkl or rerun with --reload."
+        )
 
     # initialize SuNeRF model
     sunerf = ThomsonSuNeRFModule(instruments=instruments,
@@ -88,12 +95,47 @@ if __name__ == '__main__':
                                  validation_dataset_mapping=data_module.validation_dataset_mapping,
                                  model_config=model_config,
                                  sampling_config=sampling_config, **module_config,
-                                 lambda_config=lambda_config, shuffle_config=shuffle_config)
+                                 lambda_config=lambda_config, shuffle_config=shuffle_config,
+                                 physics_update_interval=physics_update_interval)
+
+    # Initialize a new training stage from model weights without restoring the
+    # previous optimizer, scheduler, epoch, or global-step state.
+    if init_path is not None:
+        schedule_attributes = ('alpha_max', 'cold_steps', 'warm_steps')
+        temporal_model = getattr(sunerf.model, 'model', None)
+        schedule_config = {
+            name: getattr(temporal_model, name).detach().clone()
+            for name in schedule_attributes
+            if temporal_model is not None and hasattr(temporal_model, name)
+        }
+        checkpoint = torch.load(init_path, map_location='cpu', weights_only=False)
+        state_dict = checkpoint.get('state_dict', checkpoint)
+        if ignore_unexpected_state_prefixes:
+            ignored_keys = [
+                key for key in state_dict
+                if key.startswith(ignore_unexpected_state_prefixes)
+            ]
+            for key in ignored_keys:
+                state_dict.pop(key)
+            if ignored_keys:
+                warnings.warn(
+                    "Ignoring configured legacy checkpoint keys: " + ", ".join(sorted(ignored_keys))
+                )
+        sunerf.load_state_dict(state_dict, strict=True)
+        # Schedule buffers are stage configuration, not learned weights. Keep
+        # the values from this YAML and initialize their derived state at step 0.
+        for name, value in schedule_config.items():
+            getattr(temporal_model, name).copy_(value)
+        sunerf.model.step(0)
 
     image_scaling = list(data_module.config.values())[0]['image_scaling']
-    first_rendering_module = next(iter(sunerf.rendering_modules.values()))
-    c0 = float(first_rendering_module.C_0.detach().cpu().numpy())
-    rho_normalization = image_scaling / c0 * (MSB * np.pi * SIGMA_NE / 2.0)
+    drho_cm3 = data_module.drho_cm3
+    expected_drho_cm3 = electron_density_normalization_cm3(image_scaling, data_module.Rs_per_ds)
+    if abs(float(drho_cm3) - expected_drho_cm3) > max(1e-6 * expected_drho_cm3, 1e-12):
+        raise RuntimeError(
+            "Loaded data_module.pkl has a stale Thomson density normalization. "
+            "Rerun with --reload to rebuild it with the MSB-based normalization."
+        )
 
     # initialize callbacks
     checkpoint_callback = ModelCheckpoint(dirpath=base_path,
@@ -128,7 +170,7 @@ if __name__ == '__main__':
                 ds_key=ds_key,
                 latitude=cb_cfg.get("latitude", 0),
                 cube_shape=base.cube_shape,
-                rho_normalization=rho_normalization,
+                drho_cm3=drho_cm3,
                 Rs_per_ds=data_module.Rs_per_ds,
                 seconds_per_dt=data_module.seconds_per_dt,
             )
@@ -138,7 +180,7 @@ if __name__ == '__main__':
                 ds_key=ds_key,
                 longitude=cb_cfg.get("longitude", 0),
                 cube_shape=base.cube_shape,
-                rho_normalization=rho_normalization,
+                drho_cm3=drho_cm3,
                 Rs_per_ds=data_module.Rs_per_ds,
                 seconds_per_dt=data_module.seconds_per_dt,
             )
@@ -156,7 +198,7 @@ if __name__ == '__main__':
                 ds_key=ds_key,
                 latitude=cb_cfg.get("latitude", 0),
                 cube_shape=base.cube_shape,
-                rho_normalization=rho_normalization,
+                drho_cm3=drho_cm3,
                 Rs_per_ds=data_module.Rs_per_ds,
                 seconds_per_dt=data_module.seconds_per_dt,
             )
@@ -173,7 +215,7 @@ if __name__ == '__main__':
                 ds_key=ds_key,
                 cube_shape=base.cube_shape,
                 radii=base.radii,
-                rho_normalization=rho_normalization,
+                drho_cm3=drho_cm3,
                 name=cb_cfg.get("name", ds_key),
             )
 
@@ -186,7 +228,7 @@ if __name__ == '__main__':
             callback = LongitudeSlicesCallback(
                 ds_key=ds_key,
                 cube_shape=base.cube_shape,
-                rho_normalization=rho_normalization,
+                drho_cm3=drho_cm3,
                 Rs_per_ds=data_module.Rs_per_ds,
                 seconds_per_dt=data_module.seconds_per_dt,
                 longitude_deg=base.longitude_deg,
@@ -219,27 +261,21 @@ if __name__ == '__main__':
                 name=cb_cfg.get("name", ds_key),
             )
 
-        # -----------------------------
-        # Existing: star background (log scale)
-        # NOTE: you called it star_background_full; keep name for backward compat
-        # expects base.image_shape (recommended) OR base.sky_shape (if you kept that naming)
-        # -----------------------------
-        elif cb_type in ("star_background_full", "full_star_background"):
-            # Prefer image_shape (H,W) since your FullStarBackgroundDataset sets that.
-            if hasattr(base, "image_shape"):
-                image_shape = base.image_shape
-                callback = FullStarBackgroundCallback(
-                    ds_key=ds_key,
-                    image_shape=image_shape,
-                    name=cb_cfg.get("name", ds_key),
-                )
-            else:
-                # fallback if you used sky_shape naming previously
-                callback = FullStarBackgroundCallback(
-                    ds_key=ds_key,
-                    image_shape=base.sky_shape,
-                    name=cb_cfg.get("name", ds_key),
-                )
+        elif cb_type == "insitu_timeseries":
+            callback = InSituTimeSeriesCallback(
+                ds_key=ds_key,
+                drho_cm3=base.drho_cm3,
+                Rs_per_ds=data_module.Rs_per_ds,
+                seconds_per_dt=data_module.seconds_per_dt,
+                name=cb_cfg.get("name", ds_key),
+            )
+
+        elif cb_type == "full_star_background":
+            callback = FullStarBackgroundCallback(
+                ds_key=ds_key,
+                image_shape=base.image_shape,
+                name=cb_cfg.get("name", ds_key),
+            )
 
         else:
             raise ValueError(f"Unknown callback type '{cb_type}'")

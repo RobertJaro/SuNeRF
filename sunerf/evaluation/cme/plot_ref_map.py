@@ -19,6 +19,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Visualize CME')
     parser.add_argument('--sunerf_path', type=str, required=True, help='Path to SuNeRF save state')
     parser.add_argument('--ref_map', type=str, required=False, help='Path to reference map')
+    parser.add_argument('--instrument_key', type=str, required=False,
+                        help='Instrument key to use for rendering; defaults to the loader default if omitted')
     parser.add_argument('--out_path', type=str, help='Path to output directory', default=None)
 
     args = parser.parse_args()
@@ -36,7 +38,7 @@ if __name__ == '__main__':
 
     ref_map = Map(args.ref_map)
 
-    model_out = sunerf_loader.load_map(ref_map, progress=False)
+    model_out = sunerf_loader.load_map(ref_map, progress=False, instrument_key=args.instrument_key)
 
     tB_map = model_out['tB_map']
     pB_map = model_out['pB_map']

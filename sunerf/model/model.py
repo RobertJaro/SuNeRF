@@ -70,7 +70,8 @@ class SplitTemporalSirenModel(nn.Module):
             # dynamic blending
             alpha=1.0,
             cold_steps=2e4,
-            warm_steps=1e4):
+            warm_steps=1e4,
+            freeze_static=False):
         super().__init__()
         self.output_dim = output_dim
         self.alpha_max = nn.Parameter(torch.tensor(alpha, dtype=torch.float32), requires_grad=False)
@@ -108,6 +109,10 @@ class SplitTemporalSirenModel(nn.Module):
         self.head_static = nn.Linear(static_dim, output_dim)
         self.head_dynamic = nn.Linear(fusion_dim, output_dim)
 
+        if freeze_static:
+            self.static_net.requires_grad_(False)
+            self.head_static.requires_grad_(False)
+
     def forward(self, static_input, dynamic_input):
         static_feat = self.static_net(static_input)
         out_static = self.head_static(static_feat)
@@ -120,9 +125,9 @@ class SplitTemporalSirenModel(nn.Module):
         dynamic_feat = self.dynamic_net(dynamic_input)
 
         dynamic_feat = torch.cat([static_feat, dynamic_feat], dim=-1)
-        dynamic_feat = self.fusion_net(dynamic_feat)
+        fusion_feat = self.fusion_net(dynamic_feat)
 
-        out_dynamic = self.head_dynamic(dynamic_feat)
+        out_dynamic = self.head_dynamic(fusion_feat)
         return out_static + self.current_alpha * out_dynamic
 
     def step(self, global_step):
@@ -342,18 +347,16 @@ class SirenPlasmaModel(SirenModel):
 
 class RhoModel(nn.Module):
 
-    def __init__(self, Rs_per_ds, seconds_per_dt, use_carrington_projection=True,
-                 model_type='split_temporal', **kwargs):
+    def __init__(self, Rs_per_ds, seconds_per_dt, model_type='split_temporal', **kwargs):
         super().__init__()
         v = 300 * (u.km / u.s)
         v = v.to_value(u.solRad / u.s) / Rs_per_ds * seconds_per_dt  # normalize to model units
         self.v_radial = nn.Parameter(torch.tensor(v, dtype=torch.float32), requires_grad=False)
-        v_scale = 100 * (u.km / u.s)
+        v_scale = 500 * (u.km / u.s)
         v_scale = v_scale.to_value(u.solRad / u.s) / Rs_per_ds * seconds_per_dt  # normalize to model units
         self.v_scale = nn.Parameter(torch.tensor(v_scale, dtype=torch.float32), requires_grad=False)
         self.seconds_per_dt = seconds_per_dt
 
-        self.use_carrington_projection = use_carrington_projection
         self.model_type = model_type
         if model_type == 'static':
             self.model = SirenModel(in_dim=3, out_dim=4, **kwargs)

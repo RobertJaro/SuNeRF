@@ -1,5 +1,7 @@
 import torch
 from torch import nn
+from astropy import constants as const
+from astropy import units as u
 
 from sunerf.train.sampling import SphericalSampler, HierarchicalSampler, StratifiedSampler
 from sunerf.train.util import TimeShuffler, NormalTimeShuffler
@@ -8,9 +10,22 @@ from sunerf.train.util import TimeShuffler, NormalTimeShuffler
 class MultiResolutionRenderingModule(nn.Module):
 
     def __init__(self, coarse_model, fine_model, rendering_modules, Rs_per_ds,
-                 sampling_config=None, hierarchical_sampling_config=None, shuffle_config=None):
+                 seconds_per_dt=None, sampling_config=None, hierarchical_sampling_config=None, shuffle_config=None,
+                 light_travel_time=False):
         super().__init__()
         self.Rs_per_ds = Rs_per_ds
+        self.seconds_per_dt = seconds_per_dt
+        self.light_travel_time = bool(light_travel_time)
+        light_dt_per_model_distance = (
+            0.0 if seconds_per_dt is None
+            else Rs_per_ds / const.c.to_value(u.R_sun / u.s) / seconds_per_dt
+        )
+        self.register_buffer(
+            'light_dt_per_model_distance',
+            torch.tensor(float(light_dt_per_model_distance), dtype=torch.float32),
+        )
+        if self.light_travel_time and self.seconds_per_dt is None:
+            raise ValueError('seconds_per_dt is required when light_travel_time=True')
 
         self.rendering_modules = nn.ModuleDict(rendering_modules)
 
@@ -67,9 +82,7 @@ class MultiResolutionRenderingModule(nn.Module):
         sampling_out = self.sampler(rays_o, rays_d)
         query_points, z_vals = sampling_out['points'], sampling_out['z_vals']
 
-        # add time to query points
-        exp_times = times[:, None].repeat(1, query_points.shape[1], 1)
-        query_points_time = torch.cat([query_points, exp_times], -1)  # --> (x, y, z, t)
+        query_points_time = self.add_sample_times(query_points, rays_o, times)
 
         # Coarse model pass.
         coarse_raw = self.coarse_model(query_points_time)
@@ -86,9 +99,7 @@ class MultiResolutionRenderingModule(nn.Module):
                                                      hierarchical_out['z_vals'],
                                                      hierarchical_out['new_z_samples'])
 
-        # add time to query points = expand to dimensions of query points and slice one dimension
-        exp_times = times[:, None].repeat(1, query_points.shape[1], 1)
-        query_points_time = torch.cat([query_points, exp_times], -1)
+        query_points_time = self.add_sample_times(query_points, rays_o, times)
 
         fine_raw = self.fine_model(query_points_time)
         state = {**fine_raw, 'z_vals': z_vals_combined,
@@ -98,6 +109,15 @@ class MultiResolutionRenderingModule(nn.Module):
 
         return {'fine_out': fine_out, 'coarse_out': coarse_out,
                 'z_vals_stratified': z_vals, 'z_vals_hierarchical': z_hierarch}
+
+    def add_sample_times(self, query_points, rays_o, times):
+        exp_times = times[:, None].repeat(1, query_points.shape[1], 1)
+        if self.light_travel_time:
+            # Detector timestamps see each scattering point delayed by its observer distance.
+            observer_to_sample = torch.linalg.norm(query_points - rays_o[:, None, :], dim=-1, keepdim=True)
+            light_time = observer_to_sample * self.light_dt_per_model_distance
+            exp_times = exp_times - light_time
+        return torch.cat([query_points, exp_times], -1)
 
     def render_instruments(self, dataset_n_rays, dataset_instrument, state):
         ray_idx = 0
@@ -116,9 +136,22 @@ class MultiResolutionRenderingModule(nn.Module):
 class BasicRenderingModule(nn.Module):
 
     def __init__(self, model, rendering_modules, Rs_per_ds,
-                 sampling_config=None, hierarchical_sampling_config=None, shuffle_config=None):
+                 seconds_per_dt=None, sampling_config=None, hierarchical_sampling_config=None, shuffle_config=None,
+                 light_travel_time=False):
         super().__init__()
         self.Rs_per_ds = Rs_per_ds
+        self.seconds_per_dt = seconds_per_dt
+        self.light_travel_time = bool(light_travel_time)
+        light_dt_per_model_distance = (
+            0.0 if seconds_per_dt is None
+            else Rs_per_ds / const.c.to_value(u.R_sun / u.s) / seconds_per_dt
+        )
+        self.register_buffer(
+            'light_dt_per_model_distance',
+            torch.tensor(float(light_dt_per_model_distance), dtype=torch.float32),
+        )
+        if self.light_travel_time and self.seconds_per_dt is None:
+            raise ValueError('seconds_per_dt is required when light_travel_time=True')
 
         self.rendering_modules = nn.ModuleDict(rendering_modules)
 
@@ -175,9 +208,7 @@ class BasicRenderingModule(nn.Module):
         sampling_out = self.sampler(rays_o, rays_d)
         query_points, z_vals = sampling_out['points'], sampling_out['z_vals']
 
-        # add time to query points
-        exp_times = times[:, None].repeat(1, query_points.shape[1], 1)
-        query_points_time = torch.cat([query_points, exp_times], -1)  # --> (x, y, z, t)
+        query_points_time = self.add_sample_times(query_points, rays_o, times)
 
         # Get weights for hierarchical sampling
         with torch.no_grad():
@@ -192,9 +223,7 @@ class BasicRenderingModule(nn.Module):
         hierarchical_out = self.sampler_hierarchical(rays_o, rays_d, z_vals, weights)
         query_points, z_vals_combined = (hierarchical_out['points'], hierarchical_out['z_vals'])
 
-        # add time to query points = expand to dimensions of query points and slice one dimension
-        exp_times = times[:, None].repeat(1, query_points.shape[1], 1)
-        query_points_time = torch.cat([query_points, exp_times], -1)
+        query_points_time = self.add_sample_times(query_points, rays_o, times)
 
         fine_raw = self.model(query_points_time)
         state = {**fine_raw, 'z_vals': z_vals_combined,
@@ -203,6 +232,15 @@ class BasicRenderingModule(nn.Module):
         model_out = self.render_instruments(dataset_n_rays, dataset_instrument, state)
 
         return {'model_out': model_out, 'z_vals': z_vals_combined, 'z_vals_stratified': z_vals}
+
+    def add_sample_times(self, query_points, rays_o, times):
+        exp_times = times[:, None].repeat(1, query_points.shape[1], 1)
+        if self.light_travel_time:
+            # Detector timestamps see each scattering point delayed by its observer distance.
+            observer_to_sample = torch.linalg.norm(query_points - rays_o[:, None, :], dim=-1, keepdim=True)
+            light_time = observer_to_sample * self.light_dt_per_model_distance
+            exp_times = exp_times - light_time
+        return torch.cat([query_points, exp_times], -1)
 
     def render_instruments(self, dataset_n_rays, dataset_instrument, state):
         ray_idx = 0

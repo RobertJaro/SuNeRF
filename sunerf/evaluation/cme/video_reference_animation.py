@@ -19,7 +19,7 @@ from sunerf.evaluation.cme.plot_ref_series import (
     get_occultor_mask_from_ref_map,
     load_reference_map,
     make_learned_corrected_model_maps,
-    path_tokens,
+    resolve_reference_instrument_key,
     shared_lognorm,
 )
 from sunerf.evaluation.cme.video import (
@@ -54,8 +54,8 @@ def build_parser():
     parser.add_argument("--ref_path", type=str, default=None,
                         help="Directory containing reference tB FITS; auto-discovers *tB*.fits")
     parser.add_argument("--ref_tB_path", type=str, default=None, help="Reference tB FITS glob pattern")
-    parser.add_argument("--ds_key", type=str, default=None,
-                        help="Dataset key to use for rendering/corrections; inferred from reference paths if omitted")
+    parser.add_argument("--instrument_key", type=str, default=None,
+                        help="Instrument key to use for rendering/corrections; inferred from reference paths if omitted")
     parser.add_argument("--out_path", type=str, default=None, help="Path to output directory")
     parser.add_argument("--n_ref_samples", type=int, default=20, help="Number of reference FITS samples")
     parser.add_argument("--n_motion_frames", type=int, default=80, help="Frames for each synthetic camera segment")
@@ -82,38 +82,6 @@ def resolve_reference_patterns(args):
     if args.ref_path is not None:
         return str(Path(args.ref_path) / "**" / "*tB*.fits*")
     return None
-
-
-def resolve_reference_ds_key(sunerf_loader, ref_tB_path, explicit_ds_key=None):
-    if explicit_ds_key is not None:
-        if explicit_ds_key not in sunerf_loader.ds_keys:
-            raise ValueError(
-                f"Unknown ds_key '{explicit_ds_key}'. Available dataset keys: {', '.join(sunerf_loader.ds_keys)}"
-            )
-        return explicit_ds_key
-
-    if len(sunerf_loader.ds_keys) == 1:
-        return sunerf_loader.ds_keys[0]
-
-    tokens = path_tokens(ref_tB_path)
-    matches = []
-    for ds_key in sunerf_loader.ds_keys:
-        instrument_key = sunerf_loader.instrument_key(ds_key)
-        key_tokens = path_tokens(ds_key) | path_tokens(instrument_key)
-        if tokens & key_tokens:
-            matches.append(ds_key)
-
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        raise ValueError(
-            f"Could not uniquely infer ds_key for reference path {ref_tB_path}: matched {matches}. "
-            "Pass --ds_key explicitly."
-        )
-    raise ValueError(
-        f"Could not infer ds_key for reference path {ref_tB_path}. "
-        f"Available dataset keys: {', '.join(sunerf_loader.ds_keys)}. Pass --ds_key explicitly."
-    )
 
 
 def build_reference_paths(tB_pattern=None, n_samples=20):
@@ -188,16 +156,15 @@ def save_two_maps(path, left_map, right_map, left_label, right_label, left_norm=
     plt.close(fig)
 
 
-def render_reference_maps(sunerf_loader, ref_tB_path, ds_key, resolution):
+def render_reference_maps(sunerf_loader, ref_tB_path, instrument_key, resolution):
     ref_tB_map = load_reference_map(ref_tB_path).resample(resolution)
 
     occultor_mask, ref_min_radius, ref_max_radius = get_occultor_mask_from_ref_map(ref_tB_map)
-    instrument_key = sunerf_loader.instrument_key(ds_key)
     model_out = sunerf_loader.load_map(ref_tB_map, progress=False, filter_occ=False, instrument_key=instrument_key)
     clean_tB_map = model_out["tB_map"]
     clean_pB_map = model_out["pB_map"]
     masked_tB_map, _, _ = make_learned_corrected_model_maps(
-        sunerf_loader, ref_tB_map, clean_tB_map, clean_pB_map, ds_key=ds_key
+        sunerf_loader, ref_tB_map, clean_tB_map, clean_pB_map, instrument_key=instrument_key
     )
 
     maps = {
@@ -213,7 +180,7 @@ def render_reference_maps(sunerf_loader, ref_tB_path, ds_key, resolution):
     return maps
 
 
-def render_camera_maps(sunerf_loader, lat, lon, time, distance, occ_min, occ_max, resolution, lon_frame):
+def render_camera_maps(sunerf_loader, lat, lon, time, distance, occ_min, occ_max, resolution, lon_frame, instrument_key):
     input_obs_coord = get_input_observer_coord(lat, lon, distance, time, lon_frame)
     if lon_frame == "hci":
         hci_obs_coord = input_obs_coord
@@ -232,6 +199,7 @@ def render_camera_maps(sunerf_loader, lat, lon, time, distance, occ_min, occ_max
         resolution=resolution,
         occ_min=occ_min,
         occ_max=occ_max,
+        instrument_key=instrument_key,
         progress=False,
     )
     return model_out, plot_obs_coord, plot_distance
@@ -298,10 +266,10 @@ def get_reference_view(ref_map, lon_frame):
     return lat.to(u.deg), lon.to(u.deg), distance, time
 
 
-def save_reference_stages(args, sunerf_loader, ref_paths, ds_key, out_dirs):
+def save_reference_stages(args, sunerf_loader, ref_paths, instrument_key, out_dirs):
     last_maps = None
     for i, ref_path in tqdm(enumerate(ref_paths), total=len(ref_paths), desc="Reference stages"):
-        maps = render_reference_maps(sunerf_loader, ref_path, ds_key, target_resolution(args))
+        maps = render_reference_maps(sunerf_loader, ref_path, instrument_key, target_resolution(args))
         last_maps = maps
         print(f'[{maps["ref_map"].date.datetime.isoformat(sep=" ", timespec="minutes")}] reference frame {i:03d}')
         reference_tB_norm = shared_lognorm(maps["ref_tB"], maps["masked_tB"])
@@ -337,7 +305,8 @@ def save_reference_stages(args, sunerf_loader, ref_paths, ds_key, out_dirs):
     return last_maps
 
 
-def save_motion_stage(args, sunerf_loader, out_dir, lats, lons, times, distance, occ_mins, occ_maxs, mode):
+def save_motion_stage(args, sunerf_loader, out_dir, lats, lons, times, distance, occ_mins, occ_maxs, mode,
+                      instrument_key):
     resolution = target_resolution(args)
     for i, (lat, lon, time, occ_min, occ_max) in tqdm(
         enumerate(zip(lats, lons, times, occ_mins, occ_maxs)),
@@ -359,6 +328,7 @@ def save_motion_stage(args, sunerf_loader, out_dir, lats, lons, times, distance,
             occ_max,
             resolution,
             args.lon_frame,
+            instrument_key,
         )
         pB_map = model_out["pB_map"]
         tB_map = model_out["tB_map"]
@@ -415,9 +385,11 @@ def main():
 
     sunerf_loader = ThomsonSuNeRFLoader(args.sunerf_path)
     ref_paths = build_reference_paths(tB_pattern, n_samples=args.n_ref_samples)
-    ds_key = resolve_reference_ds_key(sunerf_loader, ref_paths[0], args.ds_key)
+    instrument_key = resolve_reference_instrument_key(
+        sunerf_loader, {'tB': ref_paths[0], 'pB': None}, explicit_instrument_key=args.instrument_key
+    )
 
-    last_maps = save_reference_stages(args, sunerf_loader, ref_paths, ds_key, out_dirs)
+    last_maps = save_reference_stages(args, sunerf_loader, ref_paths, instrument_key, out_dirs)
     ref_map = last_maps["ref_map"]
     ref_min_radius, ref_max_radius = last_maps["radii"]
     occ_min = ref_min_radius * u.R_sun
@@ -440,6 +412,7 @@ def main():
         np.full(n, occ_min.to_value(u.R_sun)) * u.R_sun,
         np.linspace(occ_max.to_value(u.R_sun), args.zoom_max, n) * u.R_sun,
         "zoom_50rs",
+        instrument_key,
     )
     save_motion_stage(
         args,
@@ -452,6 +425,7 @@ def main():
         np.array([occ_min.to_value(u.R_sun)]) * u.R_sun,
         np.array([args.zoom_max]) * u.R_sun,
         "pB_density",
+        instrument_key,
     )
     save_motion_stage(
         args,
@@ -464,6 +438,7 @@ def main():
         np.full(n, occ_min.to_value(u.R_sun)) * u.R_sun,
         np.full(n, args.zoom_max) * u.R_sun,
         "longitude_360",
+        instrument_key,
     )
 
     if n == 1:
@@ -482,6 +457,7 @@ def main():
         np.full(n, occ_min.to_value(u.R_sun)) * u.R_sun,
         np.full(n, args.zoom_max) * u.R_sun,
         "poles",
+        instrument_key,
     )
 
     end_time = start_time + pd.Timedelta(days=args.time_advance_days)
@@ -496,6 +472,7 @@ def main():
         np.full(n, occ_min.to_value(u.R_sun)) * u.R_sun,
         np.full(n, args.zoom_max) * u.R_sun,
         "time_1day",
+        instrument_key,
     )
 
 

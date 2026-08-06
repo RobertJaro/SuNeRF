@@ -7,7 +7,7 @@ module load cuda
 conda activate lightning
 
 REPO_DIR="/glade/u/home/rjarolim/projects/SuNeRF"
-BASE_DIR="/glade/work/rjarolim/data/sunerf-cme/2026_04"
+BASE_DIR="/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04"
 
 # The download helpers treat --end as exclusive. This downloads all of April and May 2026.
 START_TS="2026-04-01T00:00:00"
@@ -25,6 +25,8 @@ mkdir -p \
   "${CCOR_RAW_DIR}" \
   "${COR_RAW_DIR}" \
   "${COR_PREP_DIR}" \
+  "${LASCO_RAW_DIR}" \
+  "${LASCO_PREP_DIR}" \
   "${PREP_DIR}"
 
 echo "Downloading CCOR full cadence"

@@ -1,15 +1,15 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/2026_04_v04"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2026_04_v03'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/2026_04_v10"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2026_04_v10'
 
 instruments:
   - type: 'default'
     key: 'STEREO_A_COR2'
     scaling: { type: 'asinh', a: 1.0e-3 }
     correction: { corrections: [ 'f_corona', 'pB_add', 'tB_add', 'pB_mul', 'tB_mul' ] }
-  - type: 'default'
-    key: 'STEREO_A_COR2_CLEAR'
-    scaling: { type: 'asinh', a: 1.0e-3 }
-    correction: { corrections: [ 'f_corona', 'tB_add', 'tB_mul' ] }
+#  - type: 'default'
+#    key: 'STEREO_A_COR2_CLEAR'
+#    scaling: { type: 'asinh', a: 1.0e-3 }
+#    correction: { corrections: [ 'f_corona', 'tB_add', 'tB_mul' ] }
   - type: 'default'
     key: 'CCOR'
     scaling: { type: 'asinh', a: 1.0e-3 }
@@ -17,6 +17,9 @@ instruments:
 
 model:
   use_carrington_projection: True
+  model_type: 'split_temporal'
+  cold_steps: 0
+  warm_steps: 5000
 
 data:
   train_datasets:
@@ -24,60 +27,30 @@ data:
     - type: 'COR'
       key: 'STEREO_A_COR2'
       instrument_key: 'STEREO_A_COR2'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/cor2/pB/*"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/cor2/tB/*"
+      data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/cor2/pB/*"
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/cor2/tB/*"
       batch_size: 1024
       debug: False
       correction_config: { type: file,
-                           tB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/masks/stereo_a_cor2_tB_correction.npy",
-                           pB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/masks/stereo_a_cor2_pB_correction.npy",
+                           tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/masks/stereo_a_cor2_tB_correction.npy",
+                           pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/masks/stereo_a_cor2_pB_correction.npy",
                            clean: False }
 
-    - type: 'COR'
-      key: 'STEREO_A_COR2_CLEAR'
-      instrument_key: 'STEREO_A_COR2_CLEAR'
-      data_path_pB: null
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/cor2_clear/*"
-      batch_size: 1024
-      debug: False
-      correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/masks/stereo_a_cor2_tB_clear_correction.npy", clean: False }
+#    - type: 'COR'
+#      key: 'STEREO_A_COR2_CLEAR'
+#      instrument_key: 'STEREO_A_COR2_CLEAR'
+#      data_path_pB: null
+#      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/cor2_clear/*"
+#      batch_size: 1024
+#      debug: False
+#      correction_config: { type: file, tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/masks/stereo_a_cor2_tB_clear_correction.npy", clean: False }
 
     - type: 'CCOR'
       key: 'CCOR'
       instrument_key: 'CCOR'
       data_path_pB: null
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/ccor/*"
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/ccor/*"
       batch_size: 1024
-      debug: False
-
-    # CME time datasets
-    - type: 'COR'
-      key: 'STEREO_A_COR2_CME'
-      instrument_key: 'STEREO_A_COR2'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/cor2/pB/20260423_*"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/cor2/tB/20260423_*"
-      batch_size: 256
-      debug: False
-      correction_config: { type: file,
-                           tB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/masks/stereo_a_cor2_tB_correction.npy",
-                           pB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/masks/stereo_a_cor2_pB_correction.npy",
-                           clean: False }
-
-    - type: 'COR'
-      key: 'STEREO_A_COR2_CLEAR_CME'
-      instrument_key: 'STEREO_A_COR2_CLEAR'
-      data_path_pB: null
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/cor2_clear/20260423_*"
-      batch_size: 256
-      debug: False
-      correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/masks/stereo_a_cor2_tB_clear_correction.npy", clean: False }
-
-    - type: 'CCOR'
-      key: 'CCOR_CME'
-      instrument_key: 'CCOR'
-      data_path_pB: null
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/ccor/sci_ccor1-l2_g19_s20260423T*_e20260423T*_p*_pub.fits"
-      batch_size: 256
       debug: False
 
     - type: 'random'
@@ -91,25 +64,28 @@ data:
     - type: 'COR'
       key: 'STEREO_A_COR2'
       instrument_key: 'STEREO_A_COR2'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/cor2/pB/20260423_19*"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/cor2/tB/20260423_19*"
+      data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/cor2/pB/*"
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/cor2/tB/*"
+      time_range: "2026-04-23T19:48:00"
       correction_config: { type: file,
-                           tB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/masks/stereo_a_cor2_tB_correction.npy",
-                           pB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/masks/stereo_a_cor2_pB_correction.npy",
+                           tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/masks/stereo_a_cor2_tB_correction.npy",
+                           pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/masks/stereo_a_cor2_pB_correction.npy",
                            clean: False }
 
-    - type: 'COR'
-      key: 'STEREO_A_COR2_CLEAR'
-      instrument_key: 'STEREO_A_COR2_CLEAR'
-      data_path_pB: null
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/cor2_clear/20260423_19*"
-      correction_config: { type: file, tB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/masks/stereo_a_cor2_tB_clear_correction.npy", clean: False }
+#    - type: 'COR'
+#      key: 'STEREO_A_COR2_CLEAR'
+#      instrument_key: 'STEREO_A_COR2_CLEAR'
+#      data_path_pB: null
+#      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/cor2_clear/*"
+#      time_range: "2026-04-23T19:48:00"
+#      correction_config: { type: file, tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/masks/stereo_a_cor2_tB_clear_correction.npy", clean: False }
 
     - type: 'CCOR'
       key: 'CCOR'
       instrument_key: 'CCOR'
       data_path_pB: null
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2026_04/prep/ccor/sci_ccor1-l2_g19_s20260408T134525Z_e20260408T134553Z_p20260423T103019Z_pub.fits"
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/ccor/*"
+      time_range: "2026-04-23T19:48:00"
 
     - key: valid_radial
       type: radial_slices
@@ -130,15 +106,15 @@ data:
 callbacks:
   - type: 'thomson_image'
     ds_key: 'STEREO_A_COR2'
-  - type: 'thomson_image'
-    ds_key: 'STEREO_A_COR2_CLEAR'
+#  - type: 'thomson_image'
+#    ds_key: 'STEREO_A_COR2_CLEAR'
   - type: 'thomson_image'
     ds_key: 'CCOR'
 
   - type: 'correction_image'
     ds_key: 'STEREO_A_COR2'
-  - type: 'correction_image'
-    ds_key: 'STEREO_A_COR2_CLEAR'
+#  - type: 'correction_image'
+#    ds_key: 'STEREO_A_COR2_CLEAR'
   - type: 'correction_image'
     ds_key: 'CCOR'
 
@@ -167,4 +143,4 @@ lambda:
   velocity: 1.0e-1
 
 training:
-  log_every_n_steps: 10000
+  log_every_n_steps: 5000

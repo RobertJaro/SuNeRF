@@ -1,5 +1,5 @@
 import torch
-from pytorch_lightning import LightningModule
+from lightning.pytorch import LightningModule
 from torch import nn
 from torch.optim.lr_scheduler import ExponentialLR
 import torch.distributed as dist
@@ -42,7 +42,19 @@ class BaseSuNeRFModule(LightningModule):
         # Only rank-0 needs to keep outputs if you're running val on rank-0 only.
         if outputs is not None:
             # ensure CPU to keep GPU mem low
-            cpu_out = {k: v.detach().cpu() for k, v in outputs.items()}
+            cpu_out = {}
+            dataset_key = self.validation_dataset_mapping.get(dataloader_idx, dataloader_idx)
+            render_mode = batch.get('render_mode', None)
+            if torch.is_tensor(render_mode):
+                render_mode = render_mode.detach().cpu().view(-1)[0].item()
+            for k, v in outputs.items():
+                if not torch.is_tensor(v):
+                    raise TypeError(
+                        f"Validation output '{k}' for dataset '{dataset_key}' "
+                        f"(dataloader_idx={dataloader_idx}, render_mode={render_mode}) "
+                        f"must be a torch.Tensor, got {type(v).__name__}: {v!r}"
+                    )
+                cpu_out[k] = v.detach().cpu()
             cpu_out['dataset_idx'] = batch['dataset_idx'].detach().cpu()
             if dataloader_idx not in self.validation_batches:
                 self.validation_batches[dataloader_idx] = []
@@ -95,4 +107,3 @@ class BaseSuNeRFModule(LightningModule):
         state_dict = checkpoint['state_dict']
         self.load_state_dict(state_dict, strict=False)
         self.validation_outputs = {}  # reset validation outputs
-

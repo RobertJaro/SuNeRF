@@ -30,6 +30,8 @@ if __name__ == '__main__':
     parser.add_argument('--longitudes', type=float, nargs='+', help='Slices longitudes in degrees', default=None)
     parser.add_argument('--time_range', type=str, nargs=2, help='Time range for visualization in ISO format (e.g., 2024-09-26T00:00:00 2024-09-28T00:00:00)')
     parser.add_argument('--radius_range', type=float, nargs=2, help='Radius range for visualization in Rsun', default=[4, 15])
+    parser.add_argument('--log_radius', '--log-radius', action='store_true',
+                        help='Plot radius on a logarithmic scale (requires positive radius bounds)')
     parser.add_argument('--latitude_range', type=float, nargs=2, help='Latitude range for visualization in degrees', default=[-90, 90])
     parser.add_argument('--t_points', type=int, default=30, help='Number of time points between start and end time')
 
@@ -60,6 +62,10 @@ if __name__ == '__main__':
 
     min_radius = args.radius_range[0]
     max_radius = args.radius_range[1]
+    if args.log_radius and (min_radius <= 0 or max_radius <= 0):
+        parser.error('--log_radius requires positive values in --radius_range')
+    radius = (np.geomspace(min_radius, max_radius, 100) if args.log_radius
+              else np.linspace(min_radius, max_radius, 100))
     min_latitude = args.latitude_range[0]
     max_latitude = args.latitude_range[1]
     min_theta = np.deg2rad(min_latitude)
@@ -74,7 +80,7 @@ if __name__ == '__main__':
 
     for i, time in tqdm(enumerate(times), total=len(times)):
         carr_longitudes = u.Quantity([carrington_to_inertial(lon, time) for lon in longitudes])
-        out = sunerf_loader.load_spherical_cube(radius=np.linspace(min_radius, max_radius, 100) * u.Rsun,
+        out = sunerf_loader.load_spherical_cube(radius=radius * u.Rsun,
                                                 longitude=carr_longitudes,
                                                 latitude=np.linspace(min_latitude, max_latitude, 180) * u.deg,
                                                 time=time)
@@ -116,6 +122,8 @@ if __name__ == '__main__':
             ax.set_title(f"{target_longitude.to_value(u.deg):.1f}° Longitude")
             ax.set_xlabel("Latitude")
             ax.set_ylabel(r"Radius (R$_\odot$)")
+            if args.log_radius:
+                ax.set_yscale("log")
             ax.tick_params(axis="y", colors='lightgray')
 
             # --- Polar plot - velocity ---
@@ -128,6 +136,8 @@ if __name__ == '__main__':
             ax.set_title(f"{target_longitude.to_value(u.deg):.1f}° Longitude")
             ax.set_xlabel("Latitude")
             ax.set_ylabel(r"Radius (R$_\odot$)")
+            if args.log_radius:
+                ax.set_yscale("log")
             ax.tick_params(axis="y", colors='lightgray')
 
         fig.colorbar(density_pc, cax=axd["rho_cb"], label=r"Density (cm$^{-3}$)")

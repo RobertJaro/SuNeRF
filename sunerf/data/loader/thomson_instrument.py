@@ -2,7 +2,8 @@ import copy
 import glob
 import multiprocessing
 import os
-from datetime import timedelta, datetime
+import re
+from datetime import timedelta, datetime, timezone
 
 import numpy as np
 import scipy
@@ -19,8 +20,10 @@ from tqdm import tqdm
 
 from sunerf.data.date_util import normalize_datetime, unnormalize_datetime
 from sunerf.data.loader.base_loader import BaseDataModule, TensorsDataset, MapDataLoader
+from sunerf.data.loader.insitu import PSPDataset, SolarOrbiterDataset
 from sunerf.data.loader.volume_sampling import RandomSphericalCoordinateDataset
 from sunerf.data.ray_sampling import get_rays
+from sunerf.physics.thomson import electron_density_normalization_cm3
 from sunerf.train.callback import log_overview
 from sunerf.train.coordinate_transformation import spherical_to_cartesian, pose_spherical
 from sunerf.train.render_mode import RenderModeDataset, RenderMode
@@ -48,6 +51,7 @@ class ThomsonDataModule(BaseDataModule):
                        'debug': debug, 'work_directory': work_directory, 'batch_size': batch_size}
 
         train_dict, ref_date = self._load_dataset(train_datasets, base_config)
+        drho_cm3 = base_config.get('drho_cm3')
 
         module_config = {}
         for k, train_ds in train_dict.items():
@@ -72,11 +76,11 @@ class ThomsonDataModule(BaseDataModule):
         super().__init__(train_dict, valid_dict,
                          Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt, ref_date=ref_date,
                          module_config=module_config, **kwargs)
+        self.drho_cm3 = drho_cm3
 
     def _load_dataset(self, data_config, base_config):
         ref_date = None if 'ref_date' not in base_config else base_config['ref_date']
         data_config = copy.deepcopy(data_config)
-
         train_dict = {}
         for config in data_config:
             config = copy.deepcopy(config)
@@ -84,7 +88,6 @@ class ThomsonDataModule(BaseDataModule):
             ds_key = config.pop('key') if 'key' in config else ds_type
             ds_config = copy.deepcopy(base_config)
             ds_config.update(config)
-
             if ds_type.lower() == 'hao':
                 dataset = HAOThomsonDataset(**ds_config, ds_key=ds_key)
             elif ds_type.lower() == 'cor':
@@ -95,10 +98,16 @@ class ThomsonDataModule(BaseDataModule):
                 dataset = MetisDataset(**ds_config, ds_key=ds_key)
             elif ds_type.lower() == 'ccor':
                 dataset = CCORDataset(**ds_config, ds_key=ds_key)
-            elif ds_type.lower() in {'punchwfi', 'punch_wfi', 'punch'}:
+            elif ds_type.lower() == 'punch':
                 dataset = PunchWFIDataset(**ds_config, ds_key=ds_key)
             elif ds_type.lower() == 'psi_cme':
                 dataset = PSICMEDataset(**ds_config, ds_key=ds_key)
+            elif ds_type.lower() == 'psp':
+                self._inject_insitu_drho(ds_config, base_config, ds_key)
+                dataset = PSPDataset(**ds_config, ds_key=ds_key)
+            elif ds_type.lower() == 'solar_orbiter':
+                self._inject_insitu_drho(ds_config, base_config, ds_key)
+                dataset = SolarOrbiterDataset(**ds_config, ds_key=ds_key)
             elif ds_type.lower() == 'random':
                 assert len(
                     train_dict) > 0, 'Specify at least one dataset for reference times. The random dataset configuration needs to be last in config file.'
@@ -114,9 +123,26 @@ class ThomsonDataModule(BaseDataModule):
             if ref_date is None:
                 ref_date = dataset.ref_date
                 base_config['ref_date'] = ref_date
+            if isinstance(dataset, GenericThomsonDataset):
+                self._set_density_normalization_from_thomson(dataset, base_config)
             assert ds_key not in train_dict, f'Duplicate dataset key {ds_key}'
             train_dict[ds_key] = dataset
         return train_dict, ref_date
+
+    @staticmethod
+    def _set_density_normalization_from_thomson(dataset, base_config):
+        if 'drho_cm3' in base_config:
+            return
+        base_config['drho_cm3'] = electron_density_normalization_cm3(dataset.scaling, base_config['Rs_per_ds'])
+
+    @staticmethod
+    def _inject_insitu_drho(ds_config, base_config, ds_key):
+        if base_config.get('drho_cm3') is None:
+            raise ValueError(
+                f"In-situ dataset '{ds_key}' requires drho_cm3. "
+                "Place at least one Thomson imaging dataset before in-situ datasets."
+            )
+        ds_config['drho_cm3'] = base_config['drho_cm3']
 
     def _load_valid_dataset(self, data_config, base_config, time_range, seconds_per_dt, ref_date):
         data_config = copy.deepcopy(data_config)
@@ -156,7 +182,7 @@ class ThomsonDataModule(BaseDataModule):
             elif ds_type.lower() == 'ccor':
                 dataset = CCORDataset(**ds_config, ds_key=ds_key, test=True)
                 dataset = self._wrap_validation_dataset(dataset, render_mode)
-            elif ds_type.lower() in {'punchwfi', 'punch_wfi', 'punch'}:
+            elif ds_type.lower() == 'punch':
                 dataset = PunchWFIDataset(**ds_config, ds_key=ds_key, test=True)
                 dataset = self._wrap_validation_dataset(dataset, render_mode)
             elif ds_type.lower() == 'psi_cme':
@@ -174,9 +200,17 @@ class ThomsonDataModule(BaseDataModule):
             elif ds_type.lower() == "fixed_viewpoint_series":
                 dataset = FixedViewpointSeriesDataset(**ds_config, ds_key=ds_key, time_range=ds_time_range)
                 dataset = RenderModeDataset(dataset, RenderMode.INSTRUMENT)
-            elif ds_type.lower() in {"full_star_background", "star_background_full"}:
+            elif ds_type.lower() == "full_star_background":
                 dataset = FullStarBackgroundDataset(**ds_config, ds_key=ds_key, time_range=ds_time_range)
                 dataset = RenderModeDataset(dataset, RenderMode.BACKGROUND)
+            elif ds_type.lower() == 'psp':
+                self._inject_insitu_drho(ds_config, base_config, ds_key)
+                dataset = PSPDataset(**ds_config, ds_key=ds_key, shuffle=False, filter_nans=False)
+                dataset = RenderModeDataset(dataset, RenderMode.QUERY_POINTS)
+            elif ds_type.lower() == 'solar_orbiter':
+                self._inject_insitu_drho(ds_config, base_config, ds_key)
+                dataset = SolarOrbiterDataset(**ds_config, ds_key=ds_key, shuffle=False, filter_nans=False)
+                dataset = RenderModeDataset(dataset, RenderMode.QUERY_POINTS)
             else:
                 raise ValueError(f'Unknown dataset type {ds_type}')
             assert ds_key not in valid_dict, f'Duplicate dataset key {ds_key}'
@@ -200,12 +234,147 @@ class ThomsonDataModule(BaseDataModule):
 
 
 class GenericThomsonDataset(TensorsDataset):
+    DATE_OBS_KEYS = ("DATE-OBS", "DATE_OBS", "DATE-BEG", "DATE_BEG", "DATE-AVG", "DATE_AVG")
+
+    @staticmethod
+    def _normalize_for_time_range(value):
+        value = parse(value) if isinstance(value, str) else value
+        if value.tzinfo is not None and value.utcoffset() is not None:
+            value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+
+    @classmethod
+    def _parse_time_range(cls, time_range):
+        if time_range is None:
+            return None
+        if isinstance(time_range, (str, datetime)):
+            return "closest", cls._normalize_for_time_range(time_range)
+        if len(time_range) == 1:
+            return "closest", cls._normalize_for_time_range(time_range[0])
+        if len(time_range) != 2:
+            raise ValueError("time_range must contain one value for closest-date selection "
+                             "or two values for start/end filtering.")
+        start, end = [cls._normalize_for_time_range(t) for t in time_range]
+        if start > end:
+            raise ValueError("time_range start must be earlier than or equal to end.")
+        return "range", start, end
+
+    @classmethod
+    def _read_obs_date(cls, file_path):
+        headers = []
+        for ext in (0, 1):
+            try:
+                headers.append(fits.getheader(file_path, ext))
+            except Exception:
+                continue
+        for header in headers:
+            for key in cls.DATE_OBS_KEYS:
+                if key in header and header[key] not in (None, ""):
+                    return cls._normalize_for_time_range(str(header[key]).strip())
+        raise KeyError(f"Missing observation date in {file_path}. Expected one of: {', '.join(cls.DATE_OBS_KEYS)}")
+
+    @classmethod
+    def _filter_files_by_time_range(cls, tB_files, pB_files, time_range):
+        parsed_range = cls._parse_time_range(time_range)
+        if parsed_range is None:
+            return tB_files, pB_files
+
+        if len(tB_files) == 0:
+            raise ValueError("No tB files found.")
+        if pB_files is not None and len(pB_files) != len(tB_files):
+            raise ValueError(f"Cannot apply time_range filter to {len(tB_files)} tB files and "
+                             f"{len(pB_files)} pB files. File counts must match.")
+
+        mode = parsed_range[0]
+        if mode == "closest":
+            target = parsed_range[1]
+            obs_dates = [cls._read_obs_date(tB_file) for tB_file in tB_files]
+            idx = int(np.argmin([abs((obs_date - target).total_seconds()) for obs_date in obs_dates]))
+            filtered_tB_files = [tB_files[idx]]
+            filtered_pB_files = [pB_files[idx]] if pB_files is not None else None
+            print(f"Selected closest tB file to {target.isoformat()}: "
+                  f"{os.path.basename(tB_files[idx])} at {obs_dates[idx].isoformat()}.")
+            if pB_files is not None:
+                pB_date = cls._read_obs_date(pB_files[idx])
+                print(f"Selected paired pB file: {os.path.basename(pB_files[idx])} "
+                      f"at {pB_date.isoformat()}.")
+            return filtered_tB_files, filtered_pB_files
+
+        start, end = parsed_range[1:]
+        filtered_tB_files = []
+        filtered_pB_files = [] if pB_files is not None else None
+        paired_files = zip(tB_files, pB_files) if pB_files is not None else ((f, None) for f in tB_files)
+        for tB_file, pB_file in paired_files:
+            obs_date = cls._read_obs_date(tB_file)
+            if start <= obs_date <= end:
+                filtered_tB_files.append(tB_file)
+                if filtered_pB_files is not None:
+                    filtered_pB_files.append(pB_file)
+
+        if len(filtered_tB_files) == 0:
+            raise ValueError(f"No tB files found in time_range {start.isoformat()} to {end.isoformat()}.")
+        print(f"Selected {len(filtered_tB_files)} of {len(tB_files)} tB files in time_range "
+              f"{start.isoformat()} to {end.isoformat()}.")
+        return filtered_tB_files, filtered_pB_files
+
+    @staticmethod
+    def _parse_cadence(cadence):
+        if cadence is None:
+            return None
+        if isinstance(cadence, timedelta):
+            cadence_delta = cadence
+        elif isinstance(cadence, (int, float)):
+            cadence_delta = timedelta(seconds=float(cadence))
+        elif isinstance(cadence, str):
+            match = re.fullmatch(r"(?i)\s*(\d+)\s*([smhd])\s*", cadence)
+            if match is None:
+                raise ValueError(f"Invalid cadence '{cadence}'. Use formats like 30s, 15m, 1h, or 1d.")
+            quantity = int(match.group(1))
+            unit = match.group(2).lower()
+            seconds_per_unit = {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+            cadence_delta = timedelta(seconds=quantity * seconds_per_unit)
+        else:
+            raise TypeError("cadence must be None, a duration string, seconds, or datetime.timedelta.")
+        if cadence_delta.total_seconds() <= 0:
+            raise ValueError("cadence must be positive.")
+        return cadence_delta
+
+    @classmethod
+    def _sample_files_at_cadence(cls, tB_files, pB_files, cadence):
+        cadence = cls._parse_cadence(cadence)
+        if cadence is None:
+            return tB_files, pB_files
+
+        sampled_tB_files = []
+        sampled_pB_files = [] if pB_files is not None else None
+        next_time = None
+        paired_files = zip(tB_files, pB_files) if pB_files is not None else ((f, None) for f in tB_files)
+        for tB_file, pB_file in paired_files:
+            obs_date = cls._read_obs_date(tB_file)
+            if next_time is not None and obs_date < next_time:
+                continue
+            sampled_tB_files.append(tB_file)
+            if sampled_pB_files is not None:
+                sampled_pB_files.append(pB_file)
+            next_time = obs_date + cadence
+
+        if len(sampled_tB_files) == 0:
+            raise ValueError(f"No tB files remain after cadence sampling with cadence {cadence}.")
+        print(f"Cadence sampling kept {len(sampled_tB_files)} of {len(tB_files)} tB files "
+              f"at {cadence} spacing.")
+        return sampled_tB_files, sampled_pB_files
+
     def __init__(self, data_path_pB, data_path_tB, scaling, ds_key, instrument_key,
                  Rs_per_ds, seconds_per_dt, image_norm=512, hpc_norm=1e4, ref_date=None,
                  batch_size=int(2 ** 10), debug=False, test=False, noise_level=False,
                  reference_frame='inertial', azimuthal_equidistant=True,
                  correction_config=None,
                  scaling_mask_config=None,
+                 time_range=None,
+                 cadence=None,
+                 shuffle=None,
+                 filter_nans=None,
+                 log_data_overview=True,
                  **kwargs):
         self.scaling = scaling
         self.instrument_key = instrument_key
@@ -216,9 +385,11 @@ class GenericThomsonDataset(TensorsDataset):
         # select files with min diff in dates
         tB_files = sorted(glob.glob(data_path_tB))
         pB_files = sorted(glob.glob(data_path_pB)) if data_path_pB is not None else None
+        tB_files, pB_files = self._filter_files_by_time_range(tB_files, pB_files, time_range)
+        tB_files, pB_files = self._sample_files_at_cadence(tB_files, pB_files, cadence)
 
         if debug:
-            sampling = len(tB_files) // 20
+            sampling = max(len(tB_files) // 20, 1)
             tB_files = tB_files[::sampling]
             pB_files = pB_files[::sampling] if pB_files is not None else None
         if test:
@@ -359,11 +530,12 @@ class GenericThomsonDataset(TensorsDataset):
         if 'scaling_mask' in data_dict:
             data_dict['scaling_mask'][occultor_mask] = np.nan
 
-        if not test:
+        if log_data_overview and not test:
             cmap = cm.soholasco2.copy()
             cmap.set_bad(color='green')
             log_overview(data_dict["image"] * scaling, data_dict['pose'], normalized_times, cmap, seconds_per_dt, Rs_per_ds,
                          ref_date, ds_key=ds_key)
+        if log_data_overview and not test:
             print('----- Data Overview -----')
             print(
                 f'Image shape: {data_dict["image"].shape}; MIN: {np.nanmin(data_dict["image"])}; MAX: {np.nanmax(data_dict["image"])}')
@@ -399,9 +571,11 @@ class GenericThomsonDataset(TensorsDataset):
         data_config['reference_frame'] = reference_frame
         data_config['azimuthal_equidistant'] = azimuthal_equidistant
         self.data_config = data_config
-
-        super().__init__(tensors=tensors, batch_size=batch_size, shuffle=not test, filter_nans=not test,
-                         instrument=instrument_key, **kwargs)
+        dataset_shuffle = (not test) if shuffle is None else shuffle
+        dataset_filter_nans = (not test) if filter_nans is None else filter_nans
+        dataset_kwargs = {'instrument': instrument_key, **kwargs}
+        super().__init__(tensors=tensors, batch_size=batch_size, shuffle=dataset_shuffle, filter_nans=dataset_filter_nans,
+                         **dataset_kwargs)
 
 
 class HAOThomsonDataset(GenericThomsonDataset):
@@ -566,7 +740,7 @@ class LongitudeSlicesDataset(TensorsDataset):
 
     Dimensions:
       - r:         (Nr,) radius in R_sun
-      - latitude:  (Nlat,) in radians [-pi/2, pi/2)
+      - latitude:  (Nlat,) in radians [0, 2pi)
       - longitude: (Nlon_slices,) in radians
                    (default: [0,30,60,90,120,150] deg)
       - time:      (Nt,) normalized time steps
@@ -602,18 +776,19 @@ class LongitudeSlicesDataset(TensorsDataset):
             int(Nlatitude),
             endpoint=False,
             dtype=np.float32,
-        )  # latitude in radians
+        )  # full angular range for validation slice visualization
+        longitude_carrington = np.deg2rad(np.asarray(longitude_deg, dtype=np.float32))
 
         # --- time grid ---
         t0, t1 = float(time_range[0]), float(time_range[1])
         times = np.linspace(t0, t1, int(n_times), dtype=np.float32)
 
         datetimes = [unnormalize_datetime(t, seconds_per_dt, ref_date) for t in times]
-        longitudes = convert_carrington_to_inertial(longitude_deg * u.deg, datetimes)
+        longitudes = convert_carrington_to_inertial(longitude_carrington * u.rad, datetimes)
 
         # meshgrid: (Nr, Nlat, Nlon_slices, Nt)
         rr, lat, lon_carr, tt = np.meshgrid(
-            r, latitude, np.zeros_like(longitude_deg), times, indexing="ij"
+            r, latitude, longitude_carrington, times, indexing="ij"
         )
         spherical_coords = np.stack([rr, lat, lon_carr], axis=-1).astype(np.float32)
 

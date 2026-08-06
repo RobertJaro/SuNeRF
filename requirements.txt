@@ -1,5 +1,6 @@
 sunpy[all]
+cdflib
 wandb
-pytorch-lightning==1.9.3
+lightning
 numpy==1.26.2
 itipy

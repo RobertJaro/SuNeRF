@@ -41,9 +41,6 @@ def load_fixed_map(path):
     # --- load data ---
     data = np.squeeze(fits.getdata(path)).astype(float)
 
-    # mask invalid pixels
-    data[data <= 0] = np.nan
-
     return sunpy.map.Map(data, header)
 
 

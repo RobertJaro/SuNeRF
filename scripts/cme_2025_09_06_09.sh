@@ -60,12 +60,23 @@ python -m sunerf.evaluation.cme.video \
 
 # video - polar
 python -m sunerf.evaluation.cme.video \
-  --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v17/save_state.snf" \
-  --out_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v17/video_polar" \
+  --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v24/save_state.snf" \
+  --out_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v24/video_polar" \
   --lon_frame hci \
   --no_observer \
-  --lat 89 --lon 0 --time 2025-09-10T00:00 --steps 1  --radius_min 3 --radius_max 50 \
-  --lat 89 --lon 0 --time 2025-09-30T00:00 --steps 100  --radius_min 3 --radius_max 50 \
+  --lat 89 --lon 0 --time 2025-09-20T00:00 --steps 1  --radius_min 3 --radius_max 50 \
+  --lat 89 --lon 0 --time 2025-09-25T00:00 --steps 100  --radius_min 3 --radius_max 50 \
+
+
+python -m sunerf.evaluation.cme.video \
+  --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v24/save_state.snf" \
+  --out_path "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v24/video_20_rot" \
+  --lon_frame hci \
+  --lat 5.2 --lon -45.6 --time 2025-09-21T00:00 --steps 1  --radius_min 3 --radius_max 50 \
+  --lat 5.2 --lon -45.6 --time 2025-09-22T11:00 --steps 20 --radius_min 3 --radius_max 50 \
+  --lat 5.2 --lon -100.0 --time 2025-09-22T11:00 --steps 20 --radius_min 3 --radius_max 50 \
+  --lat 60.0 --lon -100.0 --time 2025-09-22T11:00 --steps 20 --radius_min 3 --radius_max 50 \
+  --lat 60.0 --lon -100.0 --time 2025-09-23T00:00 --steps 20 --radius_min 3 --radius_max 50 \
 
 
 python -m sunerf.evaluation.cme.video \

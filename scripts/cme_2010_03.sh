@@ -8,7 +8,7 @@
 
 module load conda
 module load cuda
-conda activate lightning
+#conda activate lightning
 
 cd /glade/u/home/rjarolim/projects/SuNeRF
 
@@ -33,7 +33,7 @@ exit
 #python -m sunerf.data.lasco.fix_observer "/glade/work/rjarolim/data/sunerf-cme/2010_03/lasco/C2_prep/*" --out-dir "/glade/work/rjarolim/data/sunerf-cme/2010_03/lasco/C2_prep_fixed"
 #
 ## SOHO/LASCO C2
-#python -m sunerf.data.coronagraph.prep_coronagraph --data_path "/glade/work/rjarolim/data/sunerf-cme/2010_03/lasco/C2_prep_fixed/*.fts" --out_path "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/lasco_c2" --occ_min 2100 --occ_max 8000 --resize 512 512 --clip_max 1e+5
+#python -m sunerf.data.coronagraph.prep_coronagraph --data_path "/glade/work/rjarolim/data/sunerf-cme/2010_03/lasco/C2_prep_fixed/*.fts" --out_path "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/lasco_c2" --occ_min 2100 --occ_max 8000 --resize 512 512 --value_max 1e+5
 
 
 #################################################
@@ -108,11 +108,11 @@ python -m sunerf.data.download.download_aia \
 # Evaluation
 
 # ref series
-python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v17/save_state.snf" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v17/ref_series_stereo_a" --ref_pB_path "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/*" --ref_tB_path "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/tB/*" --ds_key STEREO_A_COR2
-python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v17/save_state.snf" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v17/ref_series_stereo_b" --ref_pB_path "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/pB/*" --ref_tB_path "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/tB/*" --ds_key STEREO_B_COR2
+python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v17/save_state.snf" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v17/ref_series_stereo_a" --ref_pB_path "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/pB/*" --ref_tB_path "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_a_cor2/tB/*" --instrument_key STEREO_A_COR2
+python -m sunerf.evaluation.cme.plot_ref_series --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v17/save_state.snf" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v17/ref_series_stereo_b" --ref_pB_path "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/pB/*" --ref_tB_path "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/stereo_b_cor2/tB/*" --instrument_key STEREO_B_COR2
 # tomography
 python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v17/save_state.snf" --longitudes 0 30 60 90 120 150 180 --time_range "2010-03-19T00:00" "2010-03-20T00:00"
-python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v17/save_state.snf" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v17/tomography_cme" --longitudes 80 90 100 110 120 130 --time_range "2010-03-19T00:00" "2010-03-21T00:00" --t_points 100
+python -m sunerf.evaluation.cme.plot_tomography --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_v16/save_state.snf" --out_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_v16/tomography_cme" --longitudes 80 90 100 110 120 130 --time_range "2010-03-19T00:00" "2010-03-21T00:00" --t_points 100
 # radius map
 python -m sunerf.evaluation.cme.plot_radius_map --sunerf_path "/glade/work/rjarolim/sunerf-cme-obs/2010_03_cor2_correction_v17/save_state.snf" --radius 5 8 12 15
 # video

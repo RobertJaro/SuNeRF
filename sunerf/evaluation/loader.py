@@ -241,7 +241,7 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
             raise KeyError("Missing 'thomson_normalization' in saved Thomson state.")
 
         normalization = self.state['thomson_normalization']
-        required_keys = ['msb', 'sigma_ne', 'c0', 'msb_norm']
+        required_keys = ['msb', 'sigma_ne', 'msb_norm', 'drho_cm3']
         missing_keys = [k for k in required_keys if k not in normalization]
         if missing_keys:
             raise KeyError(
@@ -250,22 +250,38 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
 
         self.msb = normalization['msb']  # ph/cm2/s/sr
         self.sigma_ne = normalization['sigma_ne']
-        self.c0 = normalization['c0']
         self.msb_norm = normalization['msb_norm']
+        self.drho_cm3 = normalization['drho_cm3']
         self.correction_modules = self.state.get('correction_modules', nn.ModuleDict()).to(self.device)
         self.calibration_modules = self.state.get('calibration_modules', nn.ModuleDict()).to(self.device)
         self.correction_modules.eval()
         self.calibration_modules.eval()
 
-    def _resolve_correction_instrument_key(self, ds_key=None, instrument_key=None):
-        if instrument_key is not None:
-            return instrument_key
-        return self.instrument_key(ds_key)
+    def _get_correction_norms(self, instrument_key=None):
+        instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
+        matching_ds_keys = [
+            ds_key for ds_key in self.ds_keys
+            if self.instrument_key(ds_key) == instrument_key
+        ]
+        if not matching_ds_keys:
+            raise ValueError(
+                f"No dataset config maps to instrument_key '{instrument_key}'. "
+                f"Available instrument keys: {', '.join(self.instrument_keys)}."
+            )
 
-    def _get_correction_norms(self, ds_key=None):
-        ds_key = ds_key if ds_key is not None else self.ds_keys[0]
-        cfg = self.config[ds_key]
-        return float(cfg.get('image_norm', 512.0)), float(cfg.get('hpc_norm', 1e4))
+        norms = {
+            (
+                float(self.config[ds_key].get('image_norm', 512.0)),
+                float(self.config[ds_key].get('hpc_norm', 1e4)),
+            )
+            for ds_key in matching_ds_keys
+        }
+        if len(norms) != 1:
+            raise ValueError(
+                f"Dataset configs for instrument_key '{instrument_key}' use inconsistent correction norms: "
+                f"{sorted(norms)}."
+            )
+        return next(iter(norms))
 
     @staticmethod
     def _get_image_coords(shape, image_norm):
@@ -286,8 +302,8 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
         hpc_coords[..., 2] /= float(self.Rs_per_ds)
         return hpc_coords
 
-    def _build_correction_inputs(self, ref_map, ds_key=None):
-        image_norm, hpc_norm = self._get_correction_norms(ds_key)
+    def _build_correction_inputs(self, ref_map, instrument_key=None):
+        image_norm, hpc_norm = self._get_correction_norms(instrument_key)
         image_coords = self._get_image_coords(ref_map.data.shape, image_norm)
         hpc_coords = self._get_hpc_coords(ref_map, hpc_norm)
         time_value = self.normalize_datetime(ref_map.date.datetime)
@@ -306,10 +322,10 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
         return output
 
     @torch.no_grad()
-    def load_correction_masks(self, ref_map, ds_key=None, instrument_key=None, apply_valid_mask=True):
+    def load_correction_masks(self, ref_map, instrument_key=None, apply_valid_mask=True):
         ref_map = Map(ref_map)
-        instrument_key = self._resolve_correction_instrument_key(ds_key, instrument_key)
-        image_coords, hpc_coords, time = self._build_correction_inputs(ref_map, ds_key)
+        instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
+        image_coords, hpc_coords, time = self._build_correction_inputs(ref_map, instrument_key)
 
         outputs = {}
         correction_module = self.correction_modules[instrument_key] if instrument_key in self.correction_modules else None
@@ -326,7 +342,7 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
             outputs.update({k: v.detach().cpu().numpy()[..., 0] for k, v in corrections.items()})
 
         if calibration_module is not None:
-            calibration_scalar = float(torch.exp(calibration_module.calibration.detach()).cpu().numpy())
+            calibration_scalar = torch.exp(calibration_module.calibration.detach()).item()
             outputs['instrument_calibration'] = np.full(ref_map.data.shape, calibration_scalar, dtype=np.float32)
 
         if apply_valid_mask:
@@ -339,8 +355,8 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
                               distance=(1 * u.AU).to(u.solRad),
                               hpc_lat: u = 0 * u.arcsec, hpc_lon: u = 0 * u.arcsec,
                               resolution=(256, 256) * u.pix, scale=None,
-                              ds_key=None, instrument_key=None):
-        instrument_key = self._resolve_correction_instrument_key(ds_key, instrument_key)
+                              instrument_key=None):
+        instrument_key = instrument_key if instrument_key is not None else self.instrument_keys[0]
         if scale is None:
             scale = [2400 / resolution[0].to_value(u.pix), 2400 / resolution[1].to_value(u.pix)] * u.arcsec / u.pix
 
@@ -349,12 +365,11 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
         mock_data = np.zeros([int(r.to_value(u.pix)) for r in resolution], dtype=np.float32)
         header = make_fitswcs_header(mock_data, reference_coord, scale=scale)
         ref_map = Map(mock_data, header)
-        return self.load_correction_masks(ref_map, ds_key=ds_key, instrument_key=instrument_key,
-                                          apply_valid_mask=False)
+        return self.load_correction_masks(ref_map, instrument_key=instrument_key, apply_valid_mask=False)
 
     def convert_rho(self, model_rho):
         # convert to electron density in cm^-3
-        physical_rho = model_rho * self.msb_norm / self.c0 * (self.msb * np.pi * self.sigma_ne / 2)
+        physical_rho = model_rho * self.drho_cm3
         return physical_rho
 
     @torch.no_grad()

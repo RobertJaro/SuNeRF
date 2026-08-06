@@ -1,12 +1,16 @@
 import argparse
 import glob
 import os
+from datetime import timezone
 from pathlib import Path
 
 import numpy as np
 import torch
 from astropy import units as u
 from astropy.coordinates import SkyCoord
+from astropy.io import fits
+from astropy.visualization import AsinhStretch, ImageNormalize
+from dateutil.parser import parse
 from matplotlib import pyplot as plt
 from matplotlib.colors import LogNorm
 from sunpy.coordinates import frames
@@ -15,6 +19,30 @@ from sunpy.visualization.colormaps import cm
 from tqdm import tqdm
 
 from sunerf.evaluation.loader import ThomsonSuNeRFLoader
+
+
+DATE_OBS_KEYS = ("DATE-OBS", "DATE_OBS", "DATE-BEG", "DATE_BEG", "DATE-AVG", "DATE_AVG")
+ASINH_STRETCH_A = 1e-3
+ASINH_STRETCH_VMIN = 0.0
+
+
+def normalize_datetime(value):
+    value = parse(value) if isinstance(value, str) else value
+    if value.tzinfo is not None and value.utcoffset() is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def read_observation_date(path):
+    for extension in (0, 1):
+        try:
+            header = fits.getheader(path, extension)
+        except Exception:
+            continue
+        for key in DATE_OBS_KEYS:
+            if key in header and header[key] not in (None, ""):
+                return normalize_datetime(str(header[key]).strip())
+    raise KeyError(f"Missing observation date in {path}. Expected one of: {', '.join(DATE_OBS_KEYS)}")
 
 
 def plot_radii(ax, s_map, radii=[2, 3, 4, 5], **plot_kwargs):
@@ -113,40 +141,42 @@ def path_tokens(path):
     return tokens
 
 
-def resolve_reference_ds_key(sunerf_loader, ref_item, explicit_ds_key=None):
-    if explicit_ds_key is not None:
-        if explicit_ds_key not in sunerf_loader.ds_keys:
+def resolve_reference_instrument_key(sunerf_loader, ref_item, explicit_instrument_key=None):
+    if explicit_instrument_key is not None:
+        if explicit_instrument_key not in sunerf_loader.instrument_keys:
             raise ValueError(
-                f"Unknown ds_key '{explicit_ds_key}'. Available dataset keys: {', '.join(sunerf_loader.ds_keys)}"
+                f"Unknown instrument_key '{explicit_instrument_key}'. "
+                f"Available instrument keys: {', '.join(sunerf_loader.instrument_keys)}"
             )
-        return explicit_ds_key
+        return explicit_instrument_key
 
     if len(sunerf_loader.ds_keys) == 1:
-        return sunerf_loader.ds_keys[0]
+        ds_key = sunerf_loader.ds_keys[0]
+        return sunerf_loader.instrument_key(ds_key)
 
     tokens = path_tokens(ref_item['tB']) | path_tokens(ref_item['pB'])
-    matches = []
+    matches = set()
     for ds_key in sunerf_loader.ds_keys:
         instrument_key = sunerf_loader.instrument_key(ds_key)
         key_tokens = path_tokens(ds_key) | path_tokens(instrument_key)
         if tokens & key_tokens:
-            matches.append(ds_key)
+            matches.add(instrument_key)
 
     if len(matches) == 1:
-        return matches[0]
+        return next(iter(matches))
     if len(matches) > 1:
         raise ValueError(
-            f"Could not uniquely infer ds_key for reference paths {ref_item}: matched {matches}. "
-            "Pass --ds_key explicitly."
+            f"Could not uniquely infer instrument_key for reference paths {ref_item}: matched {sorted(matches)}. "
+            "Pass --instrument_key explicitly."
         )
     raise ValueError(
-        f"Could not infer ds_key for reference paths {ref_item}. "
-        f"Available dataset keys: {', '.join(sunerf_loader.ds_keys)}. Pass --ds_key explicitly."
+        f"Could not infer instrument_key for reference paths {ref_item}. "
+        f"Available instrument keys: {', '.join(sunerf_loader.instrument_keys)}. "
+        "Pass --instrument_key explicitly."
     )
 
 
-def make_learned_corrected_model_maps(sunerf_loader, ref_map, tB_map, pB_map, ds_key):
-    instrument_key = sunerf_loader._resolve_correction_instrument_key(ds_key=ds_key)
+def make_learned_corrected_model_maps(sunerf_loader, ref_map, tB_map, pB_map, instrument_key):
     correction_module = (
         sunerf_loader.correction_modules[instrument_key]
         if instrument_key in sunerf_loader.correction_modules
@@ -159,7 +189,7 @@ def make_learned_corrected_model_maps(sunerf_loader, ref_map, tB_map, pB_map, ds
         return corrected_tB_map, corrected_pB_map, corrected_ratio_map
 
     image = np.stack([tB_map.data, pB_map.data], axis=-1).astype(np.float32) / sunerf_loader.msb_norm
-    image_coords, hpc_coords, time = sunerf_loader._build_correction_inputs(ref_map, ds_key=ds_key)
+    image_coords, hpc_coords, time = sunerf_loader._build_correction_inputs(ref_map, instrument_key=instrument_key)
 
     with torch.no_grad():
         corrected_image, _ = correction_module(
@@ -191,7 +221,7 @@ def build_reference_paths(tB_pattern=None, pB_pattern=None, legacy_pattern=None,
         )
 
     n_refs = max(len(tB_paths), len(pB_paths))
-    step = max(1, n_refs // n_samples)
+    step = 1 if n_samples is None else max(1, n_refs // n_samples)
     ref_items = []
     for i in range(0, n_refs, step):
         ref_items.append({
@@ -199,6 +229,37 @@ def build_reference_paths(tB_pattern=None, pB_pattern=None, legacy_pattern=None,
             'pB': pB_paths[i] if pB_paths else None,
         })
     return ref_items
+
+
+def filter_reference_paths_by_time_range(ref_items, time_range):
+    if time_range is None:
+        return ref_items
+
+    start_time, end_time = [normalize_datetime(t) for t in time_range]
+    if start_time > end_time:
+        raise ValueError("--time_range start must be earlier than or equal to end.")
+
+    filtered_items = []
+    for ref_item in ref_items:
+        ref_path = ref_item['tB'] or ref_item['pB']
+        obs_time = read_observation_date(ref_path)
+        if start_time <= obs_time <= end_time:
+            filtered_items.append(ref_item)
+
+    if not filtered_items:
+        raise ValueError(
+            f"No reference observations found in --time_range {start_time.isoformat()} to {end_time.isoformat()}."
+        )
+    print(
+        f"Selected {len(filtered_items)} of {len(ref_items)} reference observations in --time_range "
+        f"{start_time.isoformat()} to {end_time.isoformat()}."
+    )
+    return filtered_items
+
+
+def sample_reference_paths(ref_items, n_samples):
+    step = max(1, len(ref_items) // n_samples)
+    return ref_items[::step]
 
 
 def load_reference_map(path):
@@ -238,10 +299,29 @@ def shared_lognorm(*maps):
     return LogNorm(vmin=vmin, vmax=vmax)
 
 
-def plot_map_panel(ax, s_map, radii, norm=None, vmin=None, vmax=None, xlabel=None, ylabel=None, cmap=cm.soholasco2):
-    if isinstance(norm, LogNorm):
+def shared_asinh_norm(*maps, a=ASINH_STRETCH_A, vmin=ASINH_STRETCH_VMIN):
+    values = []
+    for s_map in maps:
+        if s_map is None:
+            continue
         data = s_map.data
-        if not np.any(np.isfinite(data) & (data > 0)):
+        valid = np.isfinite(data)
+        if np.any(valid):
+            values.append(data[valid])
+    if not values:
+        raise ValueError("Cannot create asinh normalization: no finite pixels in any input map.")
+
+    values = np.concatenate(values)
+    vmax = np.nanmax(values)
+    if not np.isfinite(vmax) or vmax <= vmin:
+        raise ValueError(f"Invalid asinh normalization range: vmin={vmin}, vmax={vmax}.")
+    return ImageNormalize(vmin=vmin, vmax=vmax, stretch=AsinhStretch(a=a), clip=True)
+
+
+def plot_map_panel(ax, s_map, radii, norm=None, vmin=None, vmax=None, xlabel=None, ylabel=None, cmap=cm.soholasco2):
+    if norm is not None:
+        data = s_map.data
+        if isinstance(norm, LogNorm) and not np.any(np.isfinite(data) & (data > 0)):
             raise ValueError("Cannot plot logarithmic panel with no positive finite pixels.")
         im = ax.imshow(data, cmap=cmap, norm=norm, origin='lower')
     else:
@@ -270,6 +350,38 @@ def add_top_colorbar(fig, cax, mappable, label):
     return cbar
 
 
+def format_power_of_ten(value):
+    exponent = int(np.round(np.log10(value)))
+    return rf"$10^{{{exponent}}}$"
+
+
+def add_asinh_top_colorbar(fig, cax, mappable, label):
+    cbar = add_top_colorbar(fig, cax, mappable, label)
+    norm = mappable.norm
+    if not isinstance(norm, ImageNormalize) or not isinstance(norm.stretch, AsinhStretch):
+        return cbar
+
+    vmax = norm.vmax
+    if vmax is None or not np.isfinite(vmax) or vmax <= 0:
+        return cbar
+
+    min_tick = max(vmax * norm.stretch.a, np.nextafter(0, 1))
+    min_exponent = int(np.ceil(np.log10(min_tick)))
+    max_exponent = int(np.floor(np.log10(vmax)))
+    ticks = 10.0 ** np.arange(min_exponent, max_exponent + 1)
+    ticks = ticks[(ticks >= norm.vmin) & (ticks <= vmax)]
+    if ticks.size:
+        cbar.set_ticks(ticks)
+        cbar.set_ticklabels([format_power_of_ten(tick) for tick in ticks])
+    return cbar
+
+
+def add_product_colorbar(fig, cax, mappable, product, label):
+    if product in ("tB", "pB"):
+        return add_asinh_top_colorbar(fig, cax, mappable, label)
+    return add_top_colorbar(fig, cax, mappable, label)
+
+
 def hide_panel(ax):
     ax.set_axis_off()
 
@@ -282,13 +394,15 @@ if __name__ == '__main__':
                         help='Legacy path to reference pB maps (glob pattern)')
     parser.add_argument('--ref_tB_path', type=str, required=False, help='Path to reference tB maps (glob pattern)')
     parser.add_argument('--ref_pB_path', type=str, required=False, help='Path to reference pB maps (glob pattern)')
-    parser.add_argument('--ds_key', type=str, required=False,
-                        help='Dataset key to use for rendering/corrections; inferred from reference path if omitted')
+    parser.add_argument('--instrument_key', type=str, required=False,
+                        help='Instrument key to use for rendering/corrections; inferred from reference path if omitted')
     parser.add_argument('--out_path', type=str, help='Path to output directory', default=None)
     parser.add_argument('--xlim', type=float, nargs=2, default=None,
                         help='Optional x-axis limits in arcsec for the image panels')
     parser.add_argument('--ylim', type=float, nargs=2, default=None,
                         help='Optional y-axis limits in arcsec for the image panels')
+    parser.add_argument('--time_range', type=str, nargs=2, metavar=('START', 'END'), default=None,
+                        help='Only plot reference observations within this ISO time range')
 
     args = parser.parse_args()
 
@@ -300,7 +414,9 @@ if __name__ == '__main__':
     ##########################################################
     sunerf_loader = ThomsonSuNeRFLoader(args.sunerf_path)
     n_samples = 20
-    ref_items = build_reference_paths(args.ref_tB_path, args.ref_pB_path, args.ref_map_path, n_samples=n_samples)
+    ref_items = build_reference_paths(args.ref_tB_path, args.ref_pB_path, args.ref_map_path, n_samples=None)
+    ref_items = filter_reference_paths_by_time_range(ref_items, args.time_range)
+    ref_items = sample_reference_paths(ref_items, n_samples=n_samples)
 
     ##########################################################
     # plot settings
@@ -317,8 +433,9 @@ if __name__ == '__main__':
         ref_map = ref_tB_map if ref_tB_map is not None else ref_pB_map
         occultor_mask, ref_min_radius, ref_max_radius = get_occultor_mask_from_ref_map(ref_map)
         radii = [ref_min_radius, ref_max_radius]
-        ds_key = resolve_reference_ds_key(sunerf_loader, ref_item, args.ds_key)
-        instrument_key = sunerf_loader.instrument_key(ds_key)
+        instrument_key = resolve_reference_instrument_key(
+            sunerf_loader, ref_item, explicit_instrument_key=args.instrument_key
+        )
 
         ##########################################################
         # load reference map
@@ -331,7 +448,7 @@ if __name__ == '__main__':
         density_map = model_out['density_map']
         ratio_map = make_ratio_map(pB_map, tB_map)
         corrected_tB_map, corrected_pB_map, corrected_ratio_map = make_learned_corrected_model_maps(
-            sunerf_loader, ref_map, tB_map, pB_map, ds_key=ds_key
+            sunerf_loader, ref_map, tB_map, pB_map, instrument_key=instrument_key
         )
         for s_map in [
             ref_tB_map, ref_pB_map,
@@ -347,10 +464,10 @@ if __name__ == '__main__':
         )
         apply_mask(ref_ratio_map, occultor_mask)
 
-        tB_norm = shared_lognorm(ref_tB_map, corrected_tB_map)
-        pB_norm = shared_lognorm(ref_pB_map, corrected_pB_map)
-        clean_tB_norm = shared_lognorm(tB_map)
-        clean_pB_norm = shared_lognorm(pB_map)
+        tB_norm = shared_asinh_norm(ref_tB_map, corrected_tB_map)
+        pB_norm = shared_asinh_norm(ref_pB_map, corrected_pB_map)
+        clean_tB_norm = shared_asinh_norm(tB_map)
+        clean_pB_norm = shared_asinh_norm(pB_map)
         reference_panels = [
             ("ref_tB", None, "tB", None, None, tB_norm, None, None),
             ("ref_pB", None, "pB", None, None, pB_norm, None, None),
@@ -451,13 +568,16 @@ if __name__ == '__main__':
             if product not in top_product_mappables:
                 hide_panel(axd[f"cbar_{product}"])
             else:
-                add_top_colorbar(fig, axd[f"cbar_{product}"], top_product_mappables[product], product_labels[product])
+                add_product_colorbar(
+                    fig, axd[f"cbar_{product}"], top_product_mappables[product], product, product_labels[product]
+                )
 
             if product not in clean_product_mappables:
                 hide_panel(axd[f"clean_cbar_{product}"])
             else:
-                add_top_colorbar(
-                    fig, axd[f"clean_cbar_{product}"], clean_product_mappables[product], product_labels[product]
+                add_product_colorbar(
+                    fig, axd[f"clean_cbar_{product}"], clean_product_mappables[product], product,
+                    product_labels[product]
                 )
 
         ref_path = ref_item['pB'] or ref_item['tB']
