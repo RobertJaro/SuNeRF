@@ -103,8 +103,7 @@ python -m sunerf.data.coronagraph.prep_punch_pam \
   --resize 512 512 \
   --num_workers 16 \
   --max_radius 90 \
-  --value_max 1.0e-11 \
-  --value_min 1.0e-16
+  --value_max 1.0e-11
 
 echo "Creating validation videos"
 python -m sunerf.data.coronagraph.quicklook_coronagraph_video \

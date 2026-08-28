@@ -11,6 +11,8 @@ from sunpy.coordinates import frames
 from sunpy.map import Map, all_coordinates_from_map
 from tqdm import tqdm
 
+from sunerf.data.ray_sampling import hpc_impact_parameter
+
 
 def fit_radial_profile(files: list[str], degree: int) -> tuple[np.ndarray, int]:
     all_r = []
@@ -20,7 +22,7 @@ def fit_radial_profile(files: list[str], degree: int) -> tuple[np.ndarray, int]:
         s_map = Map(file_path)
         coords = all_coordinates_from_map(s_map)
 
-        r = ((coords.Tx**2 + coords.Ty**2) ** 0.5 / s_map.rsun_obs).to_value()
+        r = hpc_impact_parameter(coords.Tx, coords.Ty, s_map.dsun).to_value("R_sun")
         brightness = np.asarray(s_map.data, dtype=float)
 
         valid = (
@@ -49,7 +51,7 @@ def plot_normalized_frame(file_path: str, coeffs: np.ndarray, output_path: Path)
     s_map = Map(file_path)
     coords = all_coordinates_from_map(s_map).transform_to(frames.Helioprojective)
 
-    r = ((coords.Tx**2 + coords.Ty**2) ** 0.5 / s_map.rsun_obs).to_value()
+    r = hpc_impact_parameter(coords.Tx, coords.Ty, s_map.dsun).to_value("R_sun")
     brightness = np.asarray(s_map.data, dtype=float)
     fitted_brightness = np.exp(np.polyval(coeffs, r))
     fitted_brightness = np.clip(fitted_brightness, 1e-12, None)
@@ -73,7 +75,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Fit a polynomial to log(brightness) as a function of projected radius "
-            "(r / rsun_obs) across all FITS files."
+            "(exact line-of-sight impact parameter) across all FITS files."
         )
     )
     parser.add_argument(

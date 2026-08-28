@@ -2,6 +2,18 @@ import torch
 from torch import nn
 
 
+def _perturb_interior_samples(z_vals: torch.Tensor) -> torch.Tensor:
+    """Jitter interior samples while preserving the exact ray boundaries."""
+    if z_vals.shape[-1] <= 2:
+        return z_vals
+
+    mids = 0.5 * (z_vals[..., 1:] + z_vals[..., :-1])
+    lower = mids[..., :-1]
+    upper = mids[..., 1:]
+    interior = lower + (upper - lower) * torch.rand_like(lower)
+    return torch.cat([z_vals[..., :1], interior, z_vals[..., -1:]], dim=-1)
+
+
 class SphericalSampler(torch.nn.Module):
 
     def __init__(self, Rs_per_ds, min_distance=1.0, max_distance=2.0, n_samples=64, perturb=True,
@@ -12,11 +24,9 @@ class SphericalSampler(torch.nn.Module):
         self.radial_weight_power = radial_weight_power
         self.radial_weight_grid_size = radial_weight_grid_size
 
-        self.max_distance = nn.Parameter(torch.tensor(max_distance / Rs_per_ds, dtype=torch.float32), requires_grad=False)
-        self.min_distance = nn.Parameter(torch.tensor(min_distance / Rs_per_ds, dtype=torch.float32), requires_grad=False)
-
-        t_vals = torch.linspace(0., 1., n_samples)[None]
-        self.t_vals = nn.Parameter(torch.tensor(t_vals, dtype=torch.float32), requires_grad=False)
+        self.register_buffer('max_distance', torch.tensor(max_distance / Rs_per_ds, dtype=torch.float32))
+        self.register_buffer('min_distance', torch.tensor(min_distance / Rs_per_ds, dtype=torch.float32))
+        self.register_buffer('t_vals', torch.linspace(0.0, 1.0, n_samples, dtype=torch.float32)[None])
 
     def forward(self, rays_o: torch.Tensor, rays_d: torch.Tensor):
         r"""
@@ -47,13 +57,11 @@ class SphericalSampler(torch.nn.Module):
         else:
             z_vals = dist_near[:, None] * (1. - self.t_vals) + dist_far[:, None] * self.t_vals
 
-        # Draw uniform samples from bins along ray
-        if self.perturb:
-            mids = .5 * (z_vals[:, 1:] + z_vals[:, :-1])
-            upper = torch.concat([mids, z_vals[:, -1:]], dim=1)
-            lower = torch.concat([z_vals[:, :1], mids], dim=1)
-            t_rand = torch.rand(z_vals.shape, device=z_vals.device)
-            z_vals = lower + (upper - lower) * t_rand
+        # Draw stratified training samples while retaining the exact near/far
+        # boundaries needed by finite-interval quadrature. Evaluation is
+        # deterministic even when perturb=True in the configuration.
+        if self.perturb and self.training:
+            z_vals = _perturb_interior_samples(z_vals)
 
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
 
@@ -98,8 +106,7 @@ class StratifiedSampler(torch.nn.Module):
         self.register_buffer('distance', torch.tensor(max_distance / Rs_per_ds, dtype=torch.float32))
         self.register_buffer('solar_R', torch.tensor(1 / Rs_per_ds, dtype=torch.float32))
 
-        t_vals = torch.linspace(0., 1., n_samples)[None]
-        self.register_buffer('t_vals', torch.tensor(t_vals, dtype=torch.float32))
+        self.register_buffer('t_vals', torch.linspace(0.0, 1.0, n_samples, dtype=torch.float32)[None])
 
     def forward(self, rays_o: torch.Tensor, rays_d: torch.Tensor):
         r"""
@@ -125,13 +132,9 @@ class StratifiedSampler(torch.nn.Module):
 
         z_vals = dist_near[:, None] * (1. - self.t_vals) + dist_far[:, None] * (self.t_vals)
 
-        # Draw uniform samples from bins along ray
-        if self.perturb:
-            mids = .5 * (z_vals[:, 1:] + z_vals[:, :-1])
-            upper = torch.concat([mids, z_vals[:, -1:]], dim=1)
-            lower = torch.concat([z_vals[:, :1], mids], dim=1)
-            t_rand = torch.rand(z_vals.shape, device=z_vals.device)
-            z_vals = lower + (upper - lower) * t_rand
+        # Keep the exact integration endpoints and disable jitter in eval mode.
+        if self.perturb and self.training:
+            z_vals = _perturb_interior_samples(z_vals)
 
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
 
@@ -157,10 +160,17 @@ class HierarchicalSampler(torch.nn.Module):
         new_z_samples = new_z_samples.detach()
 
         # Resample points from ray based on PDF.
-        z_vals_combined, _ = torch.sort(torch.cat([z_vals, new_z_samples], dim=-1), dim=-1)
+        z_vals_combined, sort_indices = torch.sort(
+            torch.cat([z_vals, new_z_samples], dim=-1), dim=-1
+        )
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals_combined[..., :, None]
         # [N_rays, N_samples + n_samples, 3]
-        return {'points': pts, 'z_vals': z_vals_combined, 'new_z_samples': new_z_samples}
+        return {
+            'points': pts,
+            'z_vals': z_vals_combined,
+            'new_z_samples': new_z_samples,
+            'sort_indices': sort_indices,
+        }
 
     def sample_pdf(self, bins: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
         r"""

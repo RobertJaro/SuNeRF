@@ -1,5 +1,7 @@
 import os
 import copy
+import math
+import uuid
 
 import torch
 from astropy import units as u
@@ -16,6 +18,95 @@ from sunerf.train.render_mode import RenderMode
 from sunerf.train.scaling import ImageAsinhScaling, ImageLinearScaling, ImageLogScaling
 
 
+class LossWeightSchedule(nn.Module):
+    """Checkpointable scalar loss-weight schedule.
+
+    The previous nested dictionaries stored inside ``nn.ParameterDict`` did not
+    register their tensors with PyTorch.  Consequently, schedule values stayed on
+    the CPU and were absent from checkpoints.  This module keeps every numeric
+    quantity as a buffer while retaining the existing ``schedule['value']`` and
+    ``schedule['type']`` access pattern used throughout the training module.
+    """
+
+    def __init__(self, start, end=None, schedule_type='constant', iterations=None, steps=None):
+        super().__init__()
+        start = float(start)
+        if not math.isfinite(start):
+            raise ValueError("Loss-weight schedule 'start' must be finite.")
+
+        self.schedule_type = schedule_type
+        self.register_buffer('value', torch.tensor(start, dtype=torch.float32))
+
+        if schedule_type in ('exponential_decay', 'exponential_growth'):
+            end = float(end)
+            iterations_float = float(iterations)
+            iterations = int(iterations_float)
+            if not math.isfinite(end) or start <= 0 or end <= 0:
+                raise ValueError("Exponential loss-weight schedule endpoints must be finite and positive.")
+            if (not math.isfinite(iterations_float) or iterations_float != iterations
+                    or iterations <= 0):
+                raise ValueError("Exponential loss-weight schedule 'iterations' must be a positive integer.")
+            self.register_buffer('start', torch.tensor(start, dtype=torch.float32))
+            self.register_buffer('end', torch.tensor(end, dtype=torch.float32))
+            self.register_buffer('gamma', torch.tensor((end / start) ** (1 / iterations), dtype=torch.float32))
+            self.register_buffer('iterations', torch.tensor(iterations, dtype=torch.int64))
+        elif schedule_type == 'step':
+            end = float(end)
+            steps_float = float(steps)
+            steps = int(steps_float)
+            if not math.isfinite(end):
+                raise ValueError("Step loss-weight schedule 'end' must be finite.")
+            if not math.isfinite(steps_float) or steps_float != steps or steps < 0:
+                raise ValueError("Step loss-weight schedule 'steps' must be a non-negative integer.")
+            self.register_buffer('start', torch.tensor(start, dtype=torch.float32))
+            self.register_buffer('end', torch.tensor(end, dtype=torch.float32))
+            self.register_buffer('steps', torch.tensor(steps, dtype=torch.int64))
+        elif schedule_type != 'constant':
+            raise ValueError(f"Unknown loss-weight schedule type: {schedule_type}")
+
+    @classmethod
+    def from_config(cls, config):
+        if not isinstance(config, dict):
+            return cls(config)
+
+        start = config['start']
+        end = config['end']
+        schedule_type = config.get('type', None)
+        if schedule_type is None or schedule_type == 'exponential':
+            schedule_type = 'exponential_decay' if start > end else 'exponential_growth'
+            return cls(
+                start,
+                end=end,
+                iterations=config['iterations'],
+                schedule_type=schedule_type,
+            )
+        if schedule_type == 'step':
+            return cls(start, end=end, steps=config['steps'], schedule_type='step')
+        raise ValueError(
+            f"Invalid lambda schedule type: {schedule_type}, must be in ['exponential', 'step']"
+        )
+
+    def __getitem__(self, key):
+        if key == 'type':
+            return self.schedule_type
+        if key in self._buffers:
+            return self._buffers[key]
+        raise KeyError(key)
+
+    @torch.no_grad()
+    def set_step(self, global_step):
+        """Set the value for an absolute optimizer-step count."""
+        global_step = max(0, int(global_step))
+        if self.schedule_type in ('exponential_decay', 'exponential_growth'):
+            step = self.iterations.new_tensor(global_step)
+            exponent = torch.minimum(step, self.iterations)
+            scheduled = self.start * self.gamma.pow(exponent)
+            self.value.copy_(torch.where(step >= self.iterations, self.end, scheduled))
+        elif self.schedule_type == 'step':
+            step = self.steps.new_tensor(global_step)
+            self.value.copy_(torch.where(step >= self.steps, self.end, self.start))
+
+
 class ThomsonSuNeRFModule(BaseSuNeRFModule):
     def __init__(self, Rs_per_ds, seconds_per_dt,
                  instruments, lambda_config=None,
@@ -25,7 +116,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                  light_travel_time=True,
                  physics_update_interval=1,
                  insitu_jitter_std_rsun=0.0,
-                 ballistic_acceleration_limit_kms2=1.0,
+                 ballistic_acceleration_limit_ms2=10.0,
                  **kwargs):
         # setup rendering
         sampling_config = sampling_config if sampling_config is not None else {}
@@ -116,7 +207,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                          'continuity': 1e-3,
                          'ballistic': 1e-4,
                          'radial': 1e-2,
-                         'velocity': 1e-3} if lambda_config is None else lambda_config
+                         'velocity': 1e-3} if lambda_config is None else dict(lambda_config)
         # check lambda config
         available_lambdas = ['image', 'ratio', 'continuity', 'ballistic', 'radial', 'velocity',
                              'insitu_density', 'insitu_velocity_radial',
@@ -132,33 +223,10 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             if k not in lambda_config:
                 lambda_config[k] = 0.0
         # load lambda config
-        lambdas = {}
-        for k, v in lambda_config.items():
-            if isinstance(v, dict):
-                start = v['start']
-                end = v['end']
-                l_type = v.get('type', None)
-                if l_type is None or l_type == 'exponential':
-                    iterations = v['iterations']
-                    gamma = (end / start) ** (1 / iterations)
-                    l_type = 'exponential_decay' if start > end else 'exponential_growth'
-                    lambdas[k] = {'gamma': nn.Parameter(torch.tensor(gamma, dtype=torch.float32), requires_grad=False),
-                                  'end': nn.Parameter(torch.tensor(end, dtype=torch.float32), requires_grad=False),
-                                  'value': nn.Parameter(torch.tensor(start, dtype=torch.float32), requires_grad=False),
-                                  'type': l_type}
-                elif l_type == 'step':
-                    steps = v['steps']
-                    lambdas[k] = {'steps': nn.Parameter(torch.tensor(int(steps), dtype=torch.int64), requires_grad=False),
-                                  'end': nn.Parameter(torch.tensor(end, dtype=torch.float32), requires_grad=False),
-                                  'value': nn.Parameter(torch.tensor(start, dtype=torch.float32), requires_grad=False),
-                                  'type': l_type}
-                else:
-                    raise ValueError(f"Invalid lambda schedule type: {l_type}, must be in ['exponential', 'step']")
-            else:
-                lambdas[k] = {'value': nn.Parameter(torch.tensor(v, dtype=torch.float32), requires_grad=False),
-                              'type': 'constant'}
-
-        self.lambdas = nn.ParameterDict(lambdas)
+        self.lambdas = nn.ModuleDict({
+            key: LossWeightSchedule.from_config(value)
+            for key, value in lambda_config.items()
+        })
 
         self.correction_modules = nn.ModuleDict(correction_modules)
         self.calibration_modules = nn.ModuleDict(calibration_modules)
@@ -181,10 +249,10 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         velocity_loss_scale = (100.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt
         self.velocity_loss_scale = nn.Parameter(torch.tensor(velocity_loss_scale, dtype=torch.float32),
                                                 requires_grad=False)
-        if ballistic_acceleration_limit_kms2 <= 0:
-            raise ValueError("ballistic_acceleration_limit_kms2 must be positive.")
+        if ballistic_acceleration_limit_ms2 <= 0:
+            raise ValueError("ballistic_acceleration_limit_ms2 must be positive.")
         self.ballistic_acceleration_limit = (
-            (ballistic_acceleration_limit_kms2 * u.km / u.s ** 2).to_value(u.R_sun / u.s ** 2)
+            (ballistic_acceleration_limit_ms2 * u.m / u.s ** 2).to_value(u.R_sun / u.s ** 2)
             / Rs_per_ds * seconds_per_dt ** 2
         )
         # radial weighting
@@ -290,9 +358,14 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                 correction_losses=correction_losses,
                 collect_regularization=k in dataset_batch,
             )
-            tB_nan_mask = ~torch.isnan(target_image[..., 0])
-            pB_nan_mask = ~torch.isnan(target_image[..., 1])
-            ratio_nan_mask = tB_nan_mask & pB_nan_mask
+            tB_nan_mask = torch.isfinite(target_image[..., 0])
+            pB_nan_mask = torch.isfinite(target_image[..., 1])
+            ratio_nan_mask = (
+                tB_nan_mask
+                & pB_nan_mask
+                & (target_image[..., 0] > 0)
+                & (target_image[..., 1] >= 0)
+            )
 
             # compute polarization ratios
             ratio_target_image = target_image[ratio_nan_mask, 1] / (target_image[ratio_nan_mask, 0] + 1e-8)
@@ -323,13 +396,13 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         pB_image_loss = self._mean_or_zero(instrument_pB_image_diff, device)
         image_loss = (tB_image_loss + pB_image_loss)
         ratio_loss = self._mean_or_zero(instrument_ratio_diff, device)
-        assert torch.isnan(image_loss).sum() == 0, 'Invalid loss detected: image_loss'
-        assert torch.isnan(ratio_loss).sum() == 0, 'Invalid loss detected: ratio_loss'
+        assert torch.isfinite(image_loss).all(), 'Invalid loss detected: image_loss'
+        assert torch.isfinite(ratio_loss).all(), 'Invalid loss detected: ratio_loss'
         loss = (self.lambdas['image']['value'] * image_loss +
                 self.lambdas['ratio']['value'] * ratio_loss)
 
         with torch.no_grad():
-            psnr = -10. * torch.log10(image_loss)
+            psnr = -10. * torch.log10(image_loss.clamp_min(torch.finfo(image_loss.dtype).tiny))
 
         log_values = {'image': image_loss, 'psnr': psnr,
                       'ratio': ratio_loss}
@@ -392,17 +465,10 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         train_step = self.global_step + 1
         should_update_physics = train_step % self.physics_update_interval == 0
         if 'random' in batch and has_active_physics_loss and should_update_physics:
-            random_query_points = batch['random']['coords']
-            n_random_points = random_query_points.shape[0]
-            physics_query_points = [random_query_points]
-            if active_physics['continuity']:
-                physics_query_points.extend(
-                    insitu_query_points[k] for k in insitu_batch
-                )
-            query_points = torch.cat(physics_query_points, dim=0)
+            query_points = batch['random']['coords']
             query_points.requires_grad_(True)
 
-            random_points = query_points[:n_random_points]
+            random_points = query_points
             model_out = self.model(query_points)
             v = model_out['v']
 
@@ -425,17 +491,21 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                 log_values['continuity.loss'] = continuity_loss
                 for term_name, term_value in continuity_terms.items():
                     log_values[f'continuity.{term_name}'] = term_value.pow(2).mean().sqrt()
-                assert not torch.isnan(continuity_loss).any(), 'Invalid loss detected: continuity_loss'
+                assert torch.isfinite(continuity_loss).all(), 'Invalid loss detected: continuity_loss'
 
             if active_physics['ballistic']:
-                ballistic_point_loss = self.compute_ballistic_loss(v, jacobian_matrices['v'])
-                ballistic_loss = ballistic_point_loss[:n_random_points].mean()
+                ballistic_point_loss, ballistic_terms = self.compute_ballistic_loss(
+                    v, jacobian_matrices['v']
+                )
+                ballistic_loss = ballistic_point_loss.mean()
                 loss += self.lambdas['ballistic']['value'] * ballistic_loss
                 log_values['ballistic.loss'] = ballistic_loss
-                assert not torch.isnan(ballistic_loss).any(), 'Invalid loss detected: ballistic_loss'
+                for term_name, term_value in ballistic_terms.items():
+                    log_values[f'ballistic.{term_name}'] = term_value.pow(2).mean().sqrt()
+                assert torch.isfinite(ballistic_loss).all(), 'Invalid loss detected: ballistic_loss'
 
             if active_physics['velocity'] or active_physics['radial']:
-                random_v = v[:n_random_points]
+                random_v = v
 
                 if active_physics['velocity']:
                     r_hat = random_points[:, :3] / (
@@ -447,7 +517,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                     velocity_loss = ((min_v + max_v) * radial_weight).sum() / (radial_weight.sum() + 1e-7)
                     log_values['velocity'] = velocity_loss
                     loss += self.lambdas['velocity']['value'] * velocity_loss
-                    assert not torch.isnan(velocity_loss).any(), 'Invalid loss detected: velocity_loss'
+                    assert torch.isfinite(velocity_loss).all(), 'Invalid loss detected: velocity_loss'
 
                 if active_physics['radial']:
                     normalization = (
@@ -459,8 +529,8 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                     radial_loss = (radial_loss.pow(2) * radial_weight).sum() / (radial_weight.sum() + 1e-7)
                     log_values['radial'] = radial_loss
                     loss += self.lambdas['radial']['value'] * radial_loss
-                    assert not torch.isnan(radial_loss).any(), 'Invalid loss detected: radial_loss'
-        assert torch.isnan(loss).sum() == 0, 'Invalid loss detected: loss'
+                    assert torch.isfinite(radial_loss).all(), 'Invalid loss detected: radial_loss'
+        assert torch.isfinite(loss).all(), 'Invalid loss detected: loss'
         # log results to WANDB
         self.log("loss", loss)
         self.log_dict({f'train.{k}': v for k, v in log_values.items()})
@@ -575,9 +645,17 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         """Penalize material acceleration only above the configured magnitude limit."""
         dv_dt = velocity_jacobian[:, :, 3]
         advective_acceleration = torch.einsum('ni,nji->nj', v, velocity_jacobian[:, :, :3])
-        acceleration_magnitude = torch.norm(dv_dt + advective_acceleration, dim=-1)
+        material_acceleration = dv_dt + advective_acceleration
+        acceleration_magnitude = torch.norm(material_acceleration, dim=-1)
         acceleration_excess = torch.relu(acceleration_magnitude - self.ballistic_acceleration_limit)
-        return (acceleration_excess / self.ballistic_acceleration_limit).pow(2)
+        loss = (acceleration_excess / self.ballistic_acceleration_limit).pow(2)
+        terms = {
+            'dv_dt': torch.norm(dv_dt, dim=-1),
+            'advective_acceleration': torch.norm(advective_acceleration, dim=-1),
+            'material_acceleration': acceleration_magnitude,
+            'acceleration_excess': acceleration_excess,
+        }
+        return loss, terms
 
     def validation_step(self, batch, batch_idx, *args):
         """
@@ -594,18 +672,17 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         mode = RenderMode(int(batch["render_mode"].view(-1)[0].item()))
 
         if mode == RenderMode.INSTRUMENT:
-            return self._val_instrument(batch, dataset_key)
+            outputs = self._val_instrument(batch, dataset_key)
+        elif mode == RenderMode.BACKGROUND:
+            outputs = self._val_background_only(batch)
+        elif mode == RenderMode.REFERENCE:
+            outputs = self._val_reference(batch)
+        elif mode == RenderMode.QUERY_POINTS:
+            outputs = self._val_query_points(batch)
+        else:
+            raise ValueError(f"Unknown render_mode={mode}")
 
-        if mode == RenderMode.BACKGROUND:
-            return self._val_background_only(batch)
-
-        if mode == RenderMode.REFERENCE:
-            return self._val_reference(batch)
-
-        if mode == RenderMode.QUERY_POINTS:
-            return self._val_query_points(batch)
-
-        raise ValueError(f"Unknown render_mode={mode}")
+        return self._filter_validation_outputs(dataset_key, outputs)
 
     def _val_instrument(self, batch, dataset_key: str):
         instrument_key = batch["instrument"]
@@ -620,6 +697,12 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         model_image, aux = self._apply_image_modules(batch, model_image)
 
         # ratios (safe for NaNs)
+        valid_ratio = (
+            torch.isfinite(image[..., 0:1])
+            & torch.isfinite(image[..., 1:2])
+            & (image[..., 0:1] > 0)
+            & (image[..., 1:2] >= 0)
+        )
         target_ratio = image[..., 1:2] / (image[..., 0:1] + 1e-8)
         model_ratio = model_image[..., 1:2] / (model_image[..., 0:1] + 1e-8)
 
@@ -627,6 +710,8 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         # >1 is unphysical, but can be caused by correction/calibration
         target_ratio = torch.clamp(target_ratio, 0.0, 2.0)
         model_ratio = torch.clamp(model_ratio, 0.0, 2.0)
+        target_ratio = torch.where(valid_ratio, target_ratio, torch.nan)
+        model_ratio = torch.where(valid_ratio, model_ratio, torch.nan)
 
         # scale images consistently
         image_scaling = self.scaling_modules[instrument_key]
@@ -640,10 +725,11 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             "model_image": model_image,
             "model_ratio": model_ratio,
             "target_ratio": target_ratio,
+            "scaling_mask": batch.get("scaling_mask", None),
+            # Integrated density is consumed by FixedViewpointSeriesCallback.  The
+            # per-LOS sampling diagnostics are intentionally not returned: no active
+            # callback uses them and retaining them dominates validation memory.
             "density": model_out.get("density", None),
-            "distance_from_sun": model_out.get("distance_from_sun", None),
-            "distance_from_obs": model_out.get("distance_from_obs", None),
-            "distance": model_out.get("distance", None),
         }
 
         # attach corrections/background if present
@@ -723,28 +809,36 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
         return {}
 
+    def _set_lambda_schedule_step(self, global_step):
+        for schedule in self.lambdas.values():
+            schedule.set_step(global_step)
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+        # ``init_path`` loads raw state dictionaries directly (outside Lightning's
+        # checkpoint hooks), so migration must also happen at this API boundary.
+        # Copy the mapping to avoid mutating callers that reuse a loaded checkpoint.
+        migrated_state = copy.copy(state_dict)
+        for key, value in self.lambdas.state_dict().items():
+            migrated_state.setdefault(f'lambdas.{key}', value.detach().clone())
+        return super().load_state_dict(migrated_state, strict=strict, assign=assign)
+
+    def on_load_checkpoint(self, checkpoint):
+        # Checkpoints created before loss schedules became registered modules have
+        # no ``lambdas.*`` entries.  Reconstruct their value at the saved optimizer
+        # step, then inject only missing keys so Lightning's subsequent strict load
+        # accepts both old and new checkpoints without overwriting saved state.
+        self._set_lambda_schedule_step(checkpoint.get('global_step', 0))
+        state_dict = checkpoint.setdefault('state_dict', {})
+        for key, value in self.lambdas.state_dict().items():
+            state_dict.setdefault(f'lambdas.{key}', value.detach().clone())
+        super().on_load_checkpoint(checkpoint)
+
     def on_train_batch_end(self, *args, **kwargs):
         self.model.step(self.global_step)
-        # update lambda values
-        for k, v in self.lambdas.items():
-            if v['type'] == 'exponential_decay':
-                new_value = v['value'] * v['gamma']
-                if new_value <= v['end']:
-                    new_value = v['end']
-                v['value'] = new_value
-                self.log(f'lambda_{k}', v['value'].detach().item(), sync_dist=True)
-            if v['type'] == 'exponential_growth':
-                new_value = v['value'] * v['gamma']
-                if new_value >= v['end']:
-                    new_value = v['end']
-                v['value'] = new_value
-                self.log(f'lambda_{k}', v['value'].detach().item(), sync_dist=True)
-            if v['type'] == 'step':
-                if self.global_step > int(v['steps'].item()):
-                    v['value'].copy_(v['end'])
-                self.log(f'lambda_{k}', v['value'].detach().item(), sync_dist=True)
-            if v['type'] == 'constant':
-                pass  # no change required, no logging
+        self._set_lambda_schedule_step(self.global_step)
+        for key, schedule in self.lambdas.items():
+            if schedule['type'] != 'constant':
+                self.log(f'lambda_{key}', schedule['value'], sync_dist=True)
         # log instrument scaling
         scaling = {f'instrument_calibration.{k}': torch.exp(m.calibration).detach().item()
                    for k, m in self.calibration_modules.items()}
@@ -757,7 +851,8 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
 def save_thomson_sunerf(sunerf: ThomsonSuNeRFModule, data_module: BaseDataModule, save_path,
                         msb_norm=None, msb=None, sigma_ne=None):
-    output_path = '/'.join(save_path.split('/')[0:-1])
+    save_path = os.path.abspath(os.fspath(save_path))
+    output_path = os.path.dirname(save_path)
     os.makedirs(output_path, exist_ok=True)
     state = {
         # sunerf  rendering module
@@ -777,4 +872,12 @@ def save_thomson_sunerf(sunerf: ThomsonSuNeRFModule, data_module: BaseDataModule
             'drho_cm3': data_module.drho_cm3,
         }
     }
-    torch.save(state, save_path)
+    temporary_path = f'{save_path}.tmp-{uuid.uuid4().hex}'
+    try:
+        torch.save(state, temporary_path)
+        os.replace(temporary_path, save_path)
+    finally:
+        try:
+            os.remove(temporary_path)
+        except FileNotFoundError:
+            pass

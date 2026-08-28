@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v33"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2025_09_v33'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_v44"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2025_09_v43'
 
 instruments:
   - type: 'default'
@@ -29,7 +29,7 @@ model:
   warm_steps: 2000
 
 module:
-  insitu_jitter_std_rsun: 1.0
+  ballistic_acceleration_limit_ms2: 1.0
 
 data:
   # Keep the time coordinate identical when initializing the CME-stage model.
@@ -40,7 +40,7 @@ data:
       instrument_key: 'STEREO_A_COR2'
       data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/cor2/pB/*"
       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/cor2/tB/*"
-      cadence: "3h"
+#      cadence: "1h"
       batch_size: 1024
       debug: False
       correction_config: { type: file,
@@ -53,7 +53,7 @@ data:
       instrument_key: 'PUNCH'
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/punch_pam/pB/*"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/punch_pam/tB/*"
-      cadence: "3h"
+#      cadence: "1h"
       batch_size: 1024
       debug: False
 
@@ -62,7 +62,7 @@ data:
       instrument_key: 'CCOR'
       data_path_pB: null
       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/ccor/*"
-      cadence: "3h"
+#      cadence: "1h"
       batch_size: 1024
       debug: False
 
@@ -137,7 +137,7 @@ data:
   seconds_per_dt: 86400
   batch_size: 4096
   validation_batch_size: 4096
-  num_workers: 16
+  num_workers: 4  # total concurrent training-loader workers per DDP rank
 
 callbacks:
   - type: 'thomson_image'
@@ -182,12 +182,12 @@ sampling:
 lambda:
   image: 1.0
   ratio: 0.0
-  radial: { type: step, steps: 4000, start: 0.0, end: 1.0e-4 }
-  continuity: { type: step, steps: 4000, start: 0.0, end: 1.0e-3 }
-  ballistic: { type: step, steps: 4000, start: 0.0, end: 1.0e-4 }
-  velocity: { type: step, steps: 4000, start: 0.0, end: 1.0e-2 }
-  insitu_density: 1.0e-2
-  insitu_velocity_radial: 1.0e-2
+  radial: { type: step, steps: 4000, start: 0.0, end: 1.0e-3 }
+  continuity: { type: step, steps: 4000, start: 0.0, end: 1.0e-4 }
+  ballistic: 0.0 #{ type: step, steps: 4000, start: 0.0, end: 1.0e-4 }
+  velocity: { type: step, steps: 4000, start: 0.0, end: 1.0e-1 }
+  insitu_density: 0 #1.0e-2
+  insitu_velocity_radial: 0 #1.0e-2
 
-#training:
-#  log_every_n_steps: 5000
+training:
+  log_every_n_steps: 10000

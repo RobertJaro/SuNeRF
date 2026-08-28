@@ -1,5 +1,11 @@
 import argparse
+import glob
+import hashlib
+import json
 import os
+import shutil
+import time
+import uuid
 import warnings
 
 import torch
@@ -17,6 +23,221 @@ from sunerf.train.callback import ThomsonImageCallback, LatitudeSliceCallback, L
     LongitudeTimeVelocityMagCallback, FixedViewpointSeriesCallback, \
     LongitudeSlicesCallback, InSituTimeSeriesCallback
 from sunerf.train.util import load_yaml_config
+
+
+DATA_CACHE_FORMAT_VERSION = 3
+
+
+def _load_stage_initial_weights(sunerf, state_dict):
+    """Load model weights while retaining loss schedules from the new stage config."""
+    lambda_schedule_state = {
+        key: value.detach().clone()
+        for key, value in sunerf.lambdas.state_dict().items()
+    }
+    # Schedule layouts can change between stages (for example, exponential to
+    # step), so exclude prior lambda buffers from the strict model-weight load.
+    stage_state_dict = state_dict.copy()
+    if hasattr(state_dict, '_metadata'):
+        stage_state_dict._metadata = state_dict._metadata
+    for key in tuple(stage_state_dict):
+        if key.startswith('lambdas.'):
+            stage_state_dict.pop(key)
+    try:
+        return sunerf.load_state_dict(stage_state_dict, strict=True)
+    finally:
+        sunerf.lambdas.load_state_dict(lambda_schedule_state, strict=True)
+        sunerf._set_lambda_schedule_step(0)
+
+
+def _cache_json_default(value):
+    if hasattr(value, 'isoformat'):
+        return value.isoformat()
+    if hasattr(value, 'tolist'):
+        return value.tolist()
+    return str(value)
+
+
+def _cache_relevant_config(value):
+    """Drop runtime-only options which do not change cached array contents."""
+    if isinstance(value, dict):
+        return {
+            key: _cache_relevant_config(item)
+            for key, item in value.items()
+            if key not in {'num_workers', 'preprocess_workers'}
+        }
+    if isinstance(value, list):
+        return [_cache_relevant_config(item) for item in value]
+    return value
+
+
+def _configured_source_files(value, key=''):
+    """Collect input files referenced by path/file entries in the data config."""
+    if isinstance(value, dict):
+        files = []
+        for child_key, child_value in value.items():
+            files.extend(_configured_source_files(child_value, str(child_key)))
+        return files
+    if isinstance(value, (list, tuple)):
+        files = []
+        for child_value in value:
+            files.extend(_configured_source_files(child_value, key))
+        return files
+    if not isinstance(value, str):
+        return []
+
+    expanded_value = os.path.expanduser(value)
+    is_path_key = any(token in key.lower() for token in ('path', 'file'))
+    if not is_path_key and not glob.has_magic(expanded_value) and not os.path.isfile(expanded_value):
+        return []
+    matches = glob.glob(expanded_value)
+    if not matches and os.path.isfile(expanded_value):
+        matches = [expanded_value]
+    return [os.path.abspath(path) for path in matches if os.path.isfile(path)]
+
+
+def build_data_cache_fingerprint(data_config):
+    """Fingerprint cache semantics plus source path, size, and modification time."""
+    source_records = []
+    for path in sorted(set(_configured_source_files(data_config))):
+        stat = os.stat(path)
+        source_records.append({
+            'path': path,
+            'size': stat.st_size,
+            'mtime_ns': stat.st_mtime_ns,
+        })
+    payload = {
+        'format_version': DATA_CACHE_FORMAT_VERSION,
+        'config': _cache_relevant_config(data_config),
+        'sources': source_records,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), default=_cache_json_default).encode()
+    return hashlib.sha256(encoded).hexdigest(), source_records
+
+
+def _atomic_torch_save(value, destination):
+    temporary_path = f'{destination}.tmp-{uuid.uuid4().hex}'
+    try:
+        torch.save(value, temporary_path)
+        os.replace(temporary_path, destination)
+    finally:
+        try:
+            os.remove(temporary_path)
+        except FileNotFoundError:
+            pass
+
+
+def _atomic_json_save(value, destination):
+    temporary_path = f'{destination}.tmp-{uuid.uuid4().hex}'
+    try:
+        with open(temporary_path, 'w') as file:
+            json.dump(value, file, indent=2, sort_keys=True)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary_path, destination)
+    finally:
+        try:
+            os.remove(temporary_path)
+        except FileNotFoundError:
+            pass
+
+
+def _is_cache_generation(path, cache_root):
+    if not path:
+        return False
+    real_path = os.path.realpath(path)
+    real_root = os.path.realpath(cache_root)
+    return (
+        os.path.dirname(real_path) == real_root
+        and os.path.basename(real_path).startswith('generation-')
+    )
+
+
+def _data_module_cache_files(data_module):
+    files = set()
+    datasets = (
+        *getattr(data_module, 'training_datasets', {}).values(),
+        *getattr(data_module, 'validation_datasets', {}).values(),
+    )
+    for dataset in datasets:
+        while hasattr(dataset, 'dataset'):
+            dataset = dataset.dataset
+        files.update(os.path.abspath(path) for path in getattr(dataset, 'batches_file_paths', {}).values())
+    return sorted(files)
+
+
+def _data_cache_is_usable(data_module, fingerprint, reload_token=None):
+    """Validate provenance and every mmap file before accepting a cache."""
+    if data_module is None or getattr(data_module, 'cache_fingerprint', None) != fingerprint:
+        return False
+    if reload_token is not None and getattr(data_module, 'cache_reload_token', None) != reload_token:
+        return False
+    cache_files = getattr(data_module, 'cache_files', None)
+    if cache_files is None:
+        cache_files = _data_module_cache_files(data_module)
+    return all(os.path.isfile(path) for path in cache_files)
+
+
+def _remove_cache_generation(path, cache_root):
+    """Delete only a UUID generation directory created by this cache manager."""
+    if _is_cache_generation(path, cache_root):
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _wait_for_data_module(path, fingerprint, reload_token=None):
+    """Wait for rank zero's atomic cache publication and validate its manifest."""
+    timeout = float(os.environ.get('SUNERF_CACHE_WAIT_SECONDS', 6 * 60 * 60))
+    deadline = time.monotonic() + timeout
+    last_error = None
+    while time.monotonic() < deadline:
+        try:
+            data_module = torch.load(path, weights_only=False)
+            if _data_cache_is_usable(data_module, fingerprint, reload_token=reload_token):
+                return data_module
+            last_error = RuntimeError(
+                'cache fingerprint does not match or one of its generated files is missing'
+            )
+        except (FileNotFoundError, EOFError, OSError, RuntimeError) as error:
+            last_error = error
+        time.sleep(1)
+    raise TimeoutError(f'Timed out waiting for data cache {path}: {last_error}')
+
+
+def cache_reload_token(enabled):
+    """Return one reload publication token shared by all ranks in this launch."""
+    if not enabled:
+        return None
+    existing = os.environ.get('SUNERF_CACHE_RELOAD_TOKEN')
+    if existing:
+        return existing
+
+    # torchrun provides TORCHELASTIC_RUN_ID. Lightning's subprocess launcher
+    # instead inherits the UUID placed in the parent environment below.
+    shared_launch_id = os.environ.get('TORCHELASTIC_RUN_ID')
+    if not shared_launch_id and ('RANK' in os.environ or 'LOCAL_RANK' in os.environ):
+        shared_launch_id = ':'.join([
+            os.environ.get('SLURM_JOB_ID', os.environ.get('PBS_JOBID', 'external')),
+            os.environ.get('MASTER_ADDR', 'localhost'),
+            os.environ.get('MASTER_PORT', 'unknown'),
+            os.environ.get('WORLD_SIZE', 'unknown'),
+        ])
+    token = shared_launch_id or uuid.uuid4().hex
+    os.environ['SUNERF_CACHE_RELOAD_TOKEN'] = token
+    return token
+
+
+@rank_zero_only
+def _save_thomson_sunerf_rank_zero(*args, **kwargs):
+    """Write the custom inference artifact from one distributed rank only."""
+    return save_thomson_sunerf(*args, **kwargs)
+
+
+def trainer_device_config(cuda_device_count):
+    """Return a valid Lightning accelerator/device pair for GPU or CPU hosts."""
+    cuda_device_count = int(cuda_device_count)
+    if cuda_device_count > 0:
+        return 'gpu', cuda_device_count
+    return 'cpu', 1
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -69,20 +290,104 @@ if __name__ == '__main__':
 
     # initialize data module and model
     data_module_save_path = os.path.join(work_directory, 'data_module.pkl')
+    data_manifest_path = os.path.join(work_directory, 'data_cache_manifest.json')
+    data_cache_root = os.path.join(work_directory, '.sunerf_cache')
+    cache_fingerprint, source_records = build_data_cache_fingerprint(data_config)
+    reload_token = cache_reload_token(args.reload)
 
 
     @rank_zero_only
     def _load_data_module():
-        if os.path.exists(data_module_save_path) and not args.reload:
-            print('Loaded data module from file. If you want to reload the data, use --reload')
-            return True
+        old_data_module = None
+        if os.path.exists(data_module_save_path):
+            try:
+                old_data_module = torch.load(data_module_save_path, weights_only=False)
+            except (EOFError, OSError, RuntimeError) as error:
+                warnings.warn(f'Ignoring unreadable data cache: {error}')
+            if (
+                not args.reload
+                and old_data_module is not None
+                and _data_cache_is_usable(old_data_module, cache_fingerprint)
+            ):
+                print('Loaded validated data cache. Use --reload to rebuild it explicitly.')
+                return
+
+        os.makedirs(data_cache_root, exist_ok=True)
+        generation_directory = os.path.join(data_cache_root, f'generation-{uuid.uuid4().hex}')
+        os.makedirs(generation_directory)
         warnings.filterwarnings("ignore")  # ignore warnings from sunpy
-        data_module = ThomsonDataModule(**data_config, work_directory=work_directory)
-        torch.save(data_module, data_module_save_path)
+        data_module = None
+        try:
+            data_module = ThomsonDataModule(**data_config, work_directory=generation_directory)
+            data_module.cache_fingerprint = cache_fingerprint
+            data_module.cache_format_version = DATA_CACHE_FORMAT_VERSION
+            data_module.cache_generation_directory = generation_directory
+            data_module.cache_files = _data_module_cache_files(data_module)
+            data_module.cache_reload_token = reload_token
+            _atomic_torch_save(data_module, data_module_save_path)
+            try:
+                _atomic_json_save({
+                    'format_version': DATA_CACHE_FORMAT_VERSION,
+                    'fingerprint': cache_fingerprint,
+                    'generation_directory': generation_directory,
+                    'cache_files': data_module.cache_files,
+                    'reload_token': reload_token,
+                    'sources': source_records,
+                }, data_manifest_path)
+            except OSError as error:
+                # The pickle contains the same provenance and is already
+                # atomically published, so a sidecar failure is non-fatal.
+                warnings.warn(f'Could not write data-cache manifest: {error}')
+        except Exception:
+            if data_module is not None:
+                data_module.clear()
+            _remove_cache_generation(generation_directory, data_cache_root)
+            raise
+
+        # Publish the new pickle first. Only after it is durable is it safe to
+        # remove the prior generation recorded by the old data module.
+        if old_data_module is not None:
+            old_generation = getattr(old_data_module, 'cache_generation_directory', None)
+            # Legacy caches outside our generation root are deliberately left
+            # untouched; only directories created and recorded by this manager
+            # are eligible for recursive cleanup.
+            _remove_cache_generation(old_generation, data_cache_root)
 
 
     _load_data_module()  # ensure only rank 0 loads/saves the data module
-    data_module = torch.load(data_module_save_path, weights_only=False)  # all ranks load the data module
+    data_module = _wait_for_data_module(
+        data_module_save_path,
+        cache_fingerprint,
+        reload_token=reload_token,
+    )
+    # Worker count is runtime state and deliberately excluded from the expensive
+    # array-cache fingerprint.
+    if 'num_workers' in data_config:
+        data_module.num_workers = data_config['num_workers']
+
+    stale_scaling_datasets = []
+    for config_group, loaded_datasets in (
+        (data_config.get('train_datasets', []), data_module.training_datasets),
+        (data_config.get('valid_datasets', []), data_module.validation_datasets),
+    ):
+        for dataset_config in config_group:
+            expected_scaling_config = dataset_config.get('scaling_mask_config')
+            if expected_scaling_config is None:
+                continue
+            dataset_key = dataset_config.get('key', dataset_config.get('type'))
+            loaded_dataset = loaded_datasets.get(dataset_key)
+            loaded_dataset = getattr(loaded_dataset, 'dataset', loaded_dataset)
+            actual_scaling_config = getattr(loaded_dataset, 'data_config', {}).get('scaling_mask_config')
+            has_scaling_mask = 'scaling_mask' in getattr(loaded_dataset, 'batches_file_paths', {})
+            if actual_scaling_config != expected_scaling_config or not has_scaling_mask:
+                stale_scaling_datasets.append(dataset_key)
+    if stale_scaling_datasets:
+        stale_keys = ', '.join(sorted(set(stale_scaling_datasets)))
+        raise RuntimeError(
+            f"Loaded data_module.pkl has stale or missing radial scaling for: {stale_keys}. "
+            "Rerun with --reload to rebuild the normalized images and overview plots."
+        )
+
     if not hasattr(data_module, "drho_cm3") or data_module.drho_cm3 is None:
         raise RuntimeError(
             "Loaded data module does not define drho_cm3. "
@@ -121,7 +426,7 @@ if __name__ == '__main__':
                 warnings.warn(
                     "Ignoring configured legacy checkpoint keys: " + ", ".join(sorted(ignored_keys))
                 )
-        sunerf.load_state_dict(state_dict, strict=True)
+        _load_stage_initial_weights(sunerf, state_dict)
         # Schedule buffers are stage configuration, not learned weights. Keep
         # the values from this YAML and initialize their derived state at step 0.
         for name, value in schedule_config.items():
@@ -143,7 +448,7 @@ if __name__ == '__main__':
                                           every_n_train_steps=log_every_n_steps)
     save_path = os.path.join(base_path, 'save_state.snf')
     save_callback = LambdaCallback(
-        on_validation_end=lambda *args: save_thomson_sunerf(
+        on_validation_end=lambda *args: _save_thomson_sunerf_rank_zero(
             sunerf, data_module, save_path, msb_norm=image_scaling, msb=MSB, sigma_ne=SIGMA_NE
         )
     )
@@ -282,14 +587,14 @@ if __name__ == '__main__':
 
         callbacks.append(callback)
 
-    N_GPUS = torch.cuda.device_count()
     torch.set_float32_matmul_precision('high')
 
     n_gpus = torch.cuda.device_count()
+    accelerator, devices = trainer_device_config(n_gpus)
     trainer = Trainer(max_epochs=epochs,
                       logger=logger,
-                      devices=N_GPUS,
-                      accelerator='gpu' if N_GPUS >= 1 else None,
+                      devices=devices,
+                      accelerator=accelerator,
                       strategy=DDPStrategy(find_unused_parameters=True) if n_gpus > 1 else 'auto',
                       num_sanity_val_steps=0,  # validate all points to check the first image
                       val_check_interval=log_every_n_steps,
@@ -299,3 +604,9 @@ if __name__ == '__main__':
 
     trainer.fit(sunerf, data_module, ckpt_path=ckpt_path)
     trainer.save_checkpoint(os.path.join(base_path, 'final.ckpt'))
+    # Validation cadence need not coincide with the final optimizer step. Publish
+    # one final inference artifact from rank zero so it cannot lag final.ckpt.
+    _save_thomson_sunerf_rank_zero(
+        sunerf, data_module, save_path,
+        msb_norm=image_scaling, msb=MSB, sigma_ne=SIGMA_NE,
+    )

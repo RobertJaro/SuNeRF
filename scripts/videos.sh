@@ -1,6 +1,6 @@
 python -m sunerf.evaluation.image_sequence_to_video \
-  /Users/rjarolim/PycharmProjects/SuNeRF/results/2025_09_v17/ccor \
-  /Users/rjarolim/PycharmProjects/SuNeRF/results/2025_09_v17/ccor.mp4 \
+  /Users/rjarolim/PycharmProjects/SuNeRF/results/2025_09/video_psp_north \
+  /Users/rjarolim/PycharmProjects/SuNeRF/results/2025_09/video_psp_north.mp4 \
   --fps 10
 python -m sunerf.evaluation.image_sequence_to_video \
   /Users/rjarolim/PycharmProjects/SuNeRF/results/2025_09_v17/cor2 \

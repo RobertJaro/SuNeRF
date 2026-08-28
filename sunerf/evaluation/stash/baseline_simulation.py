@@ -22,9 +22,9 @@ mae_percent = []
 me_percent = []
 lat, lon = [], []
 
-norm = psi_norms[193]
+norm = psi_norms[wl]
 
-ref_maps = [Map(f) for f in files if Map(f).carrington_latitude.value <= 7]
+ref_maps = [Map(f) for f in files if np.abs(Map(f).carrington_latitude.value) <= 7]
 h_map = create_heliographic_map(*ref_maps)
 
 for i, f in enumerate(tqdm(files)):
@@ -56,7 +56,7 @@ with open(os.path.join(result_path, 'baseline_metrics.txt'), 'w') as f:
     print(f'MAE; {np.mean(mae_percent)}', file=f)
     print(f'ME; {np.mean(me_percent)}', file=f)
     print(f'TEST', file=f)
-    test_cond = lat > 7
+    test_cond = np.abs(lat) > 7
     print(f'PSNR; {np.mean(psnr[test_cond])}', file=f)
     print(f'SSIM; {np.mean(ssim[test_cond])}', file=f)
     print(f'MAE; {np.mean(mae_percent[test_cond])}', file=f)

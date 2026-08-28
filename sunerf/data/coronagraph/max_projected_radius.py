@@ -9,6 +9,8 @@ from astropy import units as u
 from sunpy.coordinates import frames
 from sunpy.map import Map, all_coordinates_from_map
 
+from sunerf.data.ray_sampling import hpc_angular_separation, hpc_impact_parameter
+
 
 def compute_projected_radius_stats(
     file_path: str,
@@ -18,8 +20,12 @@ def compute_projected_radius_stats(
 ) -> dict[str, float | str | int]:
     s_map = Map(file_path)
     coords = all_coordinates_from_map(s_map).transform_to(frames.Helioprojective)
-    projected_radius_arcsec = ((coords.Tx**2 + coords.Ty**2) ** 0.5).to_value(u.arcsec)
-    projected_radius = (projected_radius_arcsec * u.arcsec / s_map.rsun_obs).to_value(u.one)
+    projected_radius_arcsec = hpc_angular_separation(
+        coords.Tx, coords.Ty
+    ).to_value(u.arcsec)
+    projected_radius = hpc_impact_parameter(
+        coords.Tx, coords.Ty, s_map.dsun
+    ).to_value(u.R_sun)
 
     data = np.asarray(s_map.data, dtype=float)
     valid = np.isfinite(projected_radius)

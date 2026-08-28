@@ -10,7 +10,7 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 # Configuration
 ################################################################################
 DATA_ROOT="/glade/work/rjarolim/data/sunerf-cme/2025_09"
-RUN_ROOT="/glade/work/rjarolim/sunerf-cme-obs/2025_09_22_cme_v04"
+RUN_ROOT="/glade/work/rjarolim/sunerf-cme-obs/2025_09_v41"
 #RUN_ROOT="/glade/work/rjarolim/sunerf-cme-obs/2025_09_cme_v02"
 SUNERF_PATH="${RUN_ROOT}/save_state.snf"
 TIME_START="2025-09-21T00:00:00"
@@ -62,7 +62,7 @@ python -m sunerf.evaluation.cme.plot_integrated_density \
 ################################################################################
 python -m sunerf.evaluation.cme.plot_tomography \
   --sunerf_path "${SUNERF_PATH}" \
-  --longitudes 240 250 260 270 280 290 300 310 \
+  --longitudes 250 255 260 265 270 \
   --time_range "2025-09-21T00:00:00" "2025-09-24T00:00:00"  \
   --t_points 100 \
   --radius_range 3 60 \
@@ -107,9 +107,9 @@ python -m sunerf.evaluation.cme.video_psp_north \
   --sunerf_path "${SUNERF_PATH}" \
   --insitu_path "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/psp/psp_insitu_20250901_20251001.npz" \
   --out_path "${RUN_ROOT}/video_psp_north" \
-  --N 10 \
+  --N 50 \
   --occ_min 3 \
   --occ_max 80 \
   --max_plot_radius_rsun 60 \
-  --time_start "${TIME_START}" \
-  --time_end "${TIME_END}"
+  --time_start "2025-09-04T00:00:00" \
+  --time_end "2025-09-24T00:00:00"

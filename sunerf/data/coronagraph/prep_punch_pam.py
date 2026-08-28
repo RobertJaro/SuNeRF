@@ -36,6 +36,16 @@ from sunerf.data.coronagraph.prep_common import (
 PUNCH_OCC_MIN = 20000.0
 PUNCH_OBJECT_MASK_RADIUS = 5000.0
 PUNCH_MOON_MASK_RADIUS = 5000.0
+PUNCH_INVALID_FILE_FLAGS = ("OUTLIER", "BADPKTS")
+
+
+def _flagged_file_values(header):
+    """Return PUNCH file-quality flags that mark the full frame invalid."""
+    return {
+        flag: header.get(flag, 0)
+        for flag in PUNCH_INVALID_FILE_FLAGS
+        if header.get(flag, 0) != 0
+    }
 
 
 class PunchPamPrep:
@@ -62,17 +72,24 @@ class PunchPamPrep:
         self.tb_out_path, self.pb_out_path = ensure_tb_pb_output_dirs(out_path)
 
     @staticmethod
-    def _load_punch_pam_maps(file_path):
+    def _load_punch_pam_maps(file_path, header=None):
         """Load a PUNCH PAM FITS file and derive tB and pB from extension 1."""
         try:
+            if header is None:
+                header = fits.getheader(file_path, 1)
+            flagged_values = _flagged_file_values(header)
+            if flagged_values:
+                raise ValueError(f"invalid file-quality flags: {flagged_values}")
             data = np.array(fits.getdata(file_path, 1), dtype=float, copy=True)
             uncertainty = np.asarray(fits.getdata(file_path, 2))
-            header = fits.getheader(file_path, 1)
         except Exception as exc:
             raise RuntimeError(f"Error loading PUNCH PAM FITS file {file_path}: {exc}")
 
+        data[0][data[0] <= 0] = np.nan
+        data[1][data[1] <= 0] = np.nan
+        data[2][data[2] <= 0] = np.nan
         tb = np.array(data[0], dtype=float, copy=True)
-        pb = np.array(data[1], dtype=float, copy=True)
+        pb = np.sqrt(np.square(data[1]) + np.square(data[2]))
         invalid = (uncertainty[0] == 0) & (uncertainty[1] == 0)
         tb[invalid] = np.nan
         pb[invalid] = np.nan
@@ -81,6 +98,19 @@ class PunchPamPrep:
     def convert(self, file_path):
         """Load, preprocess, and save one PAM tB/pB pair."""
         basename = os.path.basename(file_path)
+        try:
+            header = fits.getheader(file_path, 1)
+        except Exception as exc:
+            raise RuntimeError(f"Error reading PUNCH PAM header {file_path}: {exc}") from exc
+
+        flagged_values = _flagged_file_values(header)
+        if flagged_values:
+            print(
+                f"[{os.getpid()}] DISCARD {basename}: invalid file-quality flags {flagged_values}",
+                flush=True,
+            )
+            return None
+
         tb_out = os.path.join(self.tb_out_path, basename)
         pb_out = os.path.join(self.pb_out_path, basename)
         write_tb = should_write_output(tb_out, self.overwrite)
@@ -89,7 +119,7 @@ class PunchPamPrep:
             return tb_out, pb_out
 
         try:
-            tb_map, pb_map = self._load_punch_pam_maps(file_path)
+            tb_map, pb_map = self._load_punch_pam_maps(file_path, header=header)
             tb_map = self.map_preprocessor.prepare_map(tb_map)
             pb_map = self.map_preprocessor.prepare_map(pb_map)
             if write_tb:
@@ -149,10 +179,12 @@ def main():
                 total=len(files),
                 desc="Preprocessing PUNCH PAM maps",
             )
+            if out_file is not None
         ]
 
     print(
-        f"Preprocessed {len(out_files)} files. Saved tB to {os.path.join(args.out_path, 'tB')} and pB to "
+        f"Preprocessed {len(out_files)} files and discarded {len(files) - len(out_files)} flagged files. "
+        f"Saved tB to {os.path.join(args.out_path, 'tB')} and pB to "
         f"{os.path.join(args.out_path, 'pB')}."
     )
 

@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from sunerf.data.date_util import normalize_datetime, unnormalize_datetime
 from sunerf.data.loader.base_loader import MapDataLoader
-from sunerf.data.ray_sampling import get_rays
+from sunerf.data.ray_sampling import get_rays, hpc_impact_parameter
 from sunerf.data.utils import get_azimuthal_equidistant_coordinates
 from sunerf.evaluation.util import convert_spherical_to_cartesian
 from sunerf.rendering.base_tracing import MultiResolutionRenderingModule
@@ -34,9 +34,9 @@ class SuNeRFLoader:
                           data_config[k]['observers']]
 
         rendering = state['rendering']
-        self.rendering = rendering.to(device)
+        self.rendering = rendering.to(device).eval()
         model = rendering.fine_model if isinstance(rendering, MultiResolutionRenderingModule) else rendering.model
-        self.model = nn.DataParallel(model).to(device)  # wrap model for multi-gpu inference
+        self.model = nn.DataParallel(model).to(device).eval()  # wrap model for multi-gpu inference
         self.instrument_keys = list(self.rendering.rendering_modules.keys())
 
         self.seconds_per_dt = state['seconds_per_dt']
@@ -81,9 +81,12 @@ class SuNeRFLoader:
                             instrument_key=None,
                             **kwargs):
         # convert to pose
+        if center is not None:
+            raise NotImplementedError(
+                "Offset look-at centers are not supported by pose_spherical."
+            )
         target_pose = pose_spherical(lon.to_value(u.rad), lat.to_value(u.rad),
-                                     distance.to_value(u.solRad) / self.Rs_per_ds,
-                                     center).numpy()
+                                     distance.to_value(u.solRad) / self.Rs_per_ds)
         # load rays
         ref_map = self.ref_map(instrument_key)
         if resolution is not None:
@@ -123,7 +126,7 @@ class SuNeRFLoader:
 
         # convert to pose
         target_pose = pose_spherical(lon.to_value(u.rad), lat.to_value(u.rad),
-                                     distance.to_value(u.solRad) / self.Rs_per_ds).numpy()
+                                     distance.to_value(u.solRad) / self.Rs_per_ds)
         # load image coordinates
         img_coords = get_azimuthal_equidistant_coordinates(ref_map)
 
@@ -131,6 +134,7 @@ class SuNeRFLoader:
         pose_out['maps'] = self.get_maps(pose_out['image'], reference_coord, scale, instrument_key)
         return pose_out
 
+    @torch.no_grad()
     def load_pose(self, img_coords, target_pose, time, batch_size=int(2 ** 10), instrument_key=None, progress=True,
                   model_outputs=['image', 'mean_T', 'total_ne', 'mean_absorption']):
         # load rays
@@ -372,6 +376,11 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
         physical_rho = model_rho * self.drho_cm3
         return physical_rho
 
+    def convert_column_density(self, model_column_density):
+        """Convert ``integral rho_model d(model distance)`` to electrons cm^-2."""
+        ds_cm = float(self.Rs_per_ds) * (1 * u.R_sun).to_value(u.cm)
+        return model_column_density * self.drho_cm3 * ds_cm
+
     @torch.no_grad()
     def load_image(self, lat: u, lon: u,
                    time: datetime,
@@ -605,7 +614,7 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
         # convert image
         output['image'] = output['image'] * self.msb_norm
         if 'density' in output:
-            output['density'] = self.convert_rho(output['density'])
+            output['density'] = self.convert_column_density(output['density'])
         return output
 
 
@@ -620,14 +629,25 @@ class PlasmaSuNeRFLoader(SuNeRFLoader):
 def _get_scale_from_occ_max(occ_max, distance, resolution):
     occ_max = u.Quantity(occ_max).to(u.R_sun)
     distance = u.Quantity(distance).to(u.R_sun)
-    nx = int(resolution[0].to_value(u.pix))
-    ny = int(resolution[1].to_value(u.pix))
+    # NumPy/SunPy image shapes are ordered (y, x), while WCS scale is (x, y).
+    ny = int(resolution[0].to_value(u.pix))
+    nx = int(resolution[1].to_value(u.pix))
 
-    # Solar angular half-diameter at observer distance.
-    rsun_obs = np.arcsin((1 * u.R_sun) / distance).to(u.arcsec)
-    full_fov = 2 * occ_max.to_value(u.R_sun) * rsun_obs
+    impact_ratio = (occ_max / distance).to_value(u.one)
+    if not 0 < impact_ratio < 1:
+        raise ValueError("occ_max must be positive and smaller than the observer distance.")
 
-    return [full_fov / nx, full_fov / ny] * u.arcsec / u.pix
+    # FITS TAN uses a gnomonic projection-plane coordinate.  Convert the
+    # desired physical impact parameter to its exact sky angle and then to the
+    # corresponding tangent-plane radius at the outermost pixel centers.
+    sky_radius = np.arcsin(impact_ratio)
+    tan_plane_radius = (np.tan(sky_radius) * u.rad).to(u.arcsec)
+    x_half_span = max(nx - 1, 1) / 2
+    y_half_span = max(ny - 1, 1) / 2
+
+    return u.Quantity(
+        [tan_plane_radius / x_half_span, tan_plane_radius / y_half_span]
+    ) / u.pix
 
 
 def _get_mask(s_map, occ_min, occ_max):
@@ -635,14 +655,13 @@ def _get_mask(s_map, occ_min, occ_max):
     img_coords = all_coordinates_from_map(s_map)
     x = img_coords.Tx
     y = img_coords.Ty
-
-    radius = np.sqrt((x ** 2 + y ** 2))  # in arcsec
+    impact_radius = hpc_impact_parameter(x, y, s_map.dsun).to(u.R_sun)
 
     mask = np.zeros(x.shape, dtype=bool)
     if occ_min is not None:
-        occ_min_cond = (radius < s_map.rsun_obs * occ_min.to_value(u.R_sun))
+        occ_min_cond = impact_radius < u.Quantity(occ_min).to(u.R_sun)
         mask[occ_min_cond] = True
     if occ_max is not None:
-        occ_max_cond = (radius > s_map.rsun_obs * occ_max.to_value(u.R_sun))
+        occ_max_cond = impact_radius > u.Quantity(occ_max).to(u.R_sun)
         mask[occ_max_cond] = True
     return mask

@@ -18,6 +18,8 @@ from sunpy.coordinates.ephemeris import get_body_heliographic_stonyhurst
 from sunpy.map import Map, all_coordinates_from_map
 from tqdm import tqdm
 
+from sunerf.data.ray_sampling import hpc_angular_separation, hpc_impact_parameter
+
 
 DEFAULT_SOLAR_SYSTEM_OBJECTS = (
     "venus",
@@ -404,20 +406,24 @@ def prep_coronagraph_map(
     """Apply common coronagraph radial masks and optional bright-object filtering."""
     data = np.array(s_map.data, dtype=float, copy=True)
     coords = all_coordinates_from_map(s_map).transform_to(frames.Helioprojective)
-    radius = np.sqrt(coords.Tx ** 2 + coords.Ty ** 2)
+    angular_radius = hpc_angular_separation(coords.Tx, coords.Ty)
 
     if occ_min is not None:
-        data[radius <= occ_min] = np.nan
+        data[angular_radius <= occ_min] = np.nan
     if occ_max is not None:
-        data[radius >= occ_max] = np.nan
+        data[angular_radius >= occ_max] = np.nan
 
     projected_radius = None
     if max_radius is not None:
-        projected_radius = (radius / s_map.rsun_obs).to_value(1)
+        projected_radius = hpc_impact_parameter(
+            coords.Tx, coords.Ty, s_map.dsun
+        ).to_value(u.R_sun)
         data[projected_radius >= max_radius.to_value(u.solRad)] = np.nan
     if filter_bright_objects:
         if projected_radius is None:
-            projected_radius = (radius / s_map.rsun_obs).to_value(1)
+            projected_radius = hpc_impact_parameter(
+                coords.Tx, coords.Ty, s_map.dsun
+            ).to_value(u.R_sun)
         data = mask_bright_background_objects(
             data,
             projected_radius,
@@ -429,7 +435,12 @@ def prep_coronagraph_map(
 
 def _hpc_circle_mask(coordinates, center, radius):
     radius = u.Quantity(radius, u.arcsec)
-    separation = np.hypot(coordinates.Tx - center.Tx, coordinates.Ty - center.Ty)
+    separation = hpc_angular_separation(
+        coordinates.Tx,
+        coordinates.Ty,
+        center_Tx=center.Tx,
+        center_Ty=center.Ty,
+    )
     return separation <= radius
 
 

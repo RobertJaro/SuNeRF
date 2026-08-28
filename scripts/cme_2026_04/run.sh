@@ -14,5 +14,5 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 ################################################################################
 # Train SuNeRF model
 ################################################################################
-python -m sunerf.run_thomson --config "config/cme/2026_04_cme.yaml"
+python -m sunerf.run_thomson --config "config/cme/2026_04.yaml"
 

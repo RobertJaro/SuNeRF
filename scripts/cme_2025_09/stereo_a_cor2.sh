@@ -85,17 +85,17 @@ python -m sunerf.data.coronagraph.clean_invalid --invalid_files "/glade/campaign
 mkdir -p "${PREP_DIR}/masks"
 
 python -m sunerf.data.coronagraph.compute_correction \
-  --type full-min \
+  --type daily-min \
   --input "${PREP_DIR}/cor2/tB/*" \
   --output "${PREP_DIR}/masks/stereo_a_cor2_tB_correction.npy"
 
 python -m sunerf.data.coronagraph.compute_correction \
-  --type full-min \
+  --type daily-min \
   --input "${PREP_DIR}/cor2/pB/*" \
   --output "${PREP_DIR}/masks/stereo_a_cor2_pB_correction.npy"
 
 python -m sunerf.data.coronagraph.compute_correction \
-  --type full-min \
+  --type daily-min \
   --input "${PREP_DIR}/cor2_clear/*" \
   --output "${PREP_DIR}/masks/stereo_a_cor2_tB_clear_correction.npy"
 

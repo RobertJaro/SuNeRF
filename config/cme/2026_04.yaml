@@ -1,55 +1,47 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/2026_04_v10"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2026_04_v10'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/2026_04_v11"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2026_04_v11'
 
 instruments:
   - type: 'default'
     key: 'STEREO_A_COR2'
-    scaling: { type: 'asinh', a: 1.0e-3 }
+    scaling: { type: "asinh", a: 1.0e-3 }
     correction: { corrections: [ 'f_corona', 'pB_add', 'tB_add', 'pB_mul', 'tB_mul' ] }
-#  - type: 'default'
-#    key: 'STEREO_A_COR2_CLEAR'
-#    scaling: { type: 'asinh', a: 1.0e-3 }
-#    correction: { corrections: [ 'f_corona', 'tB_add', 'tB_mul' ] }
   - type: 'default'
     key: 'CCOR'
-    scaling: { type: 'asinh', a: 1.0e-3 }
+    scaling: { type: "asinh", a: 1.0e-3 }
     correction: { corrections: [ 'f_corona', 'tB_add', 'tB_mul' ] }
 
 model:
-  use_carrington_projection: True
   model_type: 'split_temporal'
-  cold_steps: 0
-  warm_steps: 5000
+  cold_steps: 2000
+  warm_steps: 2000
+
+module:
+  ballistic_acceleration_limit_ms2: 1.0
 
 data:
+  # Keep the time coordinate identical when initializing the CME-stage model.
+  ref_date: "2026-04-01T00:00:00"
   train_datasets:
-    # Background datasets
     - type: 'COR'
       key: 'STEREO_A_COR2'
       instrument_key: 'STEREO_A_COR2'
       data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/cor2/pB/*"
       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/cor2/tB/*"
+      cadence: "1h"
       batch_size: 1024
       debug: False
       correction_config: { type: file,
-                           tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/masks/stereo_a_cor2_tB_correction.npy",
-                           pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/masks/stereo_a_cor2_pB_correction.npy",
-                           clean: False }
-
-#    - type: 'COR'
-#      key: 'STEREO_A_COR2_CLEAR'
-#      instrument_key: 'STEREO_A_COR2_CLEAR'
-#      data_path_pB: null
-#      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/cor2_clear/*"
-#      batch_size: 1024
-#      debug: False
-#      correction_config: { type: file, tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/masks/stereo_a_cor2_tB_clear_correction.npy", clean: False }
+      tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/masks/stereo_a_cor2_tB_correction.npy",
+      pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/masks/stereo_a_cor2_pB_correction.npy",
+      clean: False }
 
     - type: 'CCOR'
       key: 'CCOR'
       instrument_key: 'CCOR'
       data_path_pB: null
       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/ccor/*"
+      cadence: "1h"
       batch_size: 1024
       debug: False
 
@@ -66,26 +58,16 @@ data:
       instrument_key: 'STEREO_A_COR2'
       data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/cor2/pB/*"
       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/cor2/tB/*"
-      time_range: "2026-04-23T19:48:00"
       correction_config: { type: file,
-                           tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/masks/stereo_a_cor2_tB_correction.npy",
-                           pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/masks/stereo_a_cor2_pB_correction.npy",
-                           clean: False }
-
-#    - type: 'COR'
-#      key: 'STEREO_A_COR2_CLEAR'
-#      instrument_key: 'STEREO_A_COR2_CLEAR'
-#      data_path_pB: null
-#      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/cor2_clear/*"
-#      time_range: "2026-04-23T19:48:00"
-#      correction_config: { type: file, tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/masks/stereo_a_cor2_tB_clear_correction.npy", clean: False }
+      tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/masks/stereo_a_cor2_tB_correction.npy",
+      pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/masks/stereo_a_cor2_pB_correction.npy",
+      clean: False }
 
     - type: 'CCOR'
       key: 'CCOR'
       instrument_key: 'CCOR'
       data_path_pB: null
       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2026_04/prep/ccor/*"
-      time_range: "2026-04-23T19:48:00"
 
     - key: valid_radial
       type: radial_slices
@@ -101,20 +83,16 @@ data:
   seconds_per_dt: 86400
   batch_size: 4096
   validation_batch_size: 4096
-  num_workers: 32
+  num_workers: 16
 
 callbacks:
   - type: 'thomson_image'
     ds_key: 'STEREO_A_COR2'
-#  - type: 'thomson_image'
-#    ds_key: 'STEREO_A_COR2_CLEAR'
   - type: 'thomson_image'
     ds_key: 'CCOR'
 
   - type: 'correction_image'
     ds_key: 'STEREO_A_COR2'
-#  - type: 'correction_image'
-#    ds_key: 'STEREO_A_COR2_CLEAR'
   - type: 'correction_image'
     ds_key: 'CCOR'
 
@@ -127,7 +105,7 @@ callbacks:
 logging:
   entity: "robert_jarolim"
   project: "sunerf-cme-obs-v4"
-  name: "2026-04 to 2026-05 - STEREO A COR2 + CCOR"
+  name: "2026-04 - STEREO A COR2 + CCOR"
 
 sampling:
   type: "spherical"
@@ -137,10 +115,8 @@ sampling:
 
 lambda:
   image: 1.0
-  ratio: 1.0
-  radial: 1.0e-4
-  continuity: 1.0e-3
-  velocity: 1.0e-1
-
-training:
-  log_every_n_steps: 5000
+  ratio: 0.0
+  radial: { type: step, steps: 4000, start: 0.0, end: 1.0e-4 }
+  continuity: { type: step, steps: 4000, start: 0.0, end: 1.0e-4 }
+  ballistic: { type: step, steps: 4000, start: 0.0, end: 1.0e-4 }
+  velocity: { type: step, steps: 4000, start: 0.0, end: 1.0e-2 }

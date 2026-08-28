@@ -159,8 +159,7 @@ def sample_equal_spaced_los_profile(loader, time, ray_origin_model, ray_directio
         np.full((n_samples, 1), loader.normalize_datetime(time), dtype=np.float32),
     ], axis=-1).astype(np.float32)
     model_out = loader.load_coords(query_points, batch_size=batch_size, progress=False)
-    rho_cm3 = model_out['rho'][..., 0]
-    rho_cm3 = rho_cm3.astype(np.float32)
+    rho_cm3 = loader.convert_rho(model_out['rho'])[..., 0].astype(np.float32)
     rho_cm3[~keep_mask] = np.nan
 
     dz_model = float(z_model[1] - z_model[0])
@@ -213,13 +212,9 @@ def render_profile(loader, observer_coord, time, hpc_tx, hpc_ty, resolution, occ
 
     tB_map = Map(output['image'][..., 0], ref_map.meta)
     pB_map = Map(output['image'][..., 1], ref_map.meta)
-    rendered_rho_cm3_map = loader.convert_rho(output['rho'][..., None]).squeeze(-1)
-    rendered_z_model = output['z_vals']
-    rendered_dz_model = rendered_z_model[..., 1:] - rendered_z_model[..., :-1]
-    rendered_dz_model = np.concatenate([rendered_dz_model[..., :1], rendered_dz_model], axis=-1)
-    rendered_ds_cm = rendered_dz_model * float(loader.Rs_per_ds) * R_SUN_CM
-    column_density_cm2_map = (rendered_rho_cm3_map * rendered_ds_cm).sum(axis=-1)
-    column_density_map = Map(column_density_cm2_map, ref_map.meta)
+    # The renderer already integrated rho with composite-trapezoidal node widths;
+    # ThomsonSuNeRFLoader converts that model integral to electrons cm^-2.
+    column_density_map = Map(output['density'], ref_map.meta)
 
     target_x, target_y = ref_map.world_to_pixel(target_coord)
     x_pix = target_x.to_value(u.pix)

@@ -14,11 +14,15 @@ from lightning.pytorch import Callback
 from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from skimage.metrics import structural_similarity
 from sklearn.linear_model import LinearRegression
+from sunpy.visualization.colormaps import cm
 
 from sunerf.data.date_util import unnormalize_datetime
 from sunerf.data.utils import sdo_img_norm
 
 class BaseCallback(Callback):
+
+    validation_output_keys = ()
+    validation_output_prefixes = ()
 
     def __init__(self, ds_key, name=None):
         super().__init__()
@@ -31,8 +35,20 @@ class BaseCallback(Callback):
         outputs = pl_module.validation_outputs[self.ds_key]
         return outputs
 
+    def setup(self, trainer, pl_module, stage):
+        """Tell the module exactly which tensors this callback consumes."""
+        register = getattr(pl_module, 'register_validation_output_requirements', None)
+        if register is not None:
+            register(
+                self.ds_key,
+                keys=self.validation_output_keys,
+                prefixes=self.validation_output_prefixes,
+            )
+
 
 class AbsorptionCallback(BaseCallback):
+
+    validation_output_keys = ('kappa', 'log_kappa', 'log_ne', 'log_T')
 
     def __init__(self, ds_key, image_shape):
         super().__init__(ds_key)
@@ -81,6 +97,11 @@ class AbsorptionCallback(BaseCallback):
 
 
 class TestImageCallback(BaseCallback):
+
+    validation_output_keys = (
+        'fine_image', 'target_image', 'coarse_image', 'height_map',
+        'absorption_map', 'z_vals_stratified', 'z_vals_hierarchical', 'distance',
+    )
 
     def __init__(self, ds_key, image_shape, cmap='gray'):
         super().__init__(ds_key)
@@ -138,6 +159,11 @@ class TestImageCallback(BaseCallback):
 
 
 class PlasmaImageCallback(BaseCallback):
+
+    validation_output_keys = (
+        'pred_image', 'target_image', 'height_map', 'mean_T', 'total_ne',
+        'mean_absorption', 'z_vals_stratified', 'z_vals_hierarchical', 'distance',
+    )
 
     def __init__(self, ds_key, image_shape, cmaps=None):
         super().__init__(ds_key)
@@ -243,6 +269,10 @@ class PlasmaImageCallback(BaseCallback):
 
 class ThomsonImageCallback(BaseCallback):
 
+    validation_output_keys = (
+        'target_image', 'model_image', 'target_ratio', 'model_ratio', 'scaling_mask',
+    )
+
     def __init__(self, ds_key, image_shape):
         super().__init__(ds_key)
         self.image_shape = image_shape
@@ -259,6 +289,8 @@ class ThomsonImageCallback(BaseCallback):
 
         model_image = outputs['model_image']
         target_image = outputs['target_image']
+        scaling_mask = outputs.get('scaling_mask')
+        brightness_label = 'Radially adjusted brightness' if scaling_mask is not None else 'Scaled brightness'
 
         target_ratio = outputs['target_ratio']
         model_ratio = outputs['model_ratio']
@@ -268,6 +300,7 @@ class ThomsonImageCallback(BaseCallback):
         # pB and tB images
         for i in range(2):
             ax = axs[i, 0]
+            brightness_cmap = cm.soholasco2 if scaling_mask is not None else 'plasma'
 
             if np.isnan(target_image[..., i]).all():
                 v_min = np.nanmin(model_image[..., i])
@@ -275,18 +308,20 @@ class ThomsonImageCallback(BaseCallback):
             else:
                 v_min = np.nanmin(target_image[..., i])
                 v_max = np.nanmax(target_image[..., i])
-            im = ax.imshow(target_image[..., i], cmap='plasma', vmin=v_min, vmax=v_max, origin='lower')
+            if v_max <= v_min:
+                v_max = np.nextafter(v_min, np.inf)
+            im = ax.imshow(target_image[..., i], cmap=brightness_cmap, vmin=v_min, vmax=v_max, origin='lower')
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("right", size="5%", pad=0.05)
             plt.colorbar(im, cax=cax)
-            ax.set_title(f'Ground Truth')
+            ax.set_title(f'Ground Truth\n{brightness_label}')
 
             ax = axs[i, 1]
-            im = ax.imshow(model_image[..., i], cmap='plasma', vmin=v_min, vmax=v_max, origin='lower')
+            im = ax.imshow(model_image[..., i], cmap=brightness_cmap, vmin=v_min, vmax=v_max, origin='lower')
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("right", size="5%", pad=0.05)
             plt.colorbar(im, cax=cax)
-            ax.set_title(f'Prediction')
+            ax.set_title(f'Prediction\n{brightness_label}')
 
         # ratio images
         ax = axs[2, 0]
@@ -318,9 +353,26 @@ class ThomsonImageCallback(BaseCallback):
         wandb.log({f'images.{self.ds_key}': wandb.Image(fig)})
         plt.close('all')
 
-        # self.plot_integrated_quantities(outputs['density'], outputs['distance'],
-        #                                 outputs['z_vals_stratified'], outputs['z_vals_hierarchical'], outputs['distance_from_sun'],
-        #                                 outputs['distance_from_obs'])
+        if scaling_mask is not None:
+            fig, axs = plt.subplots(1, scaling_mask.shape[-1], figsize=(4 * scaling_mask.shape[-1], 4), squeeze=False)
+            for channel_idx, channel_name in enumerate(('tB', 'pB')[:scaling_mask.shape[-1]]):
+                scale_image = scaling_mask[..., channel_idx]
+                positive = scale_image[np.isfinite(scale_image) & (scale_image > 0)]
+                if positive.size == 0:
+                    norm = None
+                else:
+                    vmin = float(np.nanmin(positive))
+                    vmax = float(np.nanmax(positive))
+                    if vmax <= vmin:
+                        vmax = np.nextafter(vmin, np.inf)
+                    norm = LogNorm(vmin=vmin, vmax=vmax)
+                im = axs[0, channel_idx].imshow(scale_image, cmap='viridis', norm=norm, origin='lower')
+                axs[0, channel_idx].set_title(f'{channel_name} radial scale')
+                axs[0, channel_idx].set_axis_off()
+                fig.colorbar(im, ax=axs[0, channel_idx], fraction=0.046, pad=0.02)
+            fig.tight_layout()
+            wandb.log({f'images.{self.ds_key}.radial_scale': wandb.Image(fig)})
+            plt.close(fig)
 
         val_loss = np.nanmean((model_image - target_image) ** 2)
         val_ssim = []
@@ -337,6 +389,8 @@ class ThomsonImageCallback(BaseCallback):
 
 
 class CorrectionImageCallback(BaseCallback):
+
+    validation_output_prefixes = ('correction.',)
 
     def __init__(self, ds_key, image_shape):
         super().__init__(ds_key)
@@ -489,7 +543,8 @@ class CorrectionImageCallback(BaseCallback):
 
 
 @rank_zero_only
-def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date, ds_key=None):
+def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date, ds_key=None,
+                 brightness_mode='physical brightness'):
     dirs = np.stack([np.sum([0, 0, -1] * pose[:3, :3], axis=-1) for pose in poses])
     origins = poses[:, :3, -1] * Rs_per_ds
     colors = plt.get_cmap('viridis')(Normalize()(times))
@@ -514,6 +569,23 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
     tb_norm = _channel_lognorm(images[..., 0] if images.ndim == 4 else images)
     pb_norm = _channel_lognorm(images[..., 1]) if images.ndim == 4 and images.shape[-1] > 1 else None
 
+    def _channel_linear_norm(data):
+        finite = data[np.isfinite(data)]
+        if finite.size == 0:
+            return None
+        vmin = float(np.nanmin(finite))
+        vmax = float(np.nanmax(finite))
+        if not np.isfinite(vmin) or not np.isfinite(vmax):
+            return None
+        if vmax <= vmin:
+            vmax = np.nextafter(vmin, np.inf)
+        return Normalize(vmin=vmin, vmax=vmax)
+
+    adjusted = brightness_mode != 'physical brightness'
+    if adjusted:
+        tb_norm = _channel_linear_norm(images[..., 0] if images.ndim == 4 else images)
+        pb_norm = _channel_linear_norm(images[..., 1]) if images.ndim == 4 and images.shape[-1] > 1 else None
+
     def _imshow_log(ax, data2d, title, norm):
         finite = np.isfinite(data2d)
         good = finite & (data2d > 0)
@@ -532,6 +604,28 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
         cb = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
         cb.ax.tick_params(labelsize=8)
         return im
+
+    def _imshow_linear(ax, data2d, title, norm):
+        finite = np.isfinite(data2d)
+        if not np.any(finite) or norm is None:
+            ax.set_axis_off()
+            return None
+        image_cmap = copy.deepcopy(get_cmap(cmap))
+        image_cmap.set_bad('green', 1.)
+        im = ax.imshow(
+            np.ma.array(data2d, mask=~finite),
+            norm=norm,
+            cmap=image_cmap,
+            origin='lower',
+            interpolation='nearest',
+        )
+        ax.set_axis_off()
+        ax.set_title(title)
+        cb = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
+        cb.ax.tick_params(labelsize=8)
+        return im
+
+    image_plotter = _imshow_linear if adjusted else _imshow_log
 
     iter_list = list(enumerate(images))
     step = max(1, len(iter_list) // 10)
@@ -579,11 +673,11 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
 
         # --- right: images ---
         ax = plt.subplot(1, 2 + int(has_pb), 2)
-        _imshow_log(ax, img[..., 0], f"tB | Time: {tstr}", tb_norm)
+        image_plotter(ax, img[..., 0], f"tB ({brightness_mode}) | Time: {tstr}", tb_norm)
 
         if has_pb:
             ax = plt.subplot(1, 2 + int(has_pb), 3)
-            _imshow_log(ax, img[..., 1], f"pB | Time: {tstr}", pb_norm)
+            image_plotter(ax, img[..., 1], f"pB ({brightness_mode}) | Time: {tstr}", pb_norm)
 
         wandb.log({f'Overview.{ds_key}': wandb.Image(fig)})
         plt.close(fig)
@@ -612,6 +706,8 @@ def plot_ray_sampling(
 
 
 class CubeCallback(BaseCallback):
+
+    validation_output_keys = ('rho_true', 'rho_pred')
 
     def __init__(self, cube_shape, Rs_per_ds, seconds_per_dt, **kwargs):
         super().__init__(**kwargs)
@@ -659,6 +755,8 @@ class CubeCallback(BaseCallback):
 
 class LatitudeSliceCallback(BaseCallback):
 
+    validation_output_keys = ('spherical_coords', 'rho_true', 'rho_pred')
+
     def __init__(self, cube_shape, latitude, drho_cm3, Rs_per_ds, seconds_per_dt, **kwargs):
         super().__init__(**kwargs)
         self.latitude = np.deg2rad(latitude)
@@ -675,8 +773,6 @@ class LatitudeSliceCallback(BaseCallback):
         spherical_coords = outputs['spherical_coords'].reshape(self.cube_shape + (3,)).cpu().numpy()
         rho_true = outputs['rho_true'].reshape(self.cube_shape).cpu().numpy()
         rho_pred = outputs['rho_pred'].reshape(self.cube_shape).cpu().numpy() * self.drho_cm3
-        velocity = outputs['v_pred'].reshape(self.cube_shape + (3,)).cpu().numpy() * self.velocity_normalization
-
         lat_idx = np.argmin(np.abs(spherical_coords[0, :, 0, 1] - self.latitude))
 
         r = spherical_coords[:, lat_idx, :, 0]
@@ -702,6 +798,8 @@ class LatitudeSliceCallback(BaseCallback):
 
 
 class VelocitySliceCallback(BaseCallback):
+
+    validation_output_keys = ('query_points', 'rho_pred', 'v_pred')
 
     def __init__(self, cube_shape, latitude, drho_cm3, Rs_per_ds, seconds_per_dt, plot_velocities=True,
                  **kwargs):
@@ -768,6 +866,8 @@ class VelocitySliceCallback(BaseCallback):
 
 class LongitudeSliceCallback(BaseCallback):
 
+    validation_output_keys = ('spherical_coords', 'rho_true', 'rho_pred')
+
     def __init__(self, cube_shape, longitude, drho_cm3, Rs_per_ds, seconds_per_dt, **kwargs):
         super().__init__(**kwargs)
         self.longitude = np.deg2rad(longitude)
@@ -784,8 +884,6 @@ class LongitudeSliceCallback(BaseCallback):
         spherical_coords = outputs['spherical_coords'].reshape(self.cube_shape + (3,)).cpu().numpy()
         rho_true = outputs['rho_true'].reshape(self.cube_shape).cpu().numpy()
         rho_pred = outputs['rho_pred'].reshape(self.cube_shape).cpu().numpy() * self.drho_cm3
-        velocity = outputs['v_pred'].reshape(self.cube_shape + (3,)).cpu().numpy() * self.velocity_normalization
-
         lon_idx = np.argmin(np.abs(spherical_coords[0, 0, :, 2] - self.longitude))
 
         r = spherical_coords[:, :, lon_idx, 0]
@@ -822,6 +920,8 @@ class RadialSlicesCallback(BaseCallback):
       - one colorbar per row in the last column
       - uses constrained_layout
     """
+
+    validation_output_keys = ('rho_pred', 'spherical_coords')
 
     def __init__(self, cube_shape, radii, drho_cm3, **kwargs):
         """
@@ -943,6 +1043,8 @@ class LongitudeSlicesCallback(BaseCallback):
       - Uses constrained_layout=True and allocates explicit "cbar" axes via subplot_mosaic.
       - Colorbars sit in the dedicated last column (all the way to the right).
     """
+
+    validation_output_keys = ('rho_pred', 'v_pred', 'spherical_coords')
 
     def __init__(self, cube_shape, drho_cm3, Rs_per_ds, seconds_per_dt,
                  longitude_deg=(0, 30, 60, 90, 120, 150), **kwargs):
@@ -1116,6 +1218,10 @@ class LongitudeTimeVelocityMagCallback(BaseCallback):
     Expects v_pred (...,3) in model units (ds/dt).
     """
 
+    validation_output_keys = (
+        'v_pred', 'spherical_coords', 'meta.times', 'meta.longitudes_rad',
+    )
+
     def __init__(self, cube_shape, Rs_per_ds, seconds_per_dt, **kwargs):
         super().__init__(**kwargs)
         self.cube_shape = cube_shape
@@ -1167,6 +1273,8 @@ class FixedViewpointSeriesCallback(BaseCallback):
     Expects instrument validation outputs: model_image (...,2), density (...,1 or ...), target optional NaNs
     """
 
+    validation_output_keys = ('model_image', 'density')
+
     def __init__(self, image_shape, n_times=6, **kwargs):
         super().__init__(**kwargs)
         self.image_shape = image_shape
@@ -1206,6 +1314,11 @@ class InSituTimeSeriesCallback(BaseCallback):
     Plot in-situ observations against SuNeRF samples along the spacecraft trajectory.
     Expects validation outputs from InSituDataset wrapped as QUERY_POINTS.
     """
+
+    validation_output_keys = (
+        'rho_pred', 'density_cm3', 'time_days', 'time_unix', 'has_density',
+        'velocity_radial_kms', 'velocity_radial_pred', 'has_velocity', 'radius_rsun',
+    )
 
     def __init__(self, drho_cm3, Rs_per_ds, seconds_per_dt, **kwargs):
         super().__init__(**kwargs)
@@ -1316,6 +1429,8 @@ class StarBackgroundCallback(BaseCallback):
     Expects outputs['background'] shaped (Npix, 2) after validation_step.
     """
 
+    validation_output_keys = ('background',)
+
     def __init__(self, ds_key, image_shape, eps=1e-12):
         super().__init__(ds_key)
         self.image_shape = tuple(image_shape)
@@ -1368,6 +1483,8 @@ class FullStarBackgroundCallback(BaseCallback):
     Plots star background image(s) as a full-sky latitude/longitude map in log scale.
     Expects outputs: background (...,C). Usually C=2 for (tB,pB).
     """
+
+    validation_output_keys = ('background',)
 
     def __init__(self, ds_key, image_shape, eps=1e-12, name=None):
         super().__init__(ds_key=ds_key, name=name)

@@ -607,7 +607,7 @@ def main():
     parser.add_argument(
         "--download-mode",
         choices=("day-by-day", "full"),
-        default="day-by-day",
+        default="full",
         help="Download one day at a time or all selected files at once (default: day-by-day).",
     )
     parser.add_argument(

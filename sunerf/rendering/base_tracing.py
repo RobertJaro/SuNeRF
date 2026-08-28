@@ -210,25 +210,37 @@ class BasicRenderingModule(nn.Module):
 
         query_points_time = self.add_sample_times(query_points, rays_o, times)
 
-        # Get weights for hierarchical sampling
+        # Evaluate the coarse points once. Keep their model graph because these
+        # values are reused in the final, fine-grid integral. Only the cheap
+        # rendering pass used to construct the sampling PDF is graph-free.
+        coarse_raw = self.model(query_points_time)
         with torch.no_grad():
-            coarse_raw = self.model(query_points_time)
             state = {**coarse_raw, 'z_vals': z_vals,
                      'rays_d': rays_d, 'rays_o': rays_o,
                      'query_points': query_points_time}
-            model_out = self.render_instruments(dataset_n_rays, dataset_instrument, state)
+            coarse_out = self.render_instruments(dataset_n_rays, dataset_instrument, state)
 
         # sample hierarchical points based on initial weights
-        weights = torch.cat([model_out[k]['weights'] for k in dataset_keys], dim=0)
+        weights = torch.cat([coarse_out[k]['weights'] for k in dataset_keys], dim=0)
         hierarchical_out = self.sampler_hierarchical(rays_o, rays_d, z_vals, weights)
-        query_points, z_vals_combined = (hierarchical_out['points'], hierarchical_out['z_vals'])
+        del coarse_out, weights
+        query_points = hierarchical_out['points']
+        z_vals_combined = hierarchical_out['z_vals']
 
-        query_points_time = self.add_sample_times(query_points, rays_o, times)
+        # Evaluate only the newly drawn samples, then merge both model outputs
+        # with the same permutation that sorted the nonuniform ray grid. The
+        # renderer therefore sees every coarse and fine point exactly once.
+        new_z_samples = hierarchical_out['new_z_samples']
+        new_query_points = rays_o[..., None, :] + rays_d[..., None, :] * new_z_samples[..., :, None]
+        new_query_points_time = self.add_sample_times(new_query_points, rays_o, times)
+        new_raw = self.model(new_query_points_time)
+        fine_raw = _merge_sample_outputs(
+            coarse_raw, new_raw, hierarchical_out['sort_indices']
+        )
 
-        fine_raw = self.model(query_points_time)
         state = {**fine_raw, 'z_vals': z_vals_combined,
                  'rays_d': rays_d, 'rays_o': rays_o,
-                 'query_points': query_points_time}
+                 'query_points': self.add_sample_times(query_points, rays_o, times)}
         model_out = self.render_instruments(dataset_n_rays, dataset_instrument, state)
 
         return {'model_out': model_out, 'z_vals': z_vals_combined, 'z_vals_stratified': z_vals}
@@ -257,6 +269,34 @@ class BasicRenderingModule(nn.Module):
     def on_train_batch_end(self, *args, **kwargs):
         if self.shuffler is not None:
             self.shuffler.on_train_batch_end(*args, **kwargs)
+
+
+def _merge_sample_outputs(coarse_raw, new_raw, sort_indices):
+    """Merge model outputs along their ray-sample dimension.
+
+    ``sort_indices`` is the permutation returned when the coarse and newly
+    sampled ray distances are concatenated and sorted. Model outputs may have
+    any number of trailing feature dimensions.
+    """
+    if coarse_raw.keys() != new_raw.keys():
+        raise ValueError('Coarse and hierarchical model outputs must have identical keys')
+
+    merged = {}
+    for key in coarse_raw:
+        coarse_value = coarse_raw[key]
+        new_value = new_raw[key]
+        if coarse_value.ndim < 2 or new_value.ndim != coarse_value.ndim:
+            raise ValueError(f"Model output '{key}' must include ray and sample dimensions")
+        if coarse_value.shape[0] != new_value.shape[0] or coarse_value.shape[2:] != new_value.shape[2:]:
+            raise ValueError(f"Incompatible coarse and hierarchical shapes for model output '{key}'")
+
+        values = torch.cat([coarse_value, new_value], dim=1)
+        gather_indices = sort_indices
+        for _ in range(values.ndim - 2):
+            gather_indices = gather_indices.unsqueeze(-1)
+        gather_indices = gather_indices.expand(*sort_indices.shape, *values.shape[2:])
+        merged[key] = torch.gather(values, dim=1, index=gather_indices)
+    return merged
 
 
 def cumprod_exclusive(tensor: torch.Tensor, dim=1) -> torch.Tensor:

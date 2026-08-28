@@ -1,4 +1,5 @@
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import glob
 import multiprocessing
 import os
@@ -29,26 +30,247 @@ from sunerf.train.coordinate_transformation import spherical_to_cartesian, pose_
 from sunerf.train.render_mode import RenderModeDataset, RenderMode
 
 
-def create_scaling_mask(projected_radius, scaling_mask_config):
-    tB_coeffs = np.load(scaling_mask_config['tB_coeffs_file'])
-    pB_coeffs = np.load(scaling_mask_config['pB_coeffs_file'])
+def _available_cpu_count():
+    """Return the CPU allocation visible to this process."""
+    counts = [os.cpu_count() or 1]
+    if hasattr(os, 'sched_getaffinity'):
+        try:
+            counts.append(len(os.sched_getaffinity(0)))
+        except OSError:
+            pass
+    for variable in ('SLURM_CPUS_PER_TASK', 'PBS_NP'):
+        try:
+            value = int(os.environ.get(variable, ''))
+        except ValueError:
+            continue
+        if value > 0:
+            counts.append(value)
+    return max(1, min(counts))
 
-    tB_fit = np.exp(np.polyval(tB_coeffs, projected_radius))
-    pB_fit = np.exp(np.polyval(pB_coeffs, projected_radius))
-    mask = np.stack([tB_fit, pB_fit], axis=-1)
-    return np.clip(mask, 1e-12, None).astype(np.float32)
+
+def _pool_size(requested_workers, task_count):
+    if task_count < 1:
+        return 0
+    requested_workers = _available_cpu_count() if requested_workers is None else int(requested_workers)
+    if requested_workers < 1:
+        return 0
+    return min(requested_workers, _available_cpu_count(), task_count)
+
+
+def _iter_parallel(function, items, workers):
+    """Map in input order while respecting the job's CPU allocation."""
+    worker_count = _pool_size(workers, len(items))
+    if worker_count <= 1:
+        return map(function, items), None
+    pool = multiprocessing.Pool(worker_count)
+    return pool.imap(function, items), pool
+
+
+def _load_map_stack(files, loader, workers, description):
+    """Load maps directly into final stacked arrays instead of retaining a list."""
+    if not files:
+        raise ValueError(f'No files available for {description}.')
+
+    iterator, pool = _iter_parallel(loader.load, files, workers)
+    arrays = {}
+    observers = []
+    try:
+        for index, result in enumerate(tqdm(iterator, total=len(files), desc=description)):
+            result = dict(result)
+            observers.append(result.pop('observer'))
+            for key, value in result.items():
+                value_array = np.asarray(value)
+                if key not in arrays:
+                    arrays[key] = np.empty(
+                        (len(files), *value_array.shape),
+                        dtype=value_array.dtype,
+                    )
+                arrays[key][index] = value
+    finally:
+        if pool is not None:
+            pool.close()
+            pool.join()
+    return arrays, observers
+
+
+def _load_fits_stack(files, workers, description):
+    """Load a FITS sequence into one preallocated stack."""
+    if not files:
+        raise ValueError(f'No files available for {description}.')
+    iterator, pool = _iter_parallel(fits.getdata, files, workers)
+    stack = None
+    try:
+        for index, image in enumerate(tqdm(iterator, total=len(files), desc=description)):
+            image = np.asarray(image)
+            if stack is None:
+                stack = np.empty((len(files), *image.shape), dtype=image.dtype)
+            elif image.shape != stack.shape[1:]:
+                raise ValueError(
+                    f'Inconsistent image shape for {files[index]}: '
+                    f'{image.shape} != {stack.shape[1:]}'
+                )
+            stack[index] = image
+    finally:
+        if pool is not None:
+            pool.close()
+            pool.join()
+    return stack
+
+
+def _fit_radial_mad_scale(image_stack, projected_radius, config):
+    """Estimate one positive radial MAD scale from the temporal-mean image."""
+    if image_stack.shape != projected_radius.shape or image_stack.ndim != 3:
+        raise ValueError("Radial MAD fitting expects matching (frame, y, x) arrays.")
+
+    image_count = np.sum(np.isfinite(image_stack), axis=0)
+    mean_image = np.divide(
+        np.nansum(image_stack, axis=0),
+        image_count,
+        out=np.full(image_stack.shape[1:], np.nan, dtype=np.float64),
+        where=image_count > 0,
+    )
+    radius_count = np.sum(np.isfinite(projected_radius), axis=0)
+    mean_radius = np.divide(
+        np.nansum(projected_radius, axis=0),
+        radius_count,
+        out=np.full(projected_radius.shape[1:], np.nan, dtype=np.float64),
+        where=radius_count > 0,
+    )
+
+    valid = np.isfinite(mean_image) & np.isfinite(mean_radius) & (mean_radius > 0)
+    if not np.any(valid):
+        return None
+
+    radius_values = mean_radius[valid]
+    radius_min = float(config.get('radius_min', np.nanmin(radius_values)))
+    radius_max = float(config.get('radius_max', np.nanmax(radius_values)))
+    if not np.isfinite(radius_min) or not np.isfinite(radius_max) or radius_max <= radius_min:
+        return None
+
+    n_bins = int(config.get('n_bins', 96))
+    min_samples = int(config.get('min_samples', 128))
+    if n_bins < 2:
+        raise ValueError("scaling_mask_config.n_bins must be at least 2.")
+    if min_samples < 1:
+        raise ValueError("scaling_mask_config.min_samples must be positive.")
+
+    use_log_radius = bool(config.get('log_radius', True)) and radius_min > 0
+    if use_log_radius:
+        edges = np.geomspace(radius_min, radius_max, n_bins + 1)
+        centers = np.sqrt(edges[:-1] * edges[1:])
+    else:
+        edges = np.linspace(radius_min, radius_max, n_bins + 1)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+
+    trim = config.get('trim_percentiles', [10.0, 90.0])
+    if trim is not None:
+        if len(trim) != 2 or not 0 <= float(trim[0]) < float(trim[1]) <= 100:
+            raise ValueError("scaling_mask_config.trim_percentiles must be two increasing values in [0, 100].")
+        trim = (float(trim[0]), float(trim[1]))
+
+    radial_scale = np.full(n_bins, np.nan, dtype=np.float64)
+    bin_indices = np.digitize(mean_radius, edges) - 1
+    for bin_idx in range(n_bins):
+        values = mean_image[valid & (bin_indices == bin_idx)]
+        if values.size < min_samples:
+            continue
+        if trim is not None:
+            lower, upper = np.nanpercentile(values, trim)
+            values = values[(values >= lower) & (values <= upper)]
+        if values.size < max(8, min_samples // 4):
+            continue
+        center = np.nanmedian(values)
+        radial_scale[bin_idx] = 1.4826 * np.nanmedian(np.abs(values - center))
+
+    good = np.isfinite(radial_scale) & (radial_scale > 0)
+    if np.count_nonzero(good) < 2:
+        return None
+
+    coordinate = np.log(centers) if use_log_radius else centers
+    log_scale = np.interp(coordinate, coordinate[good], np.log(radial_scale[good]))
+
+    median_scale = float(np.exp(np.nanmedian(log_scale)))
+    floor_fraction = float(config.get('floor_fraction', 1e-3))
+    absolute_floor = float(config.get('min_scale', 0.0))
+    if floor_fraction < 0 or absolute_floor < 0:
+        raise ValueError("scaling-mask floors cannot be negative.")
+    scale_floor = max(absolute_floor, floor_fraction * median_scale, np.finfo(np.float32).tiny)
+
+    clipped_radius = np.clip(projected_radius, radius_min, radius_max)
+    pixel_coordinate = np.log(clipped_radius) if use_log_radius else clipped_radius
+    fitted_scale = np.exp(np.interp(pixel_coordinate, coordinate, log_scale))
+    return np.maximum(fitted_scale, scale_floor).astype(np.float32)
+
+
+def create_scaling_mask(projected_radius, scaling_mask_config, image_stack=None):
+    """Create either a legacy polynomial brightness mask or an annular MAD scale mask."""
+    mask_type = scaling_mask_config.get('type', 'log_polyfit').lower()
+    if mask_type == 'log_polyfit':
+        tB_coeffs = np.load(scaling_mask_config['tB_coeffs_file'])
+        pB_coeffs = np.load(scaling_mask_config['pB_coeffs_file'])
+
+        tB_fit = np.exp(np.polyval(tB_coeffs, projected_radius))
+        pB_fit = np.exp(np.polyval(pB_coeffs, projected_radius))
+        mask = np.stack([tB_fit, pB_fit], axis=-1)
+        return np.clip(mask, 1e-12, None).astype(np.float32)
+
+    if mask_type != 'radial_mad':
+        raise ValueError(f"Unknown scaling mask type: {mask_type}")
+    if image_stack is None:
+        raise ValueError("radial_mad scaling masks require image_stack.")
+    if image_stack.shape[:-1] != projected_radius.shape:
+        raise ValueError("image_stack and projected_radius shapes are inconsistent.")
+
+    mask = np.full_like(image_stack, np.nan, dtype=np.float32)
+    fallback_scale = None
+    for channel_idx in range(image_stack.shape[-1]):
+        fitted_scale = _fit_radial_mad_scale(
+            image_stack[..., channel_idx],
+            projected_radius,
+            scaling_mask_config,
+        )
+        if fitted_scale is not None:
+            mask[..., channel_idx] = fitted_scale
+            if fallback_scale is None:
+                fallback_scale = fitted_scale
+        elif fallback_scale is not None:
+            mask[..., channel_idx] = fallback_scale
+    if fallback_scale is None:
+        raise ValueError("Could not estimate a radial MAD scale from any image channel.")
+    for channel_idx in range(image_stack.shape[-1]):
+        if np.isnan(mask[..., channel_idx]).all():
+            mask[..., channel_idx] = fallback_scale
+    return mask
+
+
+def valid_training_rows(tensors):
+    """Return rows with an observable target and completely finite geometry."""
+    image_finite = np.isfinite(tensors['image'])
+    valid = image_finite.any(axis=-1)
+    for key in ('rays', 'time', 'image_coords', 'hpc_coords'):
+        values = tensors[key]
+        valid &= np.isfinite(values).all(axis=tuple(range(1, values.ndim)))
+    if 'scaling_mask' in tensors:
+        # A missing observable may have a missing scale; every observable channel
+        # that contributes to the loss must have a finite normalization.
+        valid &= np.all(~image_finite | np.isfinite(tensors['scaling_mask']), axis=-1)
+    return valid
 
 
 class ThomsonDataModule(BaseDataModule):
 
     def __init__(self, train_datasets, valid_datasets, work_directory, Rs_per_ds, seconds_per_dt, ref_date=None,
                  batch_size=int(2 ** 10), validation_batch_size=int(2 ** 11), debug=False,
-                 **kwargs):
+                 preprocess_workers=None, **kwargs):
         os.makedirs(work_directory, exist_ok=True)
+
+        if preprocess_workers is None:
+            preprocess_workers = kwargs.get('num_workers')
 
         ref_date = parse(ref_date) if ref_date is not None else None  # parse ref time if specified
         base_config = {'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt, 'ref_date': ref_date,
-                       'debug': debug, 'work_directory': work_directory, 'batch_size': batch_size}
+                       'debug': debug, 'work_directory': work_directory, 'batch_size': batch_size,
+                       'preprocess_workers': preprocess_workers}
 
         train_dict, ref_date = self._load_dataset(train_datasets, base_config)
         drho_cm3 = base_config.get('drho_cm3')
@@ -274,6 +496,59 @@ class GenericThomsonDataset(TensorsDataset):
         raise KeyError(f"Missing observation date in {file_path}. Expected one of: {', '.join(cls.DATE_OBS_KEYS)}")
 
     @classmethod
+    def _pair_files_by_observation_time(cls, tB_files, pB_files, tolerance_seconds=1.0,
+                                        workers=None):
+        """Order tB/pB inputs by header time and reject silent mispairing."""
+        if pB_files is not None and len(tB_files) != len(pB_files):
+            raise ValueError(
+                f"Found {len(tB_files)} tB files and {len(pB_files)} pB files; "
+                "each brightness image must have one polarization partner."
+            )
+        if tolerance_seconds < 0:
+            raise ValueError("pairing_tolerance_seconds must be non-negative.")
+
+        all_files = [*tB_files, *(pB_files or [])]
+        worker_count = _pool_size(workers, len(all_files))
+        if worker_count <= 1:
+            all_dates = list(map(cls._read_obs_date, all_files))
+        else:
+            # Header reads are small and I/O-bound. Threads avoid transferring
+            # FITS metadata through another process pool during pair validation.
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                all_dates = list(executor.map(cls._read_obs_date, all_files))
+        split = len(tB_files)
+        tB_records = sorted(zip(all_dates[:split], tB_files))
+        pB_records = (
+            sorted(zip(all_dates[split:], pB_files))
+            if pB_files is not None else None
+        )
+        for label, records in (('tB', tB_records), ('pB', pB_records)):
+            if records is None:
+                continue
+            dates = [date for date, _ in records]
+            if len(set(dates)) != len(dates):
+                raise ValueError(
+                    f"Duplicate {label} observation timestamps make pairing ambiguous."
+                )
+        if pB_records is None:
+            return [path for _, path in tB_records], None
+
+        paired_tB = []
+        paired_pB = []
+        for (tB_time, tB_path), (pB_time, pB_path) in zip(tB_records, pB_records):
+            separation = abs((tB_time - pB_time).total_seconds())
+            if separation > tolerance_seconds:
+                raise ValueError(
+                    "Could not pair tB and pB sequences by observation time: "
+                    f"{os.path.basename(tB_path)} ({tB_time.isoformat()}) versus "
+                    f"{os.path.basename(pB_path)} ({pB_time.isoformat()}), "
+                    f"separated by {separation:.3f} s."
+                )
+            paired_tB.append(tB_path)
+            paired_pB.append(pB_path)
+        return paired_tB, paired_pB
+
+    @classmethod
     def _filter_files_by_time_range(cls, tB_files, pB_files, time_range):
         parsed_range = cls._parse_time_range(time_range)
         if parsed_range is None:
@@ -372,8 +647,10 @@ class GenericThomsonDataset(TensorsDataset):
                  scaling_mask_config=None,
                  time_range=None,
                  cadence=None,
+                 pairing_tolerance_seconds=1.0,
                  shuffle=None,
                  filter_nans=None,
+                 preprocess_workers=None,
                  log_data_overview=True,
                  **kwargs):
         self.scaling = scaling
@@ -385,6 +662,11 @@ class GenericThomsonDataset(TensorsDataset):
         # select files with min diff in dates
         tB_files = sorted(glob.glob(data_path_tB))
         pB_files = sorted(glob.glob(data_path_pB)) if data_path_pB is not None else None
+        tB_files, pB_files = self._pair_files_by_observation_time(
+            tB_files, pB_files,
+            tolerance_seconds=float(pairing_tolerance_seconds),
+            workers=preprocess_workers,
+        )
         tB_files, pB_files = self._filter_files_by_time_range(tB_files, pB_files, time_range)
         tB_files, pB_files = self._sample_files_at_cadence(tB_files, pB_files, cadence)
 
@@ -399,24 +681,19 @@ class GenericThomsonDataset(TensorsDataset):
             pB_files = pB_files[idx:idx + 1] if pB_files is not None else None
 
         # load rays
-        data_dict = {}
-        with multiprocessing.Pool(os.cpu_count()) as p:
-            loader = MapDataLoader(Rs_per_ds, reference_frame, azimuthal_equidistant=azimuthal_equidistant)
-            data = [v for v in
-                    tqdm(p.imap(loader.load, tB_files), total=len(tB_files), desc=f'Loading tB + rays')]
-        observers = [d.pop('observer') for d in data]
-        for k in data[0].keys():
-            data_dict[k] = np.stack([d[k] for d in data], axis=0)
+        loader = MapDataLoader(Rs_per_ds, reference_frame, azimuthal_equidistant=azimuthal_equidistant)
+        data_dict, observers = _load_map_stack(
+            tB_files, loader, preprocess_workers, 'Loading tB + rays'
+        )
         tB_image_stack = data_dict['image']
 
         # load remaining images
         if pB_files is None:
             pB_image_stack = np.ones_like(tB_image_stack) * np.nan
         else:
-            with multiprocessing.Pool(os.cpu_count()) as p:
-                pB_image_stack = [v for v in
-                                  tqdm(p.imap(fits.getdata, pB_files), total=len(pB_files), desc=f'Loading pB')]
-                pB_image_stack = np.stack(pB_image_stack, axis=0)
+            pB_image_stack = _load_fits_stack(
+                pB_files, preprocess_workers, 'Loading pB'
+            )
 
 
         # apply correction if specified
@@ -477,7 +754,7 @@ class GenericThomsonDataset(TensorsDataset):
         # save occultor mask before any correction/cleaning that may set more pixels to NaN
         # this mask is used to set rays/image coords/hpc coords to NaN for occulted pixels,
         # which should be ignored during training and evaluation
-        occultor_mask = np.isnan(tB_image_stack) & np.isnan(pB_image_stack)
+        occultor_mask = ~np.isfinite(tB_image_stack) & ~np.isfinite(pB_image_stack)
 
         image_stack = np.stack([tB_image_stack, pB_image_stack], axis=-1)
         image_stack = image_stack / scaling
@@ -490,11 +767,22 @@ class GenericThomsonDataset(TensorsDataset):
             image_stack += noise
 
         data_dict['image'] = image_stack
+        # The combined float32 stack is now authoritative; release the separate
+        # channel stacks before allocating time/image-coordinate tensors.
+        del tB_image_stack, pB_image_stack
 
         if scaling_mask_config is not None:
             projected_radius = data_dict['projected_radius']
-            scaling_mask = create_scaling_mask(projected_radius, scaling_mask_config)
-            data_dict['scaling_mask'] = scaling_mask / scaling
+            scaling_mask = create_scaling_mask(
+                projected_radius,
+                scaling_mask_config,
+                image_stack=image_stack,
+            )
+            if scaling_mask_config.get('type', 'log_polyfit').lower() == 'log_polyfit':
+                scaling_mask = scaling_mask / scaling
+            data_dict['scaling_mask'] = scaling_mask
+            del projected_radius
+        data_dict.pop('projected_radius', None)
 
         # expand and normalize times
         times = data_dict['time']
@@ -529,26 +817,59 @@ class GenericThomsonDataset(TensorsDataset):
         data_dict['hpc_coords'][occultor_mask] = np.nan
         if 'scaling_mask' in data_dict:
             data_dict['scaling_mask'][occultor_mask] = np.nan
+        del occultor_mask
 
         if log_data_overview and not test:
             cmap = cm.soholasco2.copy()
             cmap.set_bad(color='green')
-            log_overview(data_dict["image"] * scaling, data_dict['pose'], normalized_times, cmap, seconds_per_dt, Rs_per_ds,
-                         ref_date, ds_key=ds_key)
+            if 'scaling_mask' in data_dict:
+                overview_images = data_dict['image'] / data_dict['scaling_mask']
+                overview_asinh_a = scaling_mask_config.get('overview_asinh_a')
+                if overview_asinh_a is not None:
+                    overview_asinh_a = float(overview_asinh_a)
+                    if overview_asinh_a <= 0:
+                        raise ValueError("scaling_mask_config.overview_asinh_a must be positive.")
+                    overview_images = (
+                        np.arcsinh(overview_images / overview_asinh_a)
+                        / np.arcsinh(1.0 / overview_asinh_a)
+                    )
+                    overview_mode = 'radially adjusted asinh brightness'
+                else:
+                    overview_mode = 'radially adjusted brightness'
+            else:
+                overview_images = data_dict['image'] * scaling
+                overview_mode = 'physical brightness'
+            log_overview(
+                overview_images,
+                data_dict['pose'],
+                normalized_times,
+                cmap,
+                seconds_per_dt,
+                Rs_per_ds,
+                ref_date,
+                ds_key=ds_key,
+                brightness_mode=overview_mode,
+            )
+            del overview_images
         if log_data_overview and not test:
             print('----- Data Overview -----')
             print(
                 f'Image shape: {data_dict["image"].shape}; MIN: {np.nanmin(data_dict["image"])}; MAX: {np.nanmax(data_dict["image"])}')
             print(f'Time shape: {times_arr.shape}; MIN: {np.nanmin(times_arr)}; MAX: {np.nanmax(times_arr)}')
 
+        data_dict.pop('pose', None)
         tensors = {k: v.reshape((-1, *v.shape[3:])) for k, v in data_dict.items() if
                    k in ['image', 'rays', 'time', 'image_coords', 'hpc_coords', 'scaling_mask']}
 
-        # set all values where image (tB) is NaN to NaN --> skip for training
-        if not test:
-            nan_mask = np.isnan(tensors['image']).all(-1)
-            for k, v in tensors.items():
-                tensors[k][nan_mask] = np.nan
+        # FITS and correction pipelines can contain +/-Inf as well as NaN. Store
+        # one canonical invalid representation so neither cache filtering nor
+        # torch loss masks can accidentally treat infinity as a measurement.
+        for values in tensors.values():
+            values[~np.isfinite(values)] = np.nan
+
+        # An explicit mask avoids writing NaNs through every dense tensor merely
+        # so the cache writer can discover the same invalid image rows again.
+        valid_mask = None if test else valid_training_rows(tensors)
 
         # info for plotting
         self.image_shape = image_stack.shape[1:3]
@@ -570,12 +891,13 @@ class GenericThomsonDataset(TensorsDataset):
         data_config['hpc_norm'] = hpc_norm
         data_config['reference_frame'] = reference_frame
         data_config['azimuthal_equidistant'] = azimuthal_equidistant
+        data_config['scaling_mask_config'] = copy.deepcopy(scaling_mask_config)
         self.data_config = data_config
         dataset_shuffle = (not test) if shuffle is None else shuffle
         dataset_filter_nans = (not test) if filter_nans is None else filter_nans
         dataset_kwargs = {'instrument': instrument_key, **kwargs}
         super().__init__(tensors=tensors, batch_size=batch_size, shuffle=dataset_shuffle, filter_nans=dataset_filter_nans,
-                         **dataset_kwargs)
+                         valid_mask=valid_mask, **dataset_kwargs)
 
 
 class HAOThomsonDataset(GenericThomsonDataset):
@@ -889,10 +1211,14 @@ class FixedViewpointSeriesDataset(TensorsDataset):
         image_coords[..., 1] -= 0.5 * (nx - 1)
         image_coords /= float(image_norm)
 
-        hpc_coords = np.zeros((ny, nx, 2), dtype=np.float32) / float(hpc_norm)
+        hpc_coords = np.stack([
+            img_coords.Tx.to_value(u.arcsec) / float(hpc_norm),
+            img_coords.Ty.to_value(u.arcsec) / float(hpc_norm),
+            np.full((ny, nx), dist_solRad / float(Rs_per_ds), dtype=np.float32),
+        ], axis=-1).astype(np.float32)
 
         for tnorm in times_norm:
-            pose = pose_spherical(lon, lat, dist_solRad / float(Rs_per_ds)).numpy()
+            pose = pose_spherical(lon, lat, dist_solRad / float(Rs_per_ds))
             rays_o, rays_d = get_rays(img_coords.Tx, img_coords.Ty, pose)
             rays = np.stack([rays_o, rays_d], axis=-2).astype(np.float32)  # (ny,nx,2,3)
 
@@ -909,17 +1235,19 @@ class FixedViewpointSeriesDataset(TensorsDataset):
         time_all = np.stack(time_all, axis=0)  # (Nt,ny,nx,1)
         img_all = np.stack(img_all, axis=0)  # (Nt,ny,nx,2)
         imgcoords_all = np.stack(imgcoords_all, 0)  # (Nt,ny,nx,2)
-        hpccoords_all = np.stack(hpccoords_all, 0)  # (Nt,ny,nx,2)
+        hpccoords_all = np.stack(hpccoords_all, 0)  # (Nt,ny,nx,3)
 
         tensors = {
             "rays": torch.from_numpy(rays_all.reshape(-1, 2, 3)),
             "time": torch.from_numpy(time_all.reshape(-1, 1)),
             "image": torch.from_numpy(img_all.reshape(-1, 2)),
             "image_coords": torch.from_numpy(imgcoords_all.reshape(-1, 2)),
-            "hpc_coords": torch.from_numpy(hpccoords_all.reshape(-1, 2)),
+            "hpc_coords": torch.from_numpy(hpccoords_all.reshape(-1, 3)),
         }
 
-        super().__init__(tensors=tensors, **kwargs)
+        kwargs.pop('shuffle', None)
+        kwargs.pop('filter_nans', None)
+        super().__init__(tensors=tensors, shuffle=False, filter_nans=False, **kwargs)
 
 
 class FullStarBackgroundDataset(TensorsDataset):
