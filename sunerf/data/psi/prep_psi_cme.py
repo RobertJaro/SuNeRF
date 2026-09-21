@@ -41,6 +41,12 @@ def load_fixed_map(path):
     # --- load data ---
     data = np.squeeze(fits.getdata(path)).astype(float)
 
+    # The PSI synthetic-coronagraph files use -1 for the inner occulter and
+    # 0 outside the camera FOV.  They are missing measurements, not physical
+    # brightness values.  Mask them before resampling so interpolation cannot
+    # turn the sentinel edges into apparently valid training targets.
+    data[(~np.isfinite(data)) | (data <= 0)] = np.nan
+
     return sunpy.map.Map(data, header)
 
 
@@ -49,6 +55,11 @@ def process_file(in_file, out_file, resolution, overwrite):
     if resolution is not None:
         nx, ny = resolution
         m = m.resample((ny, nx) * u.pixel)
+    # Keep the invariant explicit after interpolation as well.  In particular,
+    # this catches any non-positive boundary samples produced by resampling.
+    data = np.asarray(m.data, dtype=float).copy()
+    data[(~np.isfinite(data)) | (data <= 0)] = np.nan
+    m = sunpy.map.Map(data, m.meta)
     m.save(out_file, overwrite=overwrite)
 
 

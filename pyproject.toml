@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sunerf"
+version = "0.2.0"
+description = "Solar neural-field tomography with EUV and Thomson-scattering forward models"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = [
+  "astropy>=6",
+  "h5py>=3.10",
+  "lightning>=2.2",
+  "matplotlib>=3.8",
+  "numpy>=1.26,<3",
+  "python-dateutil>=2.8",
+  "PyYAML>=6",
+  "reproject>=0.14",
+  "scikit-image>=0.22",
+  "scikit-learn>=1.3",
+  "scipy>=1.11",
+  "sunpy[map]>=6",
+  "torch>=2.1",
+  "tqdm>=4.66",
+  "wandb>=0.16",
+]
+
+[project.optional-dependencies]
+euv-prep = [
+  "aiapy==0.12.1",
+]
+response-build = [
+  "astropy==8.0.1",
+  "fiasco==0.8.2",
+  "fortranformat==2.0.3",
+  "h5py==3.16.0",
+  "numpy==2.5.2",
+  "plasmapy==2026.2.0",
+  "scipy==1.18.1",
+]
+download = [
+  "drms>=0.7",
+  "fsspec>=2024.2",
+  "s3fs>=2024.2",
+  "sunpy-soar>=1.10",
+]
+evaluation = [
+  "imageio>=2.34",
+  "opencv-python-headless>=4.9",
+  "pandas>=2",
+]
+insitu = [
+  "cdflib>=1.2",
+]
+test = [
+  "pytest>=8",
+  "ruff>=0.9",
+]
+
+[project.scripts]
+sunerf-plasma = "sunerf.run_plasma:main"
+sunerf-responses = "sunerf.response.pipeline:main"
+sunerf-absorption = "sunerf.absorption.builder:main"
+sunerf-resources = "sunerf.resources.build:main"
+sunerf-render-psi = "sunerf.data.psi.render_euv:main"
+sunerf-evaluate-psi-euv = "sunerf.evaluation.psi_euv_truth:main"
+sunerf-build-psi = "sunerf.data.psi.build_synthetic:main"
+sunerf-prepare-euv = "sunerf.data.euv.prepare:main"
+sunerf-plasma-video = "sunerf.evaluation.video:main"
+
+[tool.setuptools.packages.find]
+include = ["sunerf*"]
+
+[tool.setuptools.package-data]
+"sunerf.resources" = ["manifest.json", "LICENSES.md", "*/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"

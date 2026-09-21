@@ -29,7 +29,7 @@ python -m sunerf.data.coronagraph.prep_stereo_cor \
   --occ_min 4000 --occ_max 15000 --resize 512 512 --cadence 1h
 
 # CCOR
-python -m sunerf.data.coronagraph.prep_ccor --data_path "/glade/work/rjarolim/data/sunerf-cme/2025_09/ccor_l2/*.fits" --out_path "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/ccor" --resize 512 512 --value_min 1.0e-16
+python -m sunerf.data.coronagraph.prep_ccor --data_path "/glade/work/rjarolim/data/sunerf-cme/2025_09/ccor_l2/*.fits" --out_path "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/ccor" --resize 512 512
 
 # PUNCH
 python -m sunerf.data.coronagraph.prep_punch_triplets \
@@ -94,12 +94,12 @@ python -m sunerf.run_thomson --config "config/cme/2025_09_cor.yaml"
 #################################################
 # Download validation data
 python -m sunerf.data.download.download_aia \
-  --download_dir "/glade/work/rjarolim/data/sunerf-cme/aia_validation/2025_09" \
+  --output "/glade/work/rjarolim/data/sunerf-cme/aia_validation/2025_09" \
   --email robert.jarolim@uni-graz.at \
-  --t_start 2025-09-01T00:00:00 \
-  --t_end 2025-09-19T00:00:00 \
+  --start 2025-09-01T00:00:00 \
+  --end 2025-09-19T00:00:00 \
   --cadence 1d \
-  --channel 193
+  --channels 193
 
 #################################################
 # Evaluation

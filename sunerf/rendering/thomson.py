@@ -1,6 +1,8 @@
 import torch
 from torch import nn
 
+from sunerf.physics.thomson import LIMB_DARKENING_COEFF
+
 
 def _atanh_over_x_minus_one(x: torch.Tensor) -> torch.Tensor:
     """Return ``atanh(x) / x - 1`` without outer-corona cancellation.
@@ -54,8 +56,10 @@ class ThomsonScattering(nn.Module):
     def __init__(self, Rs_per_ds, **kwargs):
         super().__init__(**kwargs)
         solar_radius = 1 / Rs_per_ds
-        #
-        self.limb_darkening_coeff = nn.Parameter(torch.tensor(0.63, dtype=torch.float32), requires_grad=False)
+        self.limb_darkening_coeff = nn.Parameter(
+            torch.tensor(LIMB_DARKENING_COEFF, dtype=torch.float32),
+            requires_grad=False,
+        )
         self.solar_radius = nn.Parameter(torch.tensor(solar_radius, dtype=torch.float32), requires_grad=False)
 
     def forward(self, rho, z_vals, rays_d, rays_o, query_points, **kwargs):

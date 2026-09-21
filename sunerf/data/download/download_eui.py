@@ -1,67 +1,126 @@
+"""Download time-matched Solar Orbiter/EUI FSI level-2 channel sets."""
+
+from __future__ import annotations
+
 import argparse
-import os
-from datetime import timedelta
+import datetime as dt
 
 import numpy as np
-import pandas as pd
-from dateutil.parser import parse
-from sunpy.net import Fido
-from sunpy.net import attrs as a
-from sunpy_soar import Product, SOOP
+from sunpy.net import Fido, attrs as a
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--download_dir', type=str, required=True)
-    parser.add_argument('--t_start', type=str, required=True)
-    parser.add_argument('--t_end', type=str, required=False, default=None)
-    args = parser.parse_args()
+from sunerf.data.download.core import (
+    DownloadRequest,
+    add_common_arguments,
+    cadence_indices,
+    fetch_fido,
+    nearest_indices,
+    parse_cadence,
+    parse_iso_datetime,
+    request_from_args,
+)
 
-    os.makedirs(args.download_dir, exist_ok=True)
 
-    start_time = parse(args.t_start)
-    end_time = parse(args.t_end) if args.t_end is not None else None
+DEFAULT_CHANNELS = (174, 304)
 
-    time_range = a.Time(start_time, end_time)
 
-    #########################################################################
-    # find all observations of 174 and 304
+def _soar_records(response):
+    try:
+        records = response["soar"]
+    except (KeyError, IndexError) as error:
+        raise RuntimeError("SOAR returned no matching EUI records") from error
+    if len(records) == 0:
+        raise RuntimeError("SOAR returned no matching EUI records")
+    return records
 
-    result_174 = Fido.search(time_range, a.Instrument.eui, Product('eui-fsi174-image'), a.Level(2), SOOP('none')) # CHECK SOOP download
-    result_304 = Fido.search(time_range, a.Instrument.eui, Product('eui-fsi304-image'), a.Level(2), SOOP('none'))
 
-    #########################################################################
-    # find pairs
-    start_times_174 = np.array([parse(t) for t in result_174['soar']['Start time']])
-    start_times_304 = np.array([parse(t) for t in result_304['soar']['Start time']])
+def _times(records):
+    return np.asarray([parse_iso_datetime(str(value)) for value in records["Start time"]])
 
-    closest_dates_cond = [np.argmin(np.abs(start_times_304 - t)) for t in start_times_174]
-    min_date_diff_cond = np.abs(start_times_304[closest_dates_cond] - start_times_174) < timedelta(minutes=1)
 
-    # filter pairs
-    paired_result_304 = result_304['soar'][closest_dates_cond][min_date_diff_cond]
-    paired_result_174 = result_174['soar'][min_date_diff_cond]
-    #########################################################################
-    # sample every hour
-    start_times_174 = np.array([parse(t) for t in paired_result_174['Start time']])
+def select_channel_sets(request, *, channels, cadence, match_tolerance):
+    try:
+        from sunpy_soar import Product, SOOP
+    except ImportError as error:
+        raise ImportError(
+            "EUI downloads require the optional sunpy-soar package."
+        ) from error
+    time = a.Time(request.start, request.end)
+    records_by_channel = []
+    for channel in channels:
+        records_by_channel.append(_soar_records(Fido.search(
+            time,
+            a.Instrument.eui,
+            Product(f"eui-fsi{int(channel)}-image"),
+            a.Level(2),
+            SOOP("none"),
+        )))
 
-    start_time = np.min(start_times_174)
-    end_time = np.max(start_times_174)
-    target_times = pd.date_range(start_time, end_time, freq='1h')
+    reference_times = _times(records_by_channel[0])
+    reference_indices = cadence_indices(
+        reference_times, request.start, request.end, cadence
+    )
+    reference_times = reference_times[reference_indices]
+    selected_indices = [reference_indices]
+    keep = np.ones(reference_times.shape, dtype=bool)
+    for records in records_by_channel[1:]:
+        candidate_times = _times(records)
+        indices = nearest_indices(reference_times, candidate_times)
+        offsets = np.asarray([
+            abs(candidate_times[index] - time)
+            for index, time in zip(indices, reference_times)
+        ])
+        keep &= offsets <= match_tolerance
+        selected_indices.append(indices)
+    if not keep.any():
+        raise RuntimeError("No complete EUI channel sets satisfy the match tolerance")
+    return tuple(
+        records[indices[keep]]
+        for records, indices in zip(records_by_channel, selected_indices)
+    )
 
-    condition = [np.argmin(np.abs((start_times_174 - d.to_pydatetime()))) for d in target_times if
-                 np.min(np.abs(start_times_174 - d.to_pydatetime())) < timedelta(minutes=20)]
 
-    # filter condition
-    sampled_result_304 = paired_result_304[condition]
-    sampled_result_174 = paired_result_174[condition]
+def download(
+    request: DownloadRequest,
+    *,
+    channels=DEFAULT_CHANNELS,
+    cadence=None,
+    match_tolerance=dt.timedelta(minutes=1),
+):
+    selected = select_channel_sets(
+        request,
+        channels=tuple(channels),
+        cadence=cadence,
+        match_tolerance=match_tolerance,
+    )
+    return fetch_fido(*selected, request=request, description="EUI download")
 
-    #########################################################################
-    # print pretty table of available dates
-    print('Downloading available dates:')
-    with pd.option_context('display.max_rows', None):
-        print(pd.DataFrame({'174': [parse(t) for t in sampled_result_174['Start time']],
-                            '304': [parse(t) for t in sampled_result_304['Start time']]}))
 
-    #########################################################################
-    # download
-    Fido.fetch(sampled_result_304, sampled_result_174, path=args.download_dir)
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_common_arguments(parser)
+    parser.add_argument("--cadence", type=parse_cadence, default=parse_cadence("1h"))
+    parser.add_argument("--channels", type=int, nargs="+", default=list(DEFAULT_CHANNELS))
+    parser.add_argument(
+        "--match-tolerance",
+        type=parse_cadence,
+        default=parse_cadence("1m"),
+        help="Maximum separation within a multi-channel observation set.",
+    )
+    return parser
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.match_tolerance is None:
+        raise SystemExit("Error: --match-tolerance must be a duration, not 'all'.")
+    download(
+        request_from_args(args),
+        channels=args.channels,
+        cadence=args.cadence,
+        match_tolerance=args.match_tolerance,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

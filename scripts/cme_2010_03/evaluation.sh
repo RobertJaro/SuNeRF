@@ -10,7 +10,7 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 # Configuration
 ################################################################################
 DATA_ROOT="/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03"
-RUN_ROOT="/glade/work/rjarolim/sunerf-cme-obs/2010_03_cme_v02"
+RUN_ROOT="/glade/work/rjarolim/sunerf-cme-obs/2010_03_cme_v03"
 SUNERF_PATH="${RUN_ROOT}/save_state.snf"
 
 ################################################################################
@@ -50,7 +50,8 @@ python -m sunerf.evaluation.cme.plot_ref_series \
 python -m sunerf.evaluation.cme.plot_tomography \
   --sunerf_path "${SUNERF_PATH}" \
   --longitudes 80 90 100 110 120 130 \
-  --time_range "2010-03-19T00:00" "2010-03-21T00:00"
+  --time_range "2010-03-19T00:00" "2010-03-21T00:00" \
+  --t_points 200
 
 ################################################################################
 # Radius maps

@@ -97,12 +97,12 @@ exit
 #################################################
 # Download validation data
 python -m sunerf.data.download.download_aia \
-  --download_dir "/glade/work/rjarolim/data/sunerf-cme/aia_validation" \
+  --output "/glade/work/rjarolim/data/sunerf-cme/aia_validation" \
   --email robert.jarolim@uni-graz.at \
-  --t_start 2010-03-15T00:00:00 \
-  --t_end 2010-04-07T00:00:00 \
+  --start 2010-03-15T00:00:00 \
+  --end 2010-04-07T00:00:00 \
   --cadence 1d \
-  --channel 193
+  --channels 193
 
 #################################################
 # Evaluation

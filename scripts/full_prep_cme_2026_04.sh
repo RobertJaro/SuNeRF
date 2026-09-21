@@ -34,14 +34,14 @@ python -m sunerf.data.download.download_ccor \
   --start "${START_TS}" \
   --end "${END_TS}" \
   --cadence all \
-  --out "${CCOR_RAW_DIR}" \
+  --output "${CCOR_RAW_DIR}" \
   --product-prefix "SWFO/GOES-19/CCOR-1/ccor1-l2_science"
 
 echo "Downloading STEREO-A/COR2 full cadence"
 python -m sunerf.data.download.download_cor \
   --start "${START_TS}" \
   --end "${END_TS}" \
-  --out "${COR_RAW_DIR}" \
+  --output "${COR_RAW_DIR}" \
   --detector COR2
 
 echo "Checking COR2 triplets"

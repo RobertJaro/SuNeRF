@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import argparse
 import datetime as dt
 import re
 import subprocess
@@ -11,6 +10,12 @@ from pathlib import Path
 from typing import List, Optional
 from urllib.parse import urljoin
 from urllib.request import urlopen
+
+from sunerf.data.download.core import (
+    DownloadResult,
+    add_common_arguments,
+    request_from_args,
+)
 
 
 ARCHIVES = {
@@ -43,19 +48,6 @@ class LinkParser(HTMLParser):
         for key, value in attrs:
             if key.lower() == "href" and value:
                 self.links.append(value)
-
-
-def parse_iso_datetime(value: str) -> dt.datetime:
-    try:
-        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(
-            f"Invalid datetime '{value}'. Use ISO format, e.g. 2010-03-19T00:00:00"
-        ) from exc
-
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(dt.timezone.utc).replace(tzinfo=None)
-    return parsed
 
 
 def parse_timestamp_from_name(filename: str) -> Optional[dt.datetime]:
@@ -197,19 +189,20 @@ def download_files(urls: List[str], out_dir: Path, overwrite: bool, workers: int
     return counts
 
 
-def main():
+def build_parser():
+    import argparse
+
     parser = argparse.ArgumentParser(
         description="Download prepped SOHO/LASCO C2 data from the NRL LASCO archive."
     )
-    parser.add_argument("--start", required=True, type=parse_iso_datetime)
-    parser.add_argument("--end", required=True, type=parse_iso_datetime)
+    add_common_arguments(parser, default_output="lasco")
     parser.add_argument(
         "--instrument",
         "--detector",
         dest="instrument",
         nargs="+",
         default=["C2"],
-        choices=["C2"],
+        choices=["C2", "C3"],
         help="LASCO instrument/detector to download (default: C2).",
     )
     parser.add_argument(
@@ -219,49 +212,46 @@ def main():
         default=["level_1", "polarized"],
         help="Product(s) to download (default: level_1 polarized).",
     )
-    parser.add_argument(
-        "--out",
-        default="lasco",
-        help="Output root. Files are written under <out>/<instrument>/<archive-product>.",
-    )
-    parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--workers", default=10, type=int)
-    parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
+    return parser
 
-    if args.start >= args.end:
-        raise SystemExit("Error: --start must be earlier than --end.")
-    if args.workers < 1:
-        raise SystemExit("Error: --workers must be at least 1.")
+
+def download(request, *, instruments, products, workers=10):
+    if workers < 1:
+        raise ValueError("workers must be at least 1")
 
     totals: Counter = Counter()
 
-    for instrument in args.instrument:
-        for product in args.product:
+    selected_total = 0
+    for instrument in instruments:
+        for product in products:
+            if instrument == "C3" and product == "polarized":
+                raise ValueError("the configured polarized LASCO archive contains C2 only")
             archive = ARCHIVES[product]
             files = (
-                list_level_1_files(archive["url"], instrument, args.start, args.end)
+                list_level_1_files(archive["url"], instrument, request.start, request.end)
                 if product == "level_1"
                 else list_archive_files(archive["url"])
             )
-            selected_urls = filter_by_time(files, args.start, args.end)
+            selected_urls = filter_by_time(files, request.start, request.end)
+            selected_total += len(selected_urls)
             print(
                 f"Found {len(files)} {instrument} {product} files; "
-                f"selected {len(selected_urls)} from {args.start.isoformat()} to {args.end.isoformat()}.",
+                f"selected {len(selected_urls)} from {request.start.isoformat()} to {request.end.isoformat()}.",
                 flush=True,
             )
 
-            if args.dry_run:
+            if request.dry_run:
                 for url in selected_urls:
                     print(url)
                 continue
 
-            out_dir = Path(args.out) / instrument.lower() / archive["subdir"]
+            out_dir = request.output / instrument.lower() / archive["subdir"]
             totals.update(download_files(
                 urls=selected_urls,
                 out_dir=out_dir,
-                overwrite=args.overwrite,
-                workers=args.workers,
+                overwrite=request.overwrite,
+                workers=workers,
             ))
 
     print(
@@ -269,8 +259,27 @@ def main():
         f"skipped existing: {totals['skipped']}, failed: {totals['failed']}."
     )
     if totals["failed"]:
-        raise SystemExit(1)
+        raise RuntimeError(f"LASCO download failed for {totals['failed']} files")
+    return DownloadResult(
+        selected=selected_total,
+        downloaded=totals["downloaded"],
+        skipped=totals["skipped"],
+    )
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        download(
+            request_from_args(args),
+            instruments=args.instrument,
+            products=args.product,
+            workers=args.workers,
+        )
+    except ValueError as error:
+        raise SystemExit(f"Error: {error}.") from error
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

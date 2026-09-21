@@ -1,0 +1,261 @@
+schema_version: 2
+
+# Pointwise density/temperature reconstruction with H/He photoionization
+# absorption and a separate cool absorber field; otherwise identical to
+# config/plasma/all_2012_08.yaml (swish MLP). Response tables and the absorption
+# bundle are the resources packaged with SuNeRF (one CHIANTI build, one abundance set); see
+# docs/plasma_pointwise_plan.md. The recovered n_e is an RMS density.
+base_path: "/glade/work/rjarolim/sunerf/all_2012_08_plasma_mlp_absorption"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/all_2012_08_plasma_mlp_absorption"
+
+instruments:
+  - type: "plasma"
+    key: "AIA"
+    scaling: {type: "asinh", divisor: "/glade/work/rjarolim/data/sunerf/2012_08_prepared_v2/image_scaling.yaml"}
+    temperature_response:
+      artifact: "builtin:aia"
+      channels: ["A94", "A131", "A171", "A193", "A211", "A335"]
+      learnable: true
+      # This is a gauge choice for the global density/gain degeneracy; it does
+      # not assert that AIA provides an exact absolute density calibration.
+      global_reference: true
+      reference_channel: "A193"
+      gain_limit_dex: 0.15
+      gain_prior_sigma_dex: 0.075
+      common_gain_limit_dex: 1.0
+      common_gain_prior_sigma_dex: 0.5
+
+  - type: "plasma"
+    key: "EUVI-A"
+    scaling: {type: "asinh", divisor: "/glade/work/rjarolim/data/sunerf/2012_08_prepared_v2/image_scaling.yaml"}
+    temperature_response:
+      artifact: "builtin:euvi_a"
+      channels: ["171", "195", "284"]
+      learnable: true
+      reference_channel: "195"
+      gain_limit_dex: 0.15
+      gain_prior_sigma_dex: 0.075
+      common_gain_limit_dex: 1.0
+      common_gain_prior_sigma_dex: 0.5
+
+  - type: "plasma"
+    key: "EUVI-B"
+    scaling: {type: "asinh", divisor: "/glade/work/rjarolim/data/sunerf/2012_08_prepared_v2/image_scaling.yaml"}
+    temperature_response:
+      artifact: "builtin:euvi_b"
+      channels: ["171", "195", "284"]
+      learnable: true
+      reference_channel: "195"
+      gain_limit_dex: 0.15
+      gain_prior_sigma_dex: 0.075
+      common_gain_limit_dex: 1.0
+      common_gain_prior_sigma_dex: 0.5
+
+data:
+  # One model-space distance unit is one solar radius and one model-time unit
+  # is one day. These values are mandatory because the renderer integrates dl
+  # in centimeters and time augmentation is configured in seconds.
+  Rs_per_ds: 1.0
+  seconds_per_dt: 86400.0
+  batch_size: 1024
+  validation_batch_size: 2048
+  num_workers: 16
+  preparation_workers: 16
+  debug: false
+  holdout: {strategy: "center", count: 1}
+
+  # Datasets stay in physical units and define no scaling. The fixed per-channel
+  # loss divisor belongs to the instrument (instruments[].scaling.divisor) and is
+  # shared by every dataset mapped to it. The table referenced there is written
+  # once by `python -m sunerf.data.euv.estimate_scaling --config <this file>`
+  # (99.5th absolute-valid-pixel percentile per training observation, then the
+  # median across observations) and reused unchanged afterwards.
+
+  train_datasets:
+    - type: "AIA"
+      key: "AIA"
+      instrument_key: "AIA"
+      data_path: "/glade/work/rjarolim/data/sunerf/2012_08_prepared_v2/aia/*.prepared.fits"
+      wavelengths: [94, 131, 171, 193, 211, 335]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+    - type: "EUVI"
+      key: "EUVI-A"
+      instrument_key: "EUVI-A"
+      data_path: "/glade/work/rjarolim/data/sunerf/2012_08_prepared_v2/euvi_a/*.prepared.fits"
+      wavelengths: [171, 195, 284]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+    - type: "EUVI"
+      key: "EUVI-B"
+      instrument_key: "EUVI-B"
+      data_path: "/glade/work/rjarolim/data/sunerf/2012_08_prepared_v2/euvi_b/*.prepared.fits"
+      wavelengths: [171, 195, 284]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+  # The same deterministic matching is used for both groups. The center
+  # observation is selected here and excluded from every training dataset.
+  valid_datasets:
+    - type: "AIA"
+      key: "AIA"
+      instrument_key: "AIA"
+      data_path: "/glade/work/rjarolim/data/sunerf/2012_08_prepared_v2/aia/*.prepared.fits"
+      wavelengths: [94, 131, 171, 193, 211, 335]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+    - type: "EUVI"
+      key: "EUVI-A"
+      instrument_key: "EUVI-A"
+      data_path: "/glade/work/rjarolim/data/sunerf/2012_08_prepared_v2/euvi_a/*.prepared.fits"
+      wavelengths: [171, 195, 284]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+    - type: "EUVI"
+      key: "EUVI-B"
+      instrument_key: "EUVI-B"
+      data_path: "/glade/work/rjarolim/data/sunerf/2012_08_prepared_v2/euvi_b/*.prepared.fits"
+      wavelengths: [171, 195, 284]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+model:
+  # Swish MLP on a fixed positional encoding; type: "siren" selects the SIREN.
+  type: "mlp"
+  density_offset_log10_cm3: 8.0
+  # Radial baseline of the density: isothermal hydrostatic stratification
+  # n ~ exp[-(1/H0)(1 - 1/r)] with H0 = 0.1 R_sun (a 1.5 MK corona; 1.45 dex
+  # from 1.0 to 1.5 R_sun). The network learns the deviation from it.
+  density_profile: {type: "hydrostatic", scale_height_rsun: 0.1}
+  # Bounds of the pointwise temperature. 10^4 K is required because the same
+  # temperature selects the H/He ion fractions of the opacity; step_dex is the
+  # bin width of the validation LOS emission-measure histogram.
+  temperature_grid:
+    log10_K_min: 4.0
+    log10_K_max: 7.5
+    step_dex: 0.05
+  initial_log_T: 6.1
+  # Separate cool absorber: a hydrogen density that never emits. Filament,
+  # prominence and limb material is reconstructed here instead of forcing an
+  # emitting point through the temperature range in which it would be bright.
+  cool_absorber: true
+  cool_density_offset_log10_cm3: 7.0
+  dim: 512
+  n_layers: 8
+  activation: "swish"
+  encoding: "positional"
+  # Per input axis (x, y, z, t): frequencies are 2 ** linspace(0, max, num) * pi
+  # in model units, so the maxima are 256 cycles per 2 R_sun (~5.4 Mm
+  # wavelength) in space and 32 cycles per 2 days (1.5 h) in time.
+  num_frequencies: [64, 64, 64, 16]
+  max_frequencies: [8, 8, 8, 5]
+
+module:
+  regularization_density_scale_cm3: 1.0e8
+  # FITS timestamps are detector times. Evaluate every sample at its emission
+  # time t_obs - |x - x_obs| / c so observers at different distances agree.
+  light_travel_time: true
+  lr_config:
+    start: 1.0e-3
+    end: 1.0e-4
+    iterations: 1000000
+
+sampling:
+  type: "spherical"
+  # Rays end at the photosphere; the limb layer is modeled by the absorption.
+  min_distance: 1.0
+  max_distance: 1.5
+  n_samples: 64
+  perturb: true
+
+hierarchical_sampling:
+  type: "hierarchical"
+  n_samples: 128
+  perturb: true
+
+absorption:
+  type: "photoionization"
+  artifact: "builtin:h_he_photoionization"
+  # The density field traces total hydrogen as in a fully ionized single-fluid
+  # model; equilibrium neutral fractions select how much of it absorbs.
+  hydrogen_density_convention: "fully_ionized_proxy"
+  # Assumed ionization state of the cool absorber (photoionized prominence
+  # plasma, not an equilibrium result). The inferred hydrogen column scales
+  # roughly inversely with the neutral fractions.
+  cool_ion_fractions: {H_I: 0.7, He_I: 0.7, He_II: 0.3}
+
+shuffle:
+  type: "normal_time"
+  start_seconds: 43200.0
+  end_seconds: 300.0
+  iterations: 100000
+
+training:
+  epochs: 1000
+  log_every_n_steps: 2000
+  check_val_every_n_epoch: 1
+  meta_path: "last"
+
+logging:
+  project: "sunerf"
+  name: "2012-08 AIA + EUVI-A + EUVI-B pointwise plasma MLP + absorption"
+
+# Plot products are evaluated only during validation and logged under
+# euv_tomography.<dataset>.<product>. Channel IDs are resolved against the
+# immutable response artifact; invalid or ambiguous selections fail at startup.
+callbacks:
+  euv_tomography:
+    enabled: true
+    every_n_validations: 1
+    figure_dpi: 150
+    datasets:
+      AIA:
+        channels: [A94, A131, A171, A193, A211, A335]
+      EUVI-A:
+        channels: [171, 195, 284]
+      EUVI-B:
+        channels: [171, 195, 284]
+    products:
+      channel_comparison:
+        enabled: true
+        rows: [observation, prediction, residual]
+        stretch: log
+        intensity_percentile: 99.5
+        residual_percentile: 99.0
+      plasma_diagnostics:
+        enabled: true
+        quantities:
+          - mean_log_temperature
+          - column_electron_density
+          - emission_measure
+          - emission_height
+          - absorption_fraction
+      thermal_distribution:
+        enabled: true
+        spatial_statistic: median
+        percentile_band: [16, 84]
+      response_and_gains:
+        enabled: true
+      ray_sampling:
+        enabled: false
+        pixel_fraction: [0.25, 0.25]
+
+lambda:
+  image: 1.0
+  # Radial density penalty disabled: the hydrostatic baseline supplies the
+  # radial decline, and the one-sided penalty biased the outer shell low.
+  regularization: 0.0
+  absorption: 0.0
+  # L1 sparsity prior on the cool hydrogen column in units of 1e19 cm^-2.
+  cool_absorber: 1.0e-4
+  calibration: 1.0e-4

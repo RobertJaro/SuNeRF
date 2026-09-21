@@ -6,8 +6,8 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 
 
 # download stereo cor2
-python -m sunerf.data.download.download_cor --start 2012-08-01  --end 2012-09-01 --out /glade/work/rjarolim/data/sunerf-cme/2012_08/stereo_a_cor2 --detector COR2 --source STEREO_A
-python -m sunerf.data.download.download_cor --start 2012-08-01  --end 2012-09-01 --out /glade/work/rjarolim/data/sunerf-cme/2012_08/stereo_b_cor2 --detector COR2 --source STEREO_B
+python -m sunerf.data.download.download_cor --start 2012-08-01  --end 2012-09-01 --output /glade/work/rjarolim/data/sunerf-cme/2012_08/stereo_a_cor2 --detector COR2 --source STEREO_A
+python -m sunerf.data.download.download_cor --start 2012-08-01  --end 2012-09-01 --output /glade/work/rjarolim/data/sunerf-cme/2012_08/stereo_b_cor2 --detector COR2 --source STEREO_B
 
 # clean up COR triplets
 python -m sunerf.data.cor.remove_invalid_triplets \

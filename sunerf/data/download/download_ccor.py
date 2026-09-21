@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import argparse
 import datetime as dt
 import re
 from pathlib import Path
@@ -8,37 +7,15 @@ from typing import Iterator, List, Optional, Tuple
 
 import fsspec
 
+from sunerf.data.download.core import (
+    DownloadResult,
+    add_common_arguments,
+    parse_cadence,
+    request_from_args,
+)
+
 S3_BUCKET = "noaa-nesdis-swfo-ccor-1-pds"
 DEFAULT_PREFIX = "SWFO/GOES-19/CCOR-1/ccor1-l1a_science"
-
-
-def parse_iso_datetime(value: str) -> dt.datetime:
-    try:
-        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(
-            f"Invalid datetime '{value}'. Use ISO format, e.g. 2025-09-01T00:00:00"
-        ) from exc
-
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(dt.timezone.utc).replace(tzinfo=None)
-    return parsed
-
-
-def parse_cadence(value: str) -> Optional[dt.timedelta]:
-    if value.strip().lower() in {"none", "all"}:
-        return None
-
-    match = re.fullmatch(r"(?i)\s*(\d+)\s*([smhd])\s*", value)
-    if not match:
-        raise argparse.ArgumentTypeError(
-            f"Invalid cadence '{value}'. Use formats like 30m, 1h, 6h, 1d, or 'none'."
-        )
-
-    qty = int(match.group(1))
-    unit = match.group(2).lower()
-    seconds_per_unit = {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
-    return dt.timedelta(seconds=qty * seconds_per_unit)
 
 
 def parse_timestamp_from_path(path: str) -> Optional[dt.datetime]:
@@ -163,22 +140,18 @@ def download_files(fs, files: List[str], out_dir: Path, overwrite: bool) -> Tupl
     return downloaded, skipped
 
 
-def main():
+def build_parser():
+    import argparse
+
     parser = argparse.ArgumentParser(
         description="Download NOAA SWFO GOES-19 CCOR L1A science files with cadence sampling."
     )
-    parser.add_argument("--start", required=True, type=parse_iso_datetime)
-    parser.add_argument("--end", required=True, type=parse_iso_datetime)
+    add_common_arguments(parser, default_output="data/ccor")
     parser.add_argument(
         "--cadence",
         default="1h",
         type=parse_cadence,
         help="Sampling cadence (default: 1h). Use 'none' to download all files.",
-    )
-    parser.add_argument(
-        "--out",
-        default="data/ccor",
-        help="Local output directory (default: data/ccor).",
     )
     parser.add_argument(
         "--product-prefix",
@@ -190,52 +163,55 @@ def main():
         default=".fits",
         help="File extension filter (default: .fits).",
     )
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite local files if they already exist.",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="List selected files without downloading.",
-    )
-    args = parser.parse_args()
+    return parser
 
-    if args.start >= args.end:
-        raise SystemExit("Error: --start must be earlier than --end.")
+
+def download(request, *, cadence, product_prefix=DEFAULT_PREFIX, extension=".fits"):
 
     fs = fsspec.filesystem("s3", anon=True)
     files = list_files(
         fs=fs,
-        product_prefix=args.product_prefix.strip("/"),
-        start=args.start,
-        end=args.end,
-        extension=args.ext,
+        product_prefix=product_prefix.strip("/"),
+        start=request.start,
+        end=request.end,
+        extension=extension,
     )
 
     sampled_files = sample_by_cadence(
         files=files,
-        start=args.start,
-        end=args.end,
-        cadence=args.cadence,
+        start=request.start,
+        end=request.end,
+        cadence=cadence,
     )
 
     print(f"Found {len(files)} files in range; selected {len(sampled_files)} after cadence.")
-    if args.dry_run:
+    if request.dry_run:
         for path in sampled_files:
             print(path)
-        return
+        return DownloadResult(selected=len(sampled_files))
 
-    out_dir = Path(args.out)
     downloaded, skipped = download_files(
         fs=fs,
         files=sampled_files,
-        out_dir=out_dir,
-        overwrite=args.overwrite,
+        out_dir=request.output,
+        overwrite=request.overwrite,
     )
     print(f"Done. Downloaded: {downloaded}, skipped existing: {skipped}.")
+    return DownloadResult(
+        selected=len(sampled_files), downloaded=downloaded, skipped=skipped
+    )
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    download(
+        request_from_args(args),
+        cadence=args.cadence,
+        product_prefix=args.product_prefix,
+        extension=args.ext,
+    )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

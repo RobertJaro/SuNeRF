@@ -1,46 +1,34 @@
-#!/usr/bin/env python3
+"""Download Parker Solar Probe in-situ CDF products from CDAWeb."""
+
 import argparse
-import os
 
-from sunpy.net import Fido
-from sunpy.net import attrs as a
+from sunerf.data.download.cdaweb import download_cdaweb
+from sunerf.data.download.core import add_common_arguments, request_from_args
 
 
-DEFAULT_DATASETS = [
+DEFAULT_DATASETS = (
     "PSP_SWP_SPC_L3I",
     "PSP_FLD_L3_SQTN_RFS_V1V2",
     "PSP_COHO1HR_MERGED_MAG_PLASMA",
-]
+)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Download PSP in-situ CDF files from CDAWeb via SunPy/Fido.")
-    parser.add_argument("--start", required=True, help="Start time, e.g. 2025-09-01T00:00:00")
-    parser.add_argument("--end", required=True, help="End time, e.g. 2025-10-01T00:00:00")
-    parser.add_argument("--out", required=True, help="Output directory for raw PSP CDF files")
-    parser.add_argument(
-        "--dataset",
-        action="append",
-        dest="datasets",
-        default=None,
-        help="CDAWeb dataset id to download. Can be repeated. Defaults to SPC L3I, SQTN, and COHO hourly.",
-    )
-    args = parser.parse_args()
+def download(request, *, datasets=DEFAULT_DATASETS):
+    return download_cdaweb(request, datasets, mission="PSP")
 
-    os.makedirs(args.out, exist_ok=True)
-    datasets = args.datasets if args.datasets is not None else DEFAULT_DATASETS
-    trange = a.Time(args.start, args.end)
 
-    for dataset_id in datasets:
-        print(f"Searching CDAWeb dataset {dataset_id} for {args.start} -> {args.end}")
-        result = Fido.search(trange, a.cdaweb.Dataset(dataset_id))
-        print(result)
-        if len(result) == 0:
-            print(f"No files found for {dataset_id}")
-            continue
-        print(f"Fetching {dataset_id}")
-        Fido.fetch(result, path=os.path.join(args.out, "{file}"))
+def build_parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_common_arguments(parser)
+    parser.add_argument("--datasets", nargs="+", default=list(DEFAULT_DATASETS))
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    download(request_from_args(args), datasets=args.datasets)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

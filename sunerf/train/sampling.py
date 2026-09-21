@@ -1,5 +1,72 @@
 import torch
-from torch import nn
+
+
+def _safe_ray_inputs(rays_o: torch.Tensor, rays_d: torch.Tensor):
+    """Replace invalid ray components without losing their validity flag."""
+    if rays_o.ndim != 2 or rays_d.shape != rays_o.shape or rays_o.shape[-1] != 3:
+        raise ValueError(
+            f'rays_o and rays_d must both have shape (n_rays, 3), got '
+            f'{tuple(rays_o.shape)} and {tuple(rays_d.shape)}.'
+        )
+    finite = torch.isfinite(rays_o).all(dim=-1) & torch.isfinite(rays_d).all(dim=-1)
+    safe_o = torch.where(finite[:, None], rays_o, torch.zeros_like(rays_o))
+    fallback_d = torch.zeros_like(rays_d)
+    fallback_d[:, 0] = 1
+    safe_d = torch.where(finite[:, None], rays_d, fallback_d)
+    norm_squared = safe_d.square().sum(dim=-1)
+    valid = finite & (norm_squared > torch.finfo(rays_d.dtype).eps)
+    safe_d = torch.where(valid[:, None], safe_d, fallback_d)
+    return safe_o, safe_d, valid
+
+
+def _front_shell_intersection(
+        rays_o: torch.Tensor,
+        rays_d: torch.Tensor,
+        inner_radius: torch.Tensor,
+        outer_radius: torch.Tensor,
+):
+    """Return the visible forward segment of a concentric spherical shell."""
+    safe_o, safe_d, valid = _safe_ray_inputs(rays_o, rays_d)
+    a = safe_d.square().sum(dim=-1)
+    b = 2 * (safe_o * safe_d).sum(dim=-1)
+
+    outer_c = safe_o.square().sum(dim=-1) - outer_radius.square()
+    outer_discriminant = b.square() - 4 * a * outer_c
+    valid &= outer_discriminant >= 0
+    outer_sqrt = torch.sqrt(outer_discriminant.clamp_min(0))
+    denominator = 2 * a.clamp_min(torch.finfo(a.dtype).eps)
+    outer_near = (-b - outer_sqrt) / denominator
+    outer_far = (-b + outer_sqrt) / denominator
+    distance_near = outer_near.clamp_min(0)
+    distance_far = outer_far
+    valid &= distance_far > distance_near
+
+    inner_c = safe_o.square().sum(dim=-1) - inner_radius.square()
+    inner_discriminant = b.square() - 4 * a * inner_c
+    intersects_inner = inner_discriminant >= 0
+    inner_sqrt = torch.sqrt(inner_discriminant.clamp_min(0))
+    inner_near = (-b - inner_sqrt) / denominator
+    inner_far = (-b + inner_sqrt) / denominator
+
+    # For a normal remote observer, the photosphere terminates the visible front
+    # shell. If a synthetic ray starts inside the inner sphere, begin after its
+    # forward exit instead.
+    origin_inside_inner = safe_o.square().sum(dim=-1) < inner_radius.square()
+    distance_near = torch.where(
+        valid & intersects_inner & origin_inside_inner & (inner_far > distance_near),
+        inner_far,
+        distance_near,
+    )
+    hits_front_surface = (
+        valid & intersects_inner & ~origin_inside_inner
+        & (inner_near > distance_near) & (inner_near < distance_far)
+    )
+    distance_far = torch.where(hits_front_surface, inner_near, distance_far)
+    valid &= distance_far > distance_near
+
+    distance_near = torch.where(valid, distance_near, torch.zeros_like(distance_near))
+    distance_far = torch.where(valid, distance_far, torch.zeros_like(distance_far))
+    return safe_o, safe_d, distance_near, distance_far, valid
 
 
 def _perturb_interior_samples(z_vals: torch.Tensor) -> torch.Tensor:
@@ -19,6 +86,10 @@ class SphericalSampler(torch.nn.Module):
     def __init__(self, Rs_per_ds, min_distance=1.0, max_distance=2.0, n_samples=64, perturb=True,
                  radial_weighting=False, radial_weight_power=2.0, radial_weight_grid_size=256):
         super().__init__()
+        if n_samples < 2:
+            raise ValueError('n_samples must be at least 2.')
+        if min_distance < 0 or max_distance <= min_distance:
+            raise ValueError('Require 0 <= min_distance < max_distance.')
         self.perturb = perturb
         self.radial_weighting = radial_weighting
         self.radial_weight_power = radial_weight_power
@@ -33,29 +104,16 @@ class SphericalSampler(torch.nn.Module):
         Sample from near to solar surface. If no points are on the solar surface this
         """
 
-        # solve quadratic equation --> find points at distance
-        a = rays_d.pow(2).sum(-1)
-        b = (2 * rays_o * rays_d).sum(-1)
-        c = rays_o.pow(2).sum(-1) - self.max_distance ** 2
-        dist_near = (-b - torch.sqrt(b.pow(2) - 4 * a * c)) / (2 * a + 1e-8)
-        dist_far = (-b + torch.sqrt(b.pow(2) - 4 * a * c)) / (2 * a + 1e-8)
-
-        # solve quadratic equation --> find points at 1 solar radii
-        # stop sampling at solar surface
-        c = rays_o.pow(2).sum(-1) - self.min_distance ** 2
-        dist_inner = (-b - torch.sqrt(b.pow(2) - 4 * a * c)) / (2 * a)
-
-        intersect_solar_surface = ~torch.isnan(dist_inner)
-        dist_far[intersect_solar_surface] = dist_inner[intersect_solar_surface]
-
-        # dist_far[torch.isnan(dist_far)] = projected_far[torch.isnan(dist_far)]
-        # dist_far = projected_far
+        rays_o, rays_d, dist_near, dist_far, ray_valid = _front_shell_intersection(
+            rays_o, rays_d, self.min_distance, self.max_distance
+        )
 
         if self.radial_weighting:
             t_vals = self.t_vals.to(device=rays_o.device, dtype=rays_o.dtype).expand(rays_o.shape[0], -1)
             z_vals = self._sample_radial_weighted(rays_o, rays_d, dist_near, dist_far, t_vals)
         else:
-            z_vals = dist_near[:, None] * (1. - self.t_vals) + dist_far[:, None] * self.t_vals
+            t_vals = self.t_vals.to(device=rays_o.device, dtype=rays_o.dtype)
+            z_vals = dist_near[:, None] * (1. - t_vals) + dist_far[:, None] * t_vals
 
         # Draw stratified training samples while retaining the exact near/far
         # boundaries needed by finite-interval quadrature. Evaluation is
@@ -65,7 +123,13 @@ class SphericalSampler(torch.nn.Module):
 
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
 
-        return {'points': pts, 'z_vals': z_vals}
+        return {
+            'points': pts,
+            'z_vals': z_vals,
+            'ray_valid': ray_valid,
+            'rays_o': rays_o,
+            'rays_d': rays_d,
+        }
 
     def _sample_radial_weighted(self, rays_o, rays_d, dist_near, dist_far, t_vals):
         grid_t = torch.linspace(
@@ -101,6 +165,10 @@ class StratifiedSampler(torch.nn.Module):
 
     def __init__(self, Rs_per_ds, max_distance=1.3, n_samples=64, perturb=True):
         super().__init__()
+        if n_samples < 2:
+            raise ValueError('n_samples must be at least 2.')
+        if max_distance <= 1:
+            raise ValueError('max_distance must be greater than one solar radius.')
         self.perturb = perturb
 
         self.register_buffer('distance', torch.tensor(max_distance / Rs_per_ds, dtype=torch.float32))
@@ -113,24 +181,11 @@ class StratifiedSampler(torch.nn.Module):
         Sample from near to solar surface. If no points are on the solar surface this
         """
 
-        # convert near and far from center to actual distance
-        distance = rays_o.pow(2).sum(-1).pow(0.5)
-
-        # solve quadratic equation --> find points at 1 solar radii
-        a = rays_d.pow(2).sum(-1)
-        b = (2 * rays_o * rays_d).sum(-1)
-        # stop sampling at solar surface
-        c = rays_o.pow(2).sum(-1) - self.solar_R ** 2
-        dist_inner = (-b - torch.sqrt(b.pow(2) - 4 * a * c)) / (2 * a)
-
-        dist_near = distance - self.distance
-        dist_far = distance + self.distance
-
-        # replace endpoint with solar surface
-        intersect_solar_surface = ~torch.isnan(dist_inner)
-        dist_far[intersect_solar_surface] = dist_inner[intersect_solar_surface]
-
-        z_vals = dist_near[:, None] * (1. - self.t_vals) + dist_far[:, None] * (self.t_vals)
+        rays_o, rays_d, dist_near, dist_far, ray_valid = _front_shell_intersection(
+            rays_o, rays_d, self.solar_R, self.distance
+        )
+        t_vals = self.t_vals.to(device=rays_o.device, dtype=rays_o.dtype)
+        z_vals = dist_near[:, None] * (1. - t_vals) + dist_far[:, None] * t_vals
 
         # Keep the exact integration endpoints and disable jitter in eval mode.
         if self.perturb and self.training:
@@ -138,7 +193,13 @@ class StratifiedSampler(torch.nn.Module):
 
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
 
-        return {'points': pts, 'z_vals': z_vals}
+        return {
+            'points': pts,
+            'z_vals': z_vals,
+            'ray_valid': ray_valid,
+            'rays_o': rays_o,
+            'rays_d': rays_d,
+        }
 
 
 class HierarchicalSampler(torch.nn.Module):
@@ -178,6 +239,7 @@ class HierarchicalSampler(torch.nn.Module):
         """
 
         # Normalize weights to get PDF.
+        weights = torch.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0).clamp_min(0)
         pdf = (weights + 1e-5) / torch.sum(weights + 1e-5, -1, keepdims=True)  # [n_rays, weights.shape[-1]]
 
         # Convert PDF to CDF.
@@ -185,11 +247,15 @@ class HierarchicalSampler(torch.nn.Module):
         cdf = torch.concat([torch.zeros_like(cdf[..., :1]), cdf], dim=-1)  # [n_rays, weights.shape[-1] + 1]
 
         # Take sample positions to grab from CDF. Linear when perturb == 0.
-        if not self.perturb:
-            u = torch.linspace(0., 1., self.n_samples, device=cdf.device)
+        if not (self.perturb and self.training):
+            u = torch.linspace(0., 1., self.n_samples, device=cdf.device, dtype=cdf.dtype)
             u = u.expand(list(cdf.shape[:-1]) + [self.n_samples])  # [n_rays, n_samples]
         else:
-            u = torch.rand(list(cdf.shape[:-1]) + [self.n_samples], device=cdf.device)  # [n_rays, n_samples]
+            u = torch.rand(
+                list(cdf.shape[:-1]) + [self.n_samples],
+                device=cdf.device,
+                dtype=cdf.dtype,
+            )  # [n_rays, n_samples]
 
         # Find indices along CDF where values in u would be placed.
         u = u.contiguous()  # Returns contiguous tensor with same values.

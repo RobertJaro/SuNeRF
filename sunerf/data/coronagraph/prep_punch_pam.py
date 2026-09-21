@@ -85,9 +85,12 @@ class PunchPamPrep:
         except Exception as exc:
             raise RuntimeError(f"Error loading PUNCH PAM FITS file {file_path}: {exc}")
 
+        # Non-positive B and pB are treated as missing measurements. pB' is
+        # expected to vanish for Thomson scattering, so non-positive values are
+        # clipped to zero instead of discarding the otherwise valid pB pixel.
         data[0][data[0] <= 0] = np.nan
         data[1][data[1] <= 0] = np.nan
-        data[2][data[2] <= 0] = np.nan
+        data[2][data[2] <= 0] = 0.0
         tb = np.array(data[0], dtype=float, copy=True)
         pb = np.sqrt(np.square(data[1]) + np.square(data[2]))
         invalid = (uncertainty[0] == 0) & (uncertainty[1] == 0)

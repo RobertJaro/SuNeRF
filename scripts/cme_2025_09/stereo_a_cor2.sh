@@ -19,6 +19,11 @@ COR_RAW_DIR="${DATA_ROOT}/cor"
 COR_PREP_DIR="${DATA_ROOT}/cor_prep"
 COR_CLEAR_RAW_DIR="${COR_RAW_DIR}/clear"
 PREP_DIR="${DATA_ROOT}/prep"
+# The pB correction mask is smoothed around the Sun to suppress streamer structure:
+# Gaussian widths in position angle and, as a fraction of the image width, along
+# the radius.
+MASK_SMOOTH_ANGLE_DEG=60
+MASK_SMOOTH_FRACTION=0.02
 
 ################################################################################
 # Download STEREO-A COR2 polarized triplets
@@ -26,7 +31,7 @@ PREP_DIR="${DATA_ROOT}/prep"
 python -m sunerf.data.download.download_cor \
   --start "${START}" \
   --end "${END}" \
-  --out "${COR_RAW_DIR}" \
+  --output "${COR_RAW_DIR}" \
   --detector COR2
 
 ################################################################################
@@ -87,12 +92,16 @@ mkdir -p "${PREP_DIR}/masks"
 python -m sunerf.data.coronagraph.compute_correction \
   --type daily-min \
   --input "${PREP_DIR}/cor2/tB/*" \
-  --output "${PREP_DIR}/masks/stereo_a_cor2_tB_correction.npy"
+  --output "${PREP_DIR}/masks/stereo_a_cor2_tB_correction.npy" \
+  --smooth-angle-deg "${MASK_SMOOTH_ANGLE_DEG}" \
+  --smooth-fraction "${MASK_SMOOTH_FRACTION}"
 
 python -m sunerf.data.coronagraph.compute_correction \
   --type daily-min \
   --input "${PREP_DIR}/cor2/pB/*" \
-  --output "${PREP_DIR}/masks/stereo_a_cor2_pB_correction.npy"
+  --output "${PREP_DIR}/masks/stereo_a_cor2_pB_correction.npy" \
+  --smooth-angle-deg "${MASK_SMOOTH_ANGLE_DEG}" \
+  --smooth-fraction "${MASK_SMOOTH_FRACTION}"
 
 python -m sunerf.data.coronagraph.compute_correction \
   --type daily-min \

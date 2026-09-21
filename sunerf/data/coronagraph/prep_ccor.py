@@ -4,7 +4,8 @@ Batch-preprocess CCOR FITS images.
 
 For each FITS file matched by --data_path, the script:
 1) Loads image data from extension 1.
-2) Loads mask from extension 2 and sets masked pixels (mask != 0) to NaN.
+2) Loads mask from extension 2 and sets masked pixels (mask != 0) and
+   non-positive values to NaN.
 3) Builds a SunPy map from extension 1 header.
 4) Applies shared map preprocessing.
 5) Saves the result to --out_path with the same basename.
@@ -88,6 +89,9 @@ def _load_ccor_map(file_path):
 
         masked_data = np.array(data, dtype=float, copy=True)
         masked_data[np.array(mask) != 0] = np.nan
+        # Non-positive brightness is treated as a missing measurement,
+        # consistent with the PUNCH and STEREO/COR preparation.
+        masked_data[masked_data <= 0] = np.nan
 
         if "rsun_ref" not in header:
             header["rsun_ref"] = constants.radius.to_value(u.m)

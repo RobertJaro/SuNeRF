@@ -1,6 +1,8 @@
 import numpy as np
 from astropy import units as u
 from astropy.visualization import ImageNormalize, LinearStretch
+from sunpy.coordinates import frames
+from sunpy.map import all_coordinates_from_map
 from sunpy.visualization.colormaps import cm
 
 from sunerf.baseline.reprojection import transform
@@ -26,20 +28,15 @@ sdo_cmaps = {171: cm.sdoaia171, 174: cm.sdoaia171, 193: cm.sdoaia193, 211: cm.sd
 
 
 def get_azimuthal_equidistant_coordinates(s_map):
-    data = s_map.data
+    """Return exact Helioprojective ``[Tx, Ty]`` coordinates for an ARC map.
 
-    coord_grid = np.mgrid[0:data.shape[0], 0:data.shape[1]]
-    coord_grid = np.stack(coord_grid, dtype=np.float32).T
-    coord_grid[..., 0] = coord_grid[..., 0] - (data.shape[0] - 1) / 2
-    coord_grid[..., 1] = coord_grid[..., 1] - (data.shape[1] - 1) / 2
-
-    coord_grid[..., 0] = coord_grid[..., 0] * s_map.scale[0].to_value(u.arcsec / u.pix)
-    coord_grid[..., 1] = coord_grid[..., 1] * s_map.scale[1].to_value(u.arcsec / u.pix)
-
-    coord_grid = coord_grid * u.arcsec
-
-    # shift center
-    coord_grid[..., 0] = coord_grid[..., 0] + s_map.reference_coordinate.Tx.to(u.arcsec)
-    coord_grid[..., 1] = coord_grid[..., 1] + s_map.reference_coordinate.Ty.to(u.arcsec)
-
-    return coord_grid
+    Pixel scale times offset is a projection-plane coordinate, not a
+    Helioprojective angle away from the reference pixel. Let Astropy WCS apply
+    the inverse azimuthal-equidistant projection. This also preserves NumPy's
+    ``(ny, nx)`` ordering for non-square images; the former ``.T`` silently
+    swapped both axes and their scales.
+    """
+    coordinates = all_coordinates_from_map(s_map).transform_to(frames.Helioprojective)
+    tx = coordinates.Tx.to_value(u.arcsec)
+    ty = coordinates.Ty.to_value(u.arcsec)
+    return u.Quantity(np.stack([tx, ty], axis=-1), u.arcsec)

@@ -34,14 +34,14 @@ python -m sunerf.data.download.download_ccor \
   --start "${START_TS}" \
   --end "${END_TS}" \
   --cadence all \
-  --out "${CCOR_RAW_DIR}" \
+  --output "${CCOR_RAW_DIR}" \
   --product-prefix "SWFO/GOES-19/CCOR-1/ccor1-l2_science"
 
 echo "Downloading STEREO-A/COR2 full cadence"
 python -m sunerf.data.download.download_cor \
   --start "${START_TS}" \
   --end "${END_TS}" \
-  --out "${COR_RAW_DIR}" \
+  --output "${COR_RAW_DIR}" \
   --detector COR2
 
 echo "Checking COR2 triplets"
@@ -57,7 +57,7 @@ python -m sunerf.data.download.download_punch \
   --start "${START_TS}" \
   --end "${END_TS}" \
   --cadence all \
-  --out "${PUNCH_PAM_RAW_DIR}"
+  --output "${PUNCH_PAM_RAW_DIR}"
 
 echo "Running SECCHI_PREP for COR2"
 export SECCHI_INPUT_GLOB="${COR_RAW_DIR}/*.fts"
@@ -93,8 +93,7 @@ echo "Prepping CCOR"
 python -m sunerf.data.coronagraph.prep_ccor \
   --data_path "${CCOR_RAW_DIR}/*.fits" \
   --out_path "${PREP_DIR}/ccor" \
-  --resize 512 512 \
-  --value_min 1.0e-16
+  --resize 512 512
 
 echo "Prepping PUNCH PAM"
 python -m sunerf.data.coronagraph.prep_punch_pam \

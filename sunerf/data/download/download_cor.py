@@ -1,28 +1,55 @@
-#!/usr/bin/env python3
+"""Download STEREO/SECCHI COR observations from VSO."""
+
+from __future__ import annotations
+
 import argparse
-from sunpy.net import Fido, attrs as a
+
 import astropy.units as u
-import os
+from sunpy.net import Fido, attrs as a
 
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--start", required=True, help="ISO time, e.g. 2024-10-01 or 2024-10-01T00:00:00")
-    p.add_argument("--end", required=True, help="ISO time, e.g. 2024-11-01 or 2024-11-01T00:00:00")
-    p.add_argument("--detector", default="COR2", help="Detector to use, e.g. COR1, COR2")
-    p.add_argument("--source", default="STEREO_A", help="Source to use, e.g. STEREO_A, STEREO_B")
-    p.add_argument("--out", default="stereo", help="Output directory")
-    p.add_argument("--sample-minutes", type=float, default=None, help="Optional cadence sampling")
-    args = p.parse_args()
+from sunerf.data.download.core import (
+    DownloadRequest,
+    add_common_arguments,
+    fetch_fido,
+    parse_cadence,
+    request_from_args,
+)
 
-    q = [
-        a.Time(args.start, args.end),
-        a.Source(args.source),
+
+def download(request: DownloadRequest, *, detector="COR2", source="STEREO_A", cadence=None):
+    query = [
+        a.Time(request.start, request.end),
+        a.Source(source),
         a.Instrument("SECCHI"),
-        a.Detector(args.detector)
+        a.Detector(detector),
     ]
+    if cadence is not None:
+        query.append(a.Sample(cadence.total_seconds() * u.s))
+    result = Fido.search(*query)
+    if sum(len(block) for block in result) == 0:
+        raise RuntimeError(f"No {source}/{detector} records found")
+    return fetch_fido(result, request=request, description=f"{source}/{detector} download")
 
-    res = Fido.search(*q)
-    Fido.fetch(res, path=args.out, retry=True)
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_common_arguments(parser, default_output="stereo")
+    parser.add_argument("--detector", default="COR2", choices=("COR1", "COR2"))
+    parser.add_argument("--source", default="STEREO_A", choices=("STEREO_A", "STEREO_B"))
+    parser.add_argument("--cadence", type=parse_cadence, default=None)
+    return parser
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    download(
+        request_from_args(args),
+        detector=args.detector,
+        source=args.source,
+        cadence=args.cadence,
+    )
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

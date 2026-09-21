@@ -103,14 +103,27 @@ class RotatedTimeShuffler(nn.Module):
 
 def load_yaml_config(yaml_config_file, overwrite_args=None):
     overwrite_args = [] if overwrite_args is None else overwrite_args
-    assert all([k.startswith('--') for k in overwrite_args[::2]]), \
-        'Only accept --config and overwrite arguments (must start with --)'
-    overwrite_args = {k.replace('--', ''): v for k, v in zip(overwrite_args[::2], overwrite_args[1::2])}
+    if len(overwrite_args) % 2:
+        raise ValueError('Configuration overrides must be provided as --name value pairs')
+    if not all(k.startswith('--') and len(k) > 2 for k in overwrite_args[::2]):
+        raise ValueError('Configuration override names must start with --')
+    overwrite_args = {
+        key[2:]: value
+        for key, value in zip(overwrite_args[::2], overwrite_args[1::2])
+    }
     with open(yaml_config_file) as f:
         config_str = f.read()
     for overwrite_key, overwrite_value in overwrite_args.items():
-        config_str = config_str.replace('{%s}' % overwrite_key, overwrite_value)
+        placeholder = '{%s}' % overwrite_key
+        if placeholder not in config_str:
+            raise ValueError(
+                f"Unknown configuration override --{overwrite_key}: "
+                f"placeholder {placeholder!r} is absent from {yaml_config_file}"
+            )
+        config_str = config_str.replace(placeholder, overwrite_value)
     config = yaml.safe_load(config_str)
+    if not isinstance(config, dict):
+        raise ValueError(f'Configuration root in {yaml_config_file} must be a mapping')
     return config
 
 

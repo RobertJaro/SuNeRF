@@ -1,39 +1,72 @@
+"""Download SDO/AIA level-1 EUV images from JSOC."""
+
+from __future__ import annotations
+
 import argparse
-import os
 
 import drms
-from dateutil.parser import parse
 
-from sunerf.data.download.download_jsoc import donwload_ds
-
-
-def download_euv(start_time, dir, client, end_time=None, cadence='1h', channel=None):
-    channel_str = f'[{channel}]' if channel is not None else ''
-    if end_time is None:
-        time_str = f'[{start_time.isoformat("_", timespec="seconds")}]'
-    else:
-        time_str = f'[{start_time.isoformat("_", timespec="seconds")} / {(end_time - start_time).total_seconds()}s@{cadence}]'
-    ds = f'aia.lev1_euv_12s{time_str}{channel_str}{{image}}'
-    euv_files = donwload_ds(ds, dir, client).download
-    return euv_files
+from sunerf.data.download.core import (
+    DownloadRequest,
+    add_common_arguments,
+    cadence_string,
+    combine_results,
+    parse_cadence,
+    request_from_args,
+)
+from sunerf.data.download.download_jsoc import download_jsoc_export
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--download_dir', type=str, required=True)
-    parser.add_argument('--email', type=str, required=True)
-    parser.add_argument('--t_start', type=str, required=True)
-    parser.add_argument('--t_end', type=str, required=False, default=None)
-    parser.add_argument('--cadence', type=str, required=False, default='1h')
-    parser.add_argument('--channel', type=str, required=False, default=None)
-    args = parser.parse_args()
+DEFAULT_CHANNELS = (94, 131, 171, 193, 211, 304, 335)
 
-    os.makedirs(args.download_dir, exist_ok=True)
-    client = drms.Client(email=args.email)
 
-    start_time = parse(args.t_start)
-    end_time = parse(args.t_end) if args.t_end is not None else None
+def aia_dataset(request: DownloadRequest, channel: int, cadence) -> str:
+    duration = (request.end - request.start).total_seconds()
+    time = request.start.isoformat("_", timespec="seconds")
+    cadence_selector = "" if cadence is None else f"@{cadence_string(cadence)}"
+    return (
+        f"aia.lev1_euv_12s[{time} / {duration:g}s{cadence_selector}]"
+        f"[{int(channel)}]{{image}}"
+    )
 
-    download_euv(start_time=start_time, end_time=end_time,
-                 cadence=args.cadence, channel=args.channel,
-                 dir=args.download_dir, client=client)
+
+def download(
+    request: DownloadRequest,
+    *,
+    email: str,
+    channels=DEFAULT_CHANNELS,
+    cadence=None,
+):
+    client = None if request.dry_run else drms.Client(email=email)
+    results = []
+    for channel in channels:
+        dataset = aia_dataset(request, channel, cadence)
+        results.append(
+            download_jsoc_export(
+                dataset,
+                request.output,
+                client,
+                dry_run=request.dry_run,
+            )
+        )
+    return combine_results(results)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_common_arguments(parser)
+    parser.add_argument("--email", required=True, help="JSOC-registered email address.")
+    parser.add_argument("--cadence", type=parse_cadence, default=parse_cadence("1h"))
+    parser.add_argument("--channels", type=int, nargs="+", default=list(DEFAULT_CHANNELS))
+    return parser
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    request = request_from_args(args)
+    download(request, email=args.email, channels=args.channels, cadence=args.cadence)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

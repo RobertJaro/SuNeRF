@@ -20,27 +20,31 @@ from sunpy.visualization.colormaps import cm
 from tqdm import tqdm
 
 from sunerf.data.date_util import normalize_datetime, unnormalize_datetime
-from sunerf.data.loader.base_loader import BaseDataModule, TensorsDataset, MapDataLoader
+from sunerf.data.dataset import TensorsDataset
+from sunerf.data.loader.base_loader import BaseDataModule, MapDataLoader
 from sunerf.data.loader.insitu import PSPDataset, SolarOrbiterDataset
 from sunerf.data.loader.volume_sampling import RandomSphericalCoordinateDataset
 from sunerf.data.ray_sampling import get_rays
 from sunerf.physics.thomson import electron_density_normalization_cm3
 from sunerf.train.callback import log_overview
-from sunerf.train.coordinate_transformation import spherical_to_cartesian, pose_spherical
+from sunerf.train.coordinate_transformation import (
+    spherical_to_cartesian,
+    pose_spherical,
+)
 from sunerf.train.render_mode import RenderModeDataset, RenderMode
 
 
 def _available_cpu_count():
     """Return the CPU allocation visible to this process."""
     counts = [os.cpu_count() or 1]
-    if hasattr(os, 'sched_getaffinity'):
+    if hasattr(os, "sched_getaffinity"):
         try:
             counts.append(len(os.sched_getaffinity(0)))
         except OSError:
             pass
-    for variable in ('SLURM_CPUS_PER_TASK', 'PBS_NP'):
+    for variable in ("SLURM_CPUS_PER_TASK", "PBS_NP"):
         try:
-            value = int(os.environ.get(variable, ''))
+            value = int(os.environ.get(variable, ""))
         except ValueError:
             continue
         if value > 0:
@@ -51,7 +55,9 @@ def _available_cpu_count():
 def _pool_size(requested_workers, task_count):
     if task_count < 1:
         return 0
-    requested_workers = _available_cpu_count() if requested_workers is None else int(requested_workers)
+    requested_workers = (
+        _available_cpu_count() if requested_workers is None else int(requested_workers)
+    )
     if requested_workers < 1:
         return 0
     return min(requested_workers, _available_cpu_count(), task_count)
@@ -69,15 +75,17 @@ def _iter_parallel(function, items, workers):
 def _load_map_stack(files, loader, workers, description):
     """Load maps directly into final stacked arrays instead of retaining a list."""
     if not files:
-        raise ValueError(f'No files available for {description}.')
+        raise ValueError(f"No files available for {description}.")
 
     iterator, pool = _iter_parallel(loader.load, files, workers)
     arrays = {}
     observers = []
     try:
-        for index, result in enumerate(tqdm(iterator, total=len(files), desc=description)):
+        for index, result in enumerate(
+            tqdm(iterator, total=len(files), desc=description)
+        ):
             result = dict(result)
-            observers.append(result.pop('observer'))
+            observers.append(result.pop("observer"))
             for key, value in result.items():
                 value_array = np.asarray(value)
                 if key not in arrays:
@@ -96,18 +104,20 @@ def _load_map_stack(files, loader, workers, description):
 def _load_fits_stack(files, workers, description):
     """Load a FITS sequence into one preallocated stack."""
     if not files:
-        raise ValueError(f'No files available for {description}.')
+        raise ValueError(f"No files available for {description}.")
     iterator, pool = _iter_parallel(fits.getdata, files, workers)
     stack = None
     try:
-        for index, image in enumerate(tqdm(iterator, total=len(files), desc=description)):
+        for index, image in enumerate(
+            tqdm(iterator, total=len(files), desc=description)
+        ):
             image = np.asarray(image)
             if stack is None:
                 stack = np.empty((len(files), *image.shape), dtype=image.dtype)
             elif image.shape != stack.shape[1:]:
                 raise ValueError(
-                    f'Inconsistent image shape for {files[index]}: '
-                    f'{image.shape} != {stack.shape[1:]}'
+                    f"Inconsistent image shape for {files[index]}: "
+                    f"{image.shape} != {stack.shape[1:]}"
                 )
             stack[index] = image
     finally:
@@ -117,8 +127,16 @@ def _load_fits_stack(files, workers, description):
     return stack
 
 
+def _temporal_nanpercentile(image_stack, level):
+    """Compute a temporal background percentile without poisoning valid epochs."""
+    level = float(level)
+    if not 0 <= level <= 100:
+        raise ValueError("percentile correction level must be between 0 and 100")
+    return np.nanpercentile(image_stack, level, axis=0, keepdims=True)
+
+
 def _fit_radial_mad_scale(image_stack, projected_radius, config):
-    """Estimate one positive radial MAD scale from the temporal-mean image."""
+    """Estimate a smooth positive radial MAD scale from the temporal-mean image."""
     if image_stack.shape != projected_radius.shape or image_stack.ndim != 3:
         raise ValueError("Radial MAD fitting expects matching (frame, y, x) arrays.")
 
@@ -142,19 +160,23 @@ def _fit_radial_mad_scale(image_stack, projected_radius, config):
         return None
 
     radius_values = mean_radius[valid]
-    radius_min = float(config.get('radius_min', np.nanmin(radius_values)))
-    radius_max = float(config.get('radius_max', np.nanmax(radius_values)))
-    if not np.isfinite(radius_min) or not np.isfinite(radius_max) or radius_max <= radius_min:
+    radius_min = float(config.get("radius_min", np.nanmin(radius_values)))
+    radius_max = float(config.get("radius_max", np.nanmax(radius_values)))
+    if (
+        not np.isfinite(radius_min)
+        or not np.isfinite(radius_max)
+        or radius_max <= radius_min
+    ):
         return None
 
-    n_bins = int(config.get('n_bins', 96))
-    min_samples = int(config.get('min_samples', 128))
+    n_bins = int(config.get("n_bins", 96))
+    min_samples = int(config.get("min_samples", 128))
     if n_bins < 2:
         raise ValueError("scaling_mask_config.n_bins must be at least 2.")
     if min_samples < 1:
         raise ValueError("scaling_mask_config.min_samples must be positive.")
 
-    use_log_radius = bool(config.get('log_radius', True)) and radius_min > 0
+    use_log_radius = bool(config.get("log_radius", True)) and radius_min > 0
     if use_log_radius:
         edges = np.geomspace(radius_min, radius_max, n_bins + 1)
         centers = np.sqrt(edges[:-1] * edges[1:])
@@ -162,10 +184,12 @@ def _fit_radial_mad_scale(image_stack, projected_radius, config):
         edges = np.linspace(radius_min, radius_max, n_bins + 1)
         centers = 0.5 * (edges[:-1] + edges[1:])
 
-    trim = config.get('trim_percentiles', [10.0, 90.0])
+    trim = config.get("trim_percentiles", [10.0, 90.0])
     if trim is not None:
         if len(trim) != 2 or not 0 <= float(trim[0]) < float(trim[1]) <= 100:
-            raise ValueError("scaling_mask_config.trim_percentiles must be two increasing values in [0, 100].")
+            raise ValueError(
+                "scaling_mask_config.trim_percentiles must be two increasing values in [0, 100]."
+            )
         trim = (float(trim[0]), float(trim[1]))
 
     radial_scale = np.full(n_bins, np.nan, dtype=np.float64)
@@ -187,34 +211,49 @@ def _fit_radial_mad_scale(image_stack, projected_radius, config):
         return None
 
     coordinate = np.log(centers) if use_log_radius else centers
-    log_scale = np.interp(coordinate, coordinate[good], np.log(radial_scale[good]))
+    fit_x = coordinate[good]
+    fit_y = np.log(radial_scale[good])
+    # A three-bin median removes isolated bad annuli before fitting one smooth
+    # global radial profile. Use a lower degree only for unusually sparse data.
+    fit_y = scipy.ndimage.median_filter(fit_y, size=3, mode="nearest")
+    polynomial_degree = min(3, fit_x.size - 1)
+    coefficients = np.polyfit(fit_x, fit_y, deg=polynomial_degree)
+    fit_min = float(fit_x[0])
+    fit_max = float(fit_x[-1])
+    log_scale = np.polyval(coefficients, np.clip(coordinate, fit_min, fit_max))
 
     median_scale = float(np.exp(np.nanmedian(log_scale)))
-    floor_fraction = float(config.get('floor_fraction', 1e-3))
-    absolute_floor = float(config.get('min_scale', 0.0))
+    floor_fraction = float(config.get("floor_fraction", 1e-3))
+    absolute_floor = float(config.get("min_scale", 0.0))
     if floor_fraction < 0 or absolute_floor < 0:
         raise ValueError("scaling-mask floors cannot be negative.")
-    scale_floor = max(absolute_floor, floor_fraction * median_scale, np.finfo(np.float32).tiny)
+    scale_floor = max(
+        absolute_floor, floor_fraction * median_scale, np.finfo(np.float32).tiny
+    )
 
-    clipped_radius = np.clip(projected_radius, radius_min, radius_max)
+    # Evaluate in float64 so clipping lands exactly on the spline boundaries.
+    clipped_radius = np.clip(
+        projected_radius.astype(np.float64), radius_min, radius_max
+    )
     pixel_coordinate = np.log(clipped_radius) if use_log_radius else clipped_radius
-    fitted_scale = np.exp(np.interp(pixel_coordinate, coordinate, log_scale))
+    pixel_coordinate = np.clip(pixel_coordinate, fit_min, fit_max)
+    fitted_scale = np.exp(np.polyval(coefficients, pixel_coordinate))
     return np.maximum(fitted_scale, scale_floor).astype(np.float32)
 
 
 def create_scaling_mask(projected_radius, scaling_mask_config, image_stack=None):
     """Create either a legacy polynomial brightness mask or an annular MAD scale mask."""
-    mask_type = scaling_mask_config.get('type', 'log_polyfit').lower()
-    if mask_type == 'log_polyfit':
-        tB_coeffs = np.load(scaling_mask_config['tB_coeffs_file'])
-        pB_coeffs = np.load(scaling_mask_config['pB_coeffs_file'])
+    mask_type = scaling_mask_config.get("type", "log_polyfit").lower()
+    if mask_type == "log_polyfit":
+        tB_coeffs = np.load(scaling_mask_config["tB_coeffs_file"])
+        pB_coeffs = np.load(scaling_mask_config["pB_coeffs_file"])
 
         tB_fit = np.exp(np.polyval(tB_coeffs, projected_radius))
         pB_fit = np.exp(np.polyval(pB_coeffs, projected_radius))
         mask = np.stack([tB_fit, pB_fit], axis=-1)
         return np.clip(mask, 1e-12, None).astype(np.float32)
 
-    if mask_type != 'radial_mad':
+    if mask_type != "radial_mad":
         raise ValueError(f"Unknown scaling mask type: {mask_type}")
     if image_stack is None:
         raise ValueError("radial_mad scaling masks require image_stack.")
@@ -236,7 +275,9 @@ def create_scaling_mask(projected_radius, scaling_mask_config, image_stack=None)
         elif fallback_scale is not None:
             mask[..., channel_idx] = fallback_scale
     if fallback_scale is None:
-        raise ValueError("Could not estimate a radial MAD scale from any image channel.")
+        raise ValueError(
+            "Could not estimate a radial MAD scale from any image channel."
+        )
     for channel_idx in range(image_stack.shape[-1]):
         if np.isnan(mask[..., channel_idx]).all():
             mask[..., channel_idx] = fallback_scale
@@ -245,138 +286,194 @@ def create_scaling_mask(projected_radius, scaling_mask_config, image_stack=None)
 
 def valid_training_rows(tensors):
     """Return rows with an observable target and completely finite geometry."""
-    image_finite = np.isfinite(tensors['image'])
+    image_finite = np.isfinite(tensors["image"])
     valid = image_finite.any(axis=-1)
-    for key in ('rays', 'time', 'image_coords', 'hpc_coords'):
+    for key in ("rays", "time", "image_coords", "hpc_coords"):
         values = tensors[key]
         valid &= np.isfinite(values).all(axis=tuple(range(1, values.ndim)))
-    if 'scaling_mask' in tensors:
+    if "scaling_mask" in tensors:
         # A missing observable may have a missing scale; every observable channel
         # that contributes to the loss must have a finite normalization.
-        valid &= np.all(~image_finite | np.isfinite(tensors['scaling_mask']), axis=-1)
+        valid &= np.all(~image_finite | np.isfinite(tensors["scaling_mask"]), axis=-1)
     return valid
 
 
 class ThomsonDataModule(BaseDataModule):
-
-    def __init__(self, train_datasets, valid_datasets, work_directory, Rs_per_ds, seconds_per_dt, ref_date=None,
-                 batch_size=int(2 ** 10), validation_batch_size=int(2 ** 11), debug=False,
-                 preprocess_workers=None, **kwargs):
+    def __init__(
+        self,
+        train_datasets,
+        valid_datasets,
+        work_directory,
+        Rs_per_ds,
+        seconds_per_dt,
+        ref_date=None,
+        batch_size=int(2**10),
+        validation_batch_size=int(2**11),
+        debug=False,
+        preprocess_workers=None,
+        **kwargs,
+    ):
         os.makedirs(work_directory, exist_ok=True)
 
         if preprocess_workers is None:
-            preprocess_workers = kwargs.get('num_workers')
+            preprocess_workers = kwargs.get("num_workers")
 
-        ref_date = parse(ref_date) if ref_date is not None else None  # parse ref time if specified
-        base_config = {'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt, 'ref_date': ref_date,
-                       'debug': debug, 'work_directory': work_directory, 'batch_size': batch_size,
-                       'preprocess_workers': preprocess_workers}
+        ref_date = (
+            parse(ref_date) if ref_date is not None else None
+        )  # parse ref time if specified
+        base_config = {
+            "Rs_per_ds": Rs_per_ds,
+            "seconds_per_dt": seconds_per_dt,
+            "ref_date": ref_date,
+            "debug": debug,
+            "work_directory": work_directory,
+            "batch_size": batch_size,
+            "preprocess_workers": preprocess_workers,
+        }
 
         train_dict, ref_date = self._load_dataset(train_datasets, base_config)
-        drho_cm3 = base_config.get('drho_cm3')
+        drho_cm3 = base_config.get("drho_cm3")
 
         module_config = {}
         for k, train_ds in train_dict.items():
             if not isinstance(train_ds, GenericThomsonDataset):
                 continue
             dc = train_ds.data_config
-            module_config[k] = {'type': 'thomson', 'Rs_per_ds': Rs_per_ds, 'seconds_per_dt': seconds_per_dt,
-                                'ref_date': ref_date, 'image_scaling': train_ds.scaling,
-                                'wcs': dc['wcs'], 'image_shape': dc['image_shape'], 'times': train_ds.times,
-                                'observers': dc['observers'], 'instrument_key': dc['instrument_key'],
-                                'image_norm': dc['image_norm'], 'hpc_norm': dc['hpc_norm'],
-                                'reference_frame': dc['reference_frame'],
-                                'azimuthal_equidistant': dc['azimuthal_equidistant']}
+            module_config[k] = {
+                "type": "thomson",
+                "Rs_per_ds": Rs_per_ds,
+                "seconds_per_dt": seconds_per_dt,
+                "ref_date": ref_date,
+                "image_scaling": train_ds.scaling,
+                "wcs": dc["wcs"],
+                "image_shape": dc["image_shape"],
+                "times": train_ds.times,
+                "observers": dc["observers"],
+                "instrument_key": dc["instrument_key"],
+                "image_norm": dc["image_norm"],
+                "hpc_norm": dc["hpc_norm"],
+                "reference_frame": dc["reference_frame"],
+                "azimuthal_equidistant": dc["azimuthal_equidistant"],
+            }
 
-        base_config['batch_size'] = validation_batch_size
+        base_config["batch_size"] = validation_batch_size
         times = np.concatenate(
-            [dataset.normalized_times for dataset in train_dict.values() if isinstance(dataset, GenericThomsonDataset)])
+            [
+                dataset.normalized_times
+                for dataset in train_dict.values()
+                if isinstance(dataset, GenericThomsonDataset)
+            ]
+        )
         time_range = [np.min(times), np.max(times)]
-        valid_dict = self._load_valid_dataset(valid_datasets, base_config, time_range=time_range,
-                                              seconds_per_dt=seconds_per_dt, ref_date=ref_date)
+        valid_dict = self._load_valid_dataset(
+            valid_datasets,
+            base_config,
+            time_range=time_range,
+            seconds_per_dt=seconds_per_dt,
+            ref_date=ref_date,
+        )
 
-        super().__init__(train_dict, valid_dict,
-                         Rs_per_ds=Rs_per_ds, seconds_per_dt=seconds_per_dt, ref_date=ref_date,
-                         module_config=module_config, **kwargs)
+        super().__init__(
+            train_dict,
+            valid_dict,
+            Rs_per_ds=Rs_per_ds,
+            seconds_per_dt=seconds_per_dt,
+            ref_date=ref_date,
+            module_config=module_config,
+            **kwargs,
+        )
         self.drho_cm3 = drho_cm3
 
     def _load_dataset(self, data_config, base_config):
-        ref_date = None if 'ref_date' not in base_config else base_config['ref_date']
+        ref_date = None if "ref_date" not in base_config else base_config["ref_date"]
         data_config = copy.deepcopy(data_config)
         train_dict = {}
         for config in data_config:
             config = copy.deepcopy(config)
-            ds_type = config.pop('type')
-            ds_key = config.pop('key') if 'key' in config else ds_type
+            ds_type = config.pop("type")
+            ds_key = config.pop("key") if "key" in config else ds_type
             ds_config = copy.deepcopy(base_config)
             ds_config.update(config)
-            if ds_type.lower() == 'hao':
+            if ds_type.lower() == "hao":
                 dataset = HAOThomsonDataset(**ds_config, ds_key=ds_key)
-            elif ds_type.lower() == 'cor':
+            elif ds_type.lower() == "cor":
                 dataset = COR2Dataset(**ds_config, ds_key=ds_key)
-            elif ds_type.lower() == 'lasco':
+            elif ds_type.lower() == "lasco":
                 dataset = LASCOC2Dataset(**ds_config, ds_key=ds_key)
-            elif ds_type.lower() == 'metis':
+            elif ds_type.lower() == "metis":
                 dataset = MetisDataset(**ds_config, ds_key=ds_key)
-            elif ds_type.lower() == 'ccor':
+            elif ds_type.lower() == "ccor":
                 dataset = CCORDataset(**ds_config, ds_key=ds_key)
-            elif ds_type.lower() == 'punch':
+            elif ds_type.lower() == "punch":
                 dataset = PunchWFIDataset(**ds_config, ds_key=ds_key)
-            elif ds_type.lower() == 'psi_cme':
+            elif ds_type.lower() == "psi_cme":
                 dataset = PSICMEDataset(**ds_config, ds_key=ds_key)
-            elif ds_type.lower() == 'psp':
+            elif ds_type.lower() == "psp":
                 self._inject_insitu_drho(ds_config, base_config, ds_key)
                 dataset = PSPDataset(**ds_config, ds_key=ds_key)
-            elif ds_type.lower() == 'solar_orbiter':
+            elif ds_type.lower() == "solar_orbiter":
                 self._inject_insitu_drho(ds_config, base_config, ds_key)
                 dataset = SolarOrbiterDataset(**ds_config, ds_key=ds_key)
-            elif ds_type.lower() == 'random':
-                assert len(
-                    train_dict) > 0, 'Specify at least one dataset for reference times. The random dataset configuration needs to be last in config file.'
-                times = np.concatenate([dataset.normalized_times for dataset in train_dict.values() if
-                                        isinstance(dataset, GenericThomsonDataset)])
+            elif ds_type.lower() == "random":
+                assert (
+                    len(train_dict) > 0
+                ), "Specify at least one dataset for reference times. The random dataset configuration needs to be last in config file."
+                times = np.concatenate(
+                    [
+                        dataset.normalized_times
+                        for dataset in train_dict.values()
+                        if isinstance(dataset, GenericThomsonDataset)
+                    ]
+                )
                 time_range = [np.min(times), np.max(times)]
-                radius_range = u.Quantity(ds_config.pop('radius_range'), unit=ds_config.pop('unit', 'AU'))
-                dataset = RandomSphericalCoordinateDataset(time_range=time_range, radius_range=radius_range,
-                                                           **ds_config)
+                radius_range = u.Quantity(
+                    ds_config.pop("radius_range"), unit=ds_config.pop("unit", "AU")
+                )
+                dataset = RandomSphericalCoordinateDataset(
+                    time_range=time_range, radius_range=radius_range, **ds_config
+                )
             else:
-                raise ValueError(f'Unknown dataset type {ds_type}')
+                raise ValueError(f"Unknown dataset type {ds_type}")
             # update ref time
             if ref_date is None:
                 ref_date = dataset.ref_date
-                base_config['ref_date'] = ref_date
+                base_config["ref_date"] = ref_date
             if isinstance(dataset, GenericThomsonDataset):
                 self._set_density_normalization_from_thomson(dataset, base_config)
-            assert ds_key not in train_dict, f'Duplicate dataset key {ds_key}'
+            assert ds_key not in train_dict, f"Duplicate dataset key {ds_key}"
             train_dict[ds_key] = dataset
         return train_dict, ref_date
 
     @staticmethod
     def _set_density_normalization_from_thomson(dataset, base_config):
-        if 'drho_cm3' in base_config:
+        if "drho_cm3" in base_config:
             return
-        base_config['drho_cm3'] = electron_density_normalization_cm3(dataset.scaling, base_config['Rs_per_ds'])
+        base_config["drho_cm3"] = electron_density_normalization_cm3(
+            dataset.scaling, base_config["Rs_per_ds"]
+        )
 
     @staticmethod
     def _inject_insitu_drho(ds_config, base_config, ds_key):
-        if base_config.get('drho_cm3') is None:
+        if base_config.get("drho_cm3") is None:
             raise ValueError(
                 f"In-situ dataset '{ds_key}' requires drho_cm3. "
                 "Place at least one Thomson imaging dataset before in-situ datasets."
             )
-        ds_config['drho_cm3'] = base_config['drho_cm3']
+        ds_config["drho_cm3"] = base_config["drho_cm3"]
 
-    def _load_valid_dataset(self, data_config, base_config, time_range, seconds_per_dt, ref_date):
+    def _load_valid_dataset(
+        self, data_config, base_config, time_range, seconds_per_dt, ref_date
+    ):
         data_config = copy.deepcopy(data_config)
 
         valid_dict = {}
         for config in data_config:
             config = copy.deepcopy(config)
-            ds_type = config.pop('type')
-            ds_key = config.pop('key') if 'key' in config else ds_type
-            render_mode = config.pop('render_mode', None)
-            validation_time = config.pop('validation_time', None)
-            validation_time_range = config.pop('validation_time_range', None)
+            ds_type = config.pop("type")
+            ds_key = config.pop("key") if "key" in config else ds_type
+            render_mode = config.pop("render_mode", None)
+            validation_time = config.pop("validation_time", None)
+            validation_time_range = config.pop("validation_time_range", None)
             ds_time_range = time_range
             if validation_time is not None:
                 t = normalize_datetime(parse(validation_time), seconds_per_dt, ref_date)
@@ -384,58 +481,73 @@ class ThomsonDataModule(BaseDataModule):
             elif validation_time_range is not None:
                 ds_time_range = [
                     normalize_datetime(parse(t), seconds_per_dt, ref_date)
-                    if isinstance(t, str) else float(t)
+                    if isinstance(t, str)
+                    else float(t)
                     for t in validation_time_range
                 ]
             ds_config = copy.deepcopy(base_config)
             ds_config.update(config)
-            if ds_type.lower() == 'hao':
+            if ds_type.lower() == "hao":
                 dataset = HAOThomsonDataset(**ds_config, ds_key=ds_key, test=True)
                 dataset = self._wrap_validation_dataset(dataset, render_mode)
-            elif ds_type.lower() == 'cor':
+            elif ds_type.lower() == "cor":
                 dataset = COR2Dataset(**ds_config, ds_key=ds_key, test=True)
                 dataset = self._wrap_validation_dataset(dataset, render_mode)
-            elif ds_type.lower() == 'lasco':
+            elif ds_type.lower() == "lasco":
                 dataset = LASCOC2Dataset(**ds_config, ds_key=ds_key, test=True)
                 dataset = self._wrap_validation_dataset(dataset, render_mode)
-            elif ds_type.lower() == 'metis':
+            elif ds_type.lower() == "metis":
                 dataset = MetisDataset(**ds_config, ds_key=ds_key, test=True)
                 dataset = self._wrap_validation_dataset(dataset, render_mode)
-            elif ds_type.lower() == 'ccor':
+            elif ds_type.lower() == "ccor":
                 dataset = CCORDataset(**ds_config, ds_key=ds_key, test=True)
                 dataset = self._wrap_validation_dataset(dataset, render_mode)
-            elif ds_type.lower() == 'punch':
+            elif ds_type.lower() == "punch":
                 dataset = PunchWFIDataset(**ds_config, ds_key=ds_key, test=True)
                 dataset = self._wrap_validation_dataset(dataset, render_mode)
-            elif ds_type.lower() == 'psi_cme':
+            elif ds_type.lower() == "psi_cme":
                 dataset = PSICMEDataset(**ds_config, ds_key=ds_key, test=True)
                 dataset = self._wrap_validation_dataset(dataset, render_mode)
-            elif ds_type.lower() == 'reference_cube':
-                dataset = ReferenceCubeDataset(**ds_config, ds_key=ds_key, shuffle=False, filter_nans=False)
+            elif ds_type.lower() == "reference_cube":
+                dataset = ReferenceCubeDataset(
+                    **ds_config, ds_key=ds_key, shuffle=False, filter_nans=False
+                )
                 dataset = RenderModeDataset(dataset, render_mode=RenderMode.REFERENCE)
             elif ds_type.lower() == "radial_slices":
-                dataset = RadialSlicesDataset(**ds_config, ds_key=ds_key, time_range=ds_time_range)
+                dataset = RadialSlicesDataset(
+                    **ds_config, ds_key=ds_key, time_range=ds_time_range
+                )
                 dataset = RenderModeDataset(dataset, RenderMode.QUERY_POINTS)
             elif ds_type.lower() == "longitude_slices":
-                dataset = LongitudeSlicesDataset(**ds_config, ds_key=ds_key, time_range=ds_time_range)
+                dataset = LongitudeSlicesDataset(
+                    **ds_config, ds_key=ds_key, time_range=ds_time_range
+                )
                 dataset = RenderModeDataset(dataset, RenderMode.QUERY_POINTS)
             elif ds_type.lower() == "fixed_viewpoint_series":
-                dataset = FixedViewpointSeriesDataset(**ds_config, ds_key=ds_key, time_range=ds_time_range)
+                dataset = FixedViewpointSeriesDataset(
+                    **ds_config, ds_key=ds_key, time_range=ds_time_range
+                )
                 dataset = RenderModeDataset(dataset, RenderMode.INSTRUMENT)
             elif ds_type.lower() == "full_star_background":
-                dataset = FullStarBackgroundDataset(**ds_config, ds_key=ds_key, time_range=ds_time_range)
+                dataset = FullStarBackgroundDataset(
+                    **ds_config, ds_key=ds_key, time_range=ds_time_range
+                )
                 dataset = RenderModeDataset(dataset, RenderMode.BACKGROUND)
-            elif ds_type.lower() == 'psp':
+            elif ds_type.lower() == "psp":
                 self._inject_insitu_drho(ds_config, base_config, ds_key)
-                dataset = PSPDataset(**ds_config, ds_key=ds_key, shuffle=False, filter_nans=False)
+                dataset = PSPDataset(
+                    **ds_config, ds_key=ds_key, shuffle=False, filter_nans=False
+                )
                 dataset = RenderModeDataset(dataset, RenderMode.QUERY_POINTS)
-            elif ds_type.lower() == 'solar_orbiter':
+            elif ds_type.lower() == "solar_orbiter":
                 self._inject_insitu_drho(ds_config, base_config, ds_key)
-                dataset = SolarOrbiterDataset(**ds_config, ds_key=ds_key, shuffle=False, filter_nans=False)
+                dataset = SolarOrbiterDataset(
+                    **ds_config, ds_key=ds_key, shuffle=False, filter_nans=False
+                )
                 dataset = RenderModeDataset(dataset, RenderMode.QUERY_POINTS)
             else:
-                raise ValueError(f'Unknown dataset type {ds_type}')
-            assert ds_key not in valid_dict, f'Duplicate dataset key {ds_key}'
+                raise ValueError(f"Unknown dataset type {ds_type}")
+            assert ds_key not in valid_dict, f"Duplicate dataset key {ds_key}"
             valid_dict[ds_key] = dataset
         return valid_dict
 
@@ -448,7 +560,9 @@ class ThomsonDataModule(BaseDataModule):
                 mode = RenderMode[render_mode.strip().upper()]
             except KeyError as exc:
                 valid_modes = ", ".join(mode.name.lower() for mode in RenderMode)
-                raise ValueError(f"Unknown render_mode '{render_mode}'. Expected one of: {valid_modes}") from exc
+                raise ValueError(
+                    f"Unknown render_mode '{render_mode}'. Expected one of: {valid_modes}"
+                ) from exc
         else:
             mode = RenderMode(int(render_mode))
 
@@ -456,7 +570,14 @@ class ThomsonDataModule(BaseDataModule):
 
 
 class GenericThomsonDataset(TensorsDataset):
-    DATE_OBS_KEYS = ("DATE-OBS", "DATE_OBS", "DATE-BEG", "DATE_BEG", "DATE-AVG", "DATE_AVG")
+    DATE_OBS_KEYS = (
+        "DATE-OBS",
+        "DATE_OBS",
+        "DATE-BEG",
+        "DATE_BEG",
+        "DATE-AVG",
+        "DATE_AVG",
+    )
 
     @staticmethod
     def _normalize_for_time_range(value):
@@ -474,8 +595,10 @@ class GenericThomsonDataset(TensorsDataset):
         if len(time_range) == 1:
             return "closest", cls._normalize_for_time_range(time_range[0])
         if len(time_range) != 2:
-            raise ValueError("time_range must contain one value for closest-date selection "
-                             "or two values for start/end filtering.")
+            raise ValueError(
+                "time_range must contain one value for closest-date selection "
+                "or two values for start/end filtering."
+            )
         start, end = [cls._normalize_for_time_range(t) for t in time_range]
         if start > end:
             raise ValueError("time_range start must be earlier than or equal to end.")
@@ -489,15 +612,21 @@ class GenericThomsonDataset(TensorsDataset):
                 headers.append(fits.getheader(file_path, ext))
             except Exception:
                 continue
-        for header in headers:
-            for key in cls.DATE_OBS_KEYS:
+        # Apply keyword priority across all HDUs.  Some products keep DATE-OBS
+        # in an image extension while the primary header contains DATE-AVG; the
+        # detector observation time must still win in that case.
+        for key in cls.DATE_OBS_KEYS:
+            for header in headers:
                 if key in header and header[key] not in (None, ""):
                     return cls._normalize_for_time_range(str(header[key]).strip())
-        raise KeyError(f"Missing observation date in {file_path}. Expected one of: {', '.join(cls.DATE_OBS_KEYS)}")
+        raise KeyError(
+            f"Missing observation date in {file_path}. Expected one of: {', '.join(cls.DATE_OBS_KEYS)}"
+        )
 
     @classmethod
-    def _pair_files_by_observation_time(cls, tB_files, pB_files, tolerance_seconds=1.0,
-                                        workers=None):
+    def _pair_files_by_observation_time(
+        cls, tB_files, pB_files, tolerance_seconds=1.0, workers=None
+    ):
         """Order tB/pB inputs by header time and reject silent mispairing."""
         if pB_files is not None and len(tB_files) != len(pB_files):
             raise ValueError(
@@ -519,10 +648,9 @@ class GenericThomsonDataset(TensorsDataset):
         split = len(tB_files)
         tB_records = sorted(zip(all_dates[:split], tB_files))
         pB_records = (
-            sorted(zip(all_dates[split:], pB_files))
-            if pB_files is not None else None
+            sorted(zip(all_dates[split:], pB_files)) if pB_files is not None else None
         )
-        for label, records in (('tB', tB_records), ('pB', pB_records)):
+        for label, records in (("tB", tB_records), ("pB", pB_records)):
             if records is None:
                 continue
             dates = [date for date, _ in records]
@@ -557,28 +685,42 @@ class GenericThomsonDataset(TensorsDataset):
         if len(tB_files) == 0:
             raise ValueError("No tB files found.")
         if pB_files is not None and len(pB_files) != len(tB_files):
-            raise ValueError(f"Cannot apply time_range filter to {len(tB_files)} tB files and "
-                             f"{len(pB_files)} pB files. File counts must match.")
+            raise ValueError(
+                f"Cannot apply time_range filter to {len(tB_files)} tB files and "
+                f"{len(pB_files)} pB files. File counts must match."
+            )
 
         mode = parsed_range[0]
         if mode == "closest":
             target = parsed_range[1]
             obs_dates = [cls._read_obs_date(tB_file) for tB_file in tB_files]
-            idx = int(np.argmin([abs((obs_date - target).total_seconds()) for obs_date in obs_dates]))
+            idx = int(
+                np.argmin(
+                    [abs((obs_date - target).total_seconds()) for obs_date in obs_dates]
+                )
+            )
             filtered_tB_files = [tB_files[idx]]
             filtered_pB_files = [pB_files[idx]] if pB_files is not None else None
-            print(f"Selected closest tB file to {target.isoformat()}: "
-                  f"{os.path.basename(tB_files[idx])} at {obs_dates[idx].isoformat()}.")
+            print(
+                f"Selected closest tB file to {target.isoformat()}: "
+                f"{os.path.basename(tB_files[idx])} at {obs_dates[idx].isoformat()}."
+            )
             if pB_files is not None:
                 pB_date = cls._read_obs_date(pB_files[idx])
-                print(f"Selected paired pB file: {os.path.basename(pB_files[idx])} "
-                      f"at {pB_date.isoformat()}.")
+                print(
+                    f"Selected paired pB file: {os.path.basename(pB_files[idx])} "
+                    f"at {pB_date.isoformat()}."
+                )
             return filtered_tB_files, filtered_pB_files
 
         start, end = parsed_range[1:]
         filtered_tB_files = []
         filtered_pB_files = [] if pB_files is not None else None
-        paired_files = zip(tB_files, pB_files) if pB_files is not None else ((f, None) for f in tB_files)
+        paired_files = (
+            zip(tB_files, pB_files)
+            if pB_files is not None
+            else ((f, None) for f in tB_files)
+        )
         for tB_file, pB_file in paired_files:
             obs_date = cls._read_obs_date(tB_file)
             if start <= obs_date <= end:
@@ -587,9 +729,13 @@ class GenericThomsonDataset(TensorsDataset):
                     filtered_pB_files.append(pB_file)
 
         if len(filtered_tB_files) == 0:
-            raise ValueError(f"No tB files found in time_range {start.isoformat()} to {end.isoformat()}.")
-        print(f"Selected {len(filtered_tB_files)} of {len(tB_files)} tB files in time_range "
-              f"{start.isoformat()} to {end.isoformat()}.")
+            raise ValueError(
+                f"No tB files found in time_range {start.isoformat()} to {end.isoformat()}."
+            )
+        print(
+            f"Selected {len(filtered_tB_files)} of {len(tB_files)} tB files in time_range "
+            f"{start.isoformat()} to {end.isoformat()}."
+        )
         return filtered_tB_files, filtered_pB_files
 
     @staticmethod
@@ -603,13 +749,17 @@ class GenericThomsonDataset(TensorsDataset):
         elif isinstance(cadence, str):
             match = re.fullmatch(r"(?i)\s*(\d+)\s*([smhd])\s*", cadence)
             if match is None:
-                raise ValueError(f"Invalid cadence '{cadence}'. Use formats like 30s, 15m, 1h, or 1d.")
+                raise ValueError(
+                    f"Invalid cadence '{cadence}'. Use formats like 30s, 15m, 1h, or 1d."
+                )
             quantity = int(match.group(1))
             unit = match.group(2).lower()
             seconds_per_unit = {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
             cadence_delta = timedelta(seconds=quantity * seconds_per_unit)
         else:
-            raise TypeError("cadence must be None, a duration string, seconds, or datetime.timedelta.")
+            raise TypeError(
+                "cadence must be None, a duration string, seconds, or datetime.timedelta."
+            )
         if cadence_delta.total_seconds() <= 0:
             raise ValueError("cadence must be positive.")
         return cadence_delta
@@ -623,7 +773,11 @@ class GenericThomsonDataset(TensorsDataset):
         sampled_tB_files = []
         sampled_pB_files = [] if pB_files is not None else None
         next_time = None
-        paired_files = zip(tB_files, pB_files) if pB_files is not None else ((f, None) for f in tB_files)
+        paired_files = (
+            zip(tB_files, pB_files)
+            if pB_files is not None
+            else ((f, None) for f in tB_files)
+        )
         for tB_file, pB_file in paired_files:
             obs_date = cls._read_obs_date(tB_file)
             if next_time is not None and obs_date < next_time:
@@ -634,25 +788,45 @@ class GenericThomsonDataset(TensorsDataset):
             next_time = obs_date + cadence
 
         if len(sampled_tB_files) == 0:
-            raise ValueError(f"No tB files remain after cadence sampling with cadence {cadence}.")
-        print(f"Cadence sampling kept {len(sampled_tB_files)} of {len(tB_files)} tB files "
-              f"at {cadence} spacing.")
+            raise ValueError(
+                f"No tB files remain after cadence sampling with cadence {cadence}."
+            )
+        print(
+            f"Cadence sampling kept {len(sampled_tB_files)} of {len(tB_files)} tB files "
+            f"at {cadence} spacing."
+        )
         return sampled_tB_files, sampled_pB_files
 
-    def __init__(self, data_path_pB, data_path_tB, scaling, ds_key, instrument_key,
-                 Rs_per_ds, seconds_per_dt, image_norm=512, hpc_norm=1e4, ref_date=None,
-                 batch_size=int(2 ** 10), debug=False, test=False, noise_level=False,
-                 reference_frame='inertial', azimuthal_equidistant=True,
-                 correction_config=None,
-                 scaling_mask_config=None,
-                 time_range=None,
-                 cadence=None,
-                 pairing_tolerance_seconds=1.0,
-                 shuffle=None,
-                 filter_nans=None,
-                 preprocess_workers=None,
-                 log_data_overview=True,
-                 **kwargs):
+    def __init__(
+        self,
+        data_path_pB,
+        data_path_tB,
+        scaling,
+        ds_key,
+        instrument_key,
+        Rs_per_ds,
+        seconds_per_dt,
+        image_norm=512,
+        hpc_norm=1e4,
+        ref_date=None,
+        batch_size=int(2**10),
+        debug=False,
+        test=False,
+        noise_level=False,
+        reference_frame="inertial",
+        azimuthal_equidistant=True,
+        correction_config=None,
+        scaling_mask_config=None,
+        time_range=None,
+        cadence=None,
+        pairing_tolerance_seconds=1.0,
+        shuffle=None,
+        filter_nans=None,
+        preprocess_workers=None,
+        log_data_overview=True,
+        clip_negative=False,
+        **kwargs,
+    ):
         self.scaling = scaling
         self.instrument_key = instrument_key
         self.image_norm = image_norm
@@ -662,12 +836,25 @@ class GenericThomsonDataset(TensorsDataset):
         # select files with min diff in dates
         tB_files = sorted(glob.glob(data_path_tB))
         pB_files = sorted(glob.glob(data_path_pB)) if data_path_pB is not None else None
+        if not tB_files:
+            raise FileNotFoundError(
+                f"No tB files matched data_path_tB={data_path_tB!r} "
+                f"for dataset {ds_key!r}."
+            )
+        if data_path_pB is not None and not pB_files:
+            raise FileNotFoundError(
+                f"No pB files matched data_path_pB={data_path_pB!r} "
+                f"for dataset {ds_key!r}."
+            )
         tB_files, pB_files = self._pair_files_by_observation_time(
-            tB_files, pB_files,
+            tB_files,
+            pB_files,
             tolerance_seconds=float(pairing_tolerance_seconds),
             workers=preprocess_workers,
         )
-        tB_files, pB_files = self._filter_files_by_time_range(tB_files, pB_files, time_range)
+        tB_files, pB_files = self._filter_files_by_time_range(
+            tB_files, pB_files, time_range
+        )
         tB_files, pB_files = self._sample_files_at_cadence(tB_files, pB_files, cadence)
 
         if debug:
@@ -677,64 +864,69 @@ class GenericThomsonDataset(TensorsDataset):
         if test:
             # select file at center of the list
             idx = len(tB_files) // 2
-            tB_files = tB_files[idx:idx + 1]
-            pB_files = pB_files[idx:idx + 1] if pB_files is not None else None
+            tB_files = tB_files[idx : idx + 1]
+            pB_files = pB_files[idx : idx + 1] if pB_files is not None else None
 
         # load rays
-        loader = MapDataLoader(Rs_per_ds, reference_frame, azimuthal_equidistant=azimuthal_equidistant)
-        data_dict, observers = _load_map_stack(
-            tB_files, loader, preprocess_workers, 'Loading tB + rays'
+        loader = MapDataLoader(
+            Rs_per_ds, reference_frame, azimuthal_equidistant=azimuthal_equidistant
         )
-        tB_image_stack = data_dict['image']
+        data_dict, observers = _load_map_stack(
+            tB_files, loader, preprocess_workers, "Loading tB + rays"
+        )
+        tB_image_stack = data_dict["image"]
 
         # load remaining images
         if pB_files is None:
             pB_image_stack = np.ones_like(tB_image_stack) * np.nan
         else:
             pB_image_stack = _load_fits_stack(
-                pB_files, preprocess_workers, 'Loading pB'
+                pB_files, preprocess_workers, "Loading pB"
             )
-
 
         # apply correction if specified
         if correction_config is not None:
-            alpha = float(correction_config.get('alpha', 1.0))
-            tB_alpha = float(correction_config.get('tB_alpha', alpha))
-            pB_alpha = float(correction_config.get('pB_alpha', alpha))
-            if correction_config['type'] == 'percentile':
-                pB_level = correction_config.get('pB_level', 20)
-                tB_level = correction_config.get('tB_level', 20)
-                pB_correction = np.percentile(pB_image_stack, pB_level, axis=0, keepdims=True)
-                tB_correction = np.percentile(tB_image_stack, tB_level, axis=0, keepdims=True)
+            alpha = float(correction_config.get("alpha", 1.0))
+            tB_alpha = float(correction_config.get("tB_alpha", alpha))
+            pB_alpha = float(correction_config.get("pB_alpha", alpha))
+            if correction_config["type"] == "percentile":
+                pB_level = correction_config.get("pB_level", 20)
+                tB_level = correction_config.get("tB_level", 20)
+                pB_correction = _temporal_nanpercentile(pB_image_stack, pB_level)
+                tB_correction = _temporal_nanpercentile(tB_image_stack, tB_level)
                 pB_image_stack = pB_image_stack - pB_alpha * pB_correction
                 tB_image_stack = tB_image_stack - tB_alpha * tB_correction
-            elif correction_config['type'] == 'file':
-                pB_path = correction_config.get('pB', None)
-                tB_path = correction_config.get('tB', None)
+            elif correction_config["type"] == "file":
+                pB_path = correction_config.get("pB", None)
+                tB_path = correction_config.get("tB", None)
                 if pB_path is None and tB_path is None:
-                    raise ValueError("correction_config.type='file' requires at least one of 'tB' or 'pB'.")
+                    raise ValueError(
+                        "correction_config.type='file' requires at least one of 'tB' or 'pB'."
+                    )
                 if pB_path is not None:
                     pB_correction = np.load(pB_path)
                     pB_image_stack = pB_image_stack - pB_alpha * pB_correction[None]
                 if tB_path is not None:
                     tB_correction = np.load(tB_path)
                     tB_image_stack = tB_image_stack - tB_alpha * tB_correction[None]
-            elif correction_config['type'] == 'basic':
+            elif correction_config["type"] == "basic":
                 pass
             else:
                 raise ValueError(f'Unknown correction type {correction_config["type"]}')
 
-            min_value = correction_config.get('min_value', None)
+            min_value = correction_config.get("min_value", None)
             if min_value is not None:
                 pB_below = int(np.count_nonzero(pB_image_stack <= min_value))
                 tB_below = int(np.count_nonzero(tB_image_stack <= min_value))
-                print(f'Filtering {pB_below} pB pixels and {tB_below} tB pixels below min value {min_value}')
+                print(
+                    f"Filtering {pB_below} pB pixels and {tB_below} tB pixels below min value {min_value}"
+                )
                 pB_image_stack[pB_image_stack <= min_value] = np.nan
                 tB_image_stack[tB_image_stack <= min_value] = np.nan
 
-            if correction_config.get('clean', False):
-                clean_min_size = correction_config.get('clean_min_size', 128)
-                opening_radius = correction_config.get('clean_opening_radius', 2)
+            if correction_config.get("clean", False):
+                clean_min_size = correction_config.get("clean_min_size", 128)
+                opening_radius = correction_config.get("clean_opening_radius", 2)
                 footprint = disk(opening_radius) if opening_radius > 0 else None
                 # Clean each frame independently; stack-wide cleaning would connect components over time.
                 for i in range(tB_image_stack.shape[0]):
@@ -742,13 +934,17 @@ class GenericThomsonDataset(TensorsDataset):
                     pB_mask = np.isfinite(pB_image_stack[i])
                     if footprint is not None:
                         pB_mask = binary_opening(pB_mask, footprint=footprint)
-                    pB_mask_clean = remove_small_objects(pB_mask, min_size=clean_min_size)
+                    pB_mask_clean = remove_small_objects(
+                        pB_mask, min_size=clean_min_size
+                    )
                     pB_image_stack[i][~pB_mask_clean] = np.nan
                     # clean tB
                     tB_mask = np.isfinite(tB_image_stack[i])
                     if footprint is not None:
                         tB_mask = binary_opening(tB_mask, footprint=footprint)
-                    tB_mask_clean = remove_small_objects(tB_mask, min_size=clean_min_size)
+                    tB_mask_clean = remove_small_objects(
+                        tB_mask, min_size=clean_min_size
+                    )
                     tB_image_stack[i][~tB_mask_clean] = np.nan
 
         # save occultor mask before any correction/cleaning that may set more pixels to NaN
@@ -758,7 +954,16 @@ class GenericThomsonDataset(TensorsDataset):
 
         image_stack = np.stack([tB_image_stack, pB_image_stack], axis=-1)
         image_stack = image_stack / scaling
-        # image_stack[image_stack <= 0] = np.nan  # set non-positive values to NaN = unphysical
+        if clip_negative:
+            # Non-positive brightness is unphysical (over-subtracted background).
+            # Each channel is masked independently.
+            negative = image_stack <= 0
+            print(
+                f"Filtering {int(np.count_nonzero(negative[..., 0]))} non-positive tB pixels and "
+                f"{int(np.count_nonzero(negative[..., 1]))} non-positive pB pixels"
+            )
+            image_stack[negative] = np.nan
+            del negative
 
         if noise_level:
             mean_B = np.nanmean(image_stack)
@@ -766,39 +971,43 @@ class GenericThomsonDataset(TensorsDataset):
             noise = noise * noise_level * mean_B
             image_stack += noise
 
-        data_dict['image'] = image_stack
+        data_dict["image"] = image_stack
         # The combined float32 stack is now authoritative; release the separate
         # channel stacks before allocating time/image-coordinate tensors.
         del tB_image_stack, pB_image_stack
 
         if scaling_mask_config is not None:
-            projected_radius = data_dict['projected_radius']
+            projected_radius = data_dict["projected_radius"]
             scaling_mask = create_scaling_mask(
                 projected_radius,
                 scaling_mask_config,
                 image_stack=image_stack,
             )
-            if scaling_mask_config.get('type', 'log_polyfit').lower() == 'log_polyfit':
+            if scaling_mask_config.get("type", "log_polyfit").lower() == "log_polyfit":
                 scaling_mask = scaling_mask / scaling
-            data_dict['scaling_mask'] = scaling_mask
+            data_dict["scaling_mask"] = scaling_mask
             del projected_radius
-        data_dict.pop('projected_radius', None)
+        data_dict.pop("projected_radius", None)
 
         # expand and normalize times
-        times = data_dict['time']
+        times = data_dict["time"]
         ref_date = min(times) if ref_date is None else ref_date
         self.ref_date = ref_date
         self.times = times
-        normalized_times = np.array([normalize_datetime(t, seconds_per_dt, ref_date) for t in times])
+        normalized_times = np.array(
+            [normalize_datetime(t, seconds_per_dt, ref_date) for t in times]
+        )
         self.normalized_times = normalized_times
-        times_arr = np.tile(normalized_times[:, None, None, None], (1, *image_stack.shape[1:3], 1))
-        data_dict['time'] = times_arr
+        times_arr = np.tile(
+            normalized_times[:, None, None, None], (1, *image_stack.shape[1:3], 1)
+        )
+        data_dict["time"] = times_arr
 
         # add hpc coordinates
-        hpc_coords = data_dict['hpc_coords']
+        hpc_coords = data_dict["hpc_coords"]
         hpc_coords[..., :2] /= hpc_norm  # norm angle Tx and Tz
         hpc_coords[..., 2] /= Rs_per_ds  # norm distance by Rs_per_ds
-        data_dict['hpc_coords'] = hpc_coords
+        data_dict["hpc_coords"] = hpc_coords
 
         # add image coordinates
         ny, nx = image_stack.shape[1], image_stack.shape[2]
@@ -808,40 +1017,43 @@ class GenericThomsonDataset(TensorsDataset):
         image_coords[..., 1] -= 0.5 * (nx - 1)
         # normalize
         image_coords /= image_norm
-        image_coords = image_coords[None, :, :, :].repeat(image_stack.shape[0], axis=0)  # repeat over time
-        data_dict['image_coords'] = image_coords
+        image_coords = image_coords[None, :, :, :].repeat(
+            image_stack.shape[0], axis=0
+        )  # repeat over time
+        data_dict["image_coords"] = image_coords
 
         # apply occultor mask
-        data_dict['rays'][occultor_mask] = np.nan
-        data_dict['image_coords'][occultor_mask] = np.nan
-        data_dict['hpc_coords'][occultor_mask] = np.nan
-        if 'scaling_mask' in data_dict:
-            data_dict['scaling_mask'][occultor_mask] = np.nan
+        data_dict["rays"][occultor_mask] = np.nan
+        data_dict["image_coords"][occultor_mask] = np.nan
+        data_dict["hpc_coords"][occultor_mask] = np.nan
+        if "scaling_mask" in data_dict:
+            data_dict["scaling_mask"][occultor_mask] = np.nan
         del occultor_mask
 
         if log_data_overview and not test:
             cmap = cm.soholasco2.copy()
-            cmap.set_bad(color='green')
-            if 'scaling_mask' in data_dict:
-                overview_images = data_dict['image'] / data_dict['scaling_mask']
-                overview_asinh_a = scaling_mask_config.get('overview_asinh_a')
+            cmap.set_bad(color="green")
+            if "scaling_mask" in data_dict:
+                overview_images = data_dict["image"] / data_dict["scaling_mask"]
+                overview_asinh_a = scaling_mask_config.get("overview_asinh_a")
                 if overview_asinh_a is not None:
                     overview_asinh_a = float(overview_asinh_a)
                     if overview_asinh_a <= 0:
-                        raise ValueError("scaling_mask_config.overview_asinh_a must be positive.")
-                    overview_images = (
-                        np.arcsinh(overview_images / overview_asinh_a)
-                        / np.arcsinh(1.0 / overview_asinh_a)
-                    )
-                    overview_mode = 'radially adjusted asinh brightness'
+                        raise ValueError(
+                            "scaling_mask_config.overview_asinh_a must be positive."
+                        )
+                    overview_images = np.arcsinh(
+                        overview_images / overview_asinh_a
+                    ) / np.arcsinh(1.0 / overview_asinh_a)
+                    overview_mode = "radially adjusted asinh brightness"
                 else:
-                    overview_mode = 'radially adjusted brightness'
+                    overview_mode = "radially adjusted brightness"
             else:
-                overview_images = data_dict['image'] * scaling
-                overview_mode = 'physical brightness'
+                overview_images = data_dict["image"] * scaling
+                overview_mode = "physical brightness"
             log_overview(
                 overview_images,
-                data_dict['pose'],
+                data_dict["pose"],
                 normalized_times,
                 cmap,
                 seconds_per_dt,
@@ -849,17 +1061,25 @@ class GenericThomsonDataset(TensorsDataset):
                 ref_date,
                 ds_key=ds_key,
                 brightness_mode=overview_mode,
+                scaling_masks=data_dict.get("scaling_mask"),
             )
             del overview_images
         if log_data_overview and not test:
-            print('----- Data Overview -----')
+            print("----- Data Overview -----")
             print(
-                f'Image shape: {data_dict["image"].shape}; MIN: {np.nanmin(data_dict["image"])}; MAX: {np.nanmax(data_dict["image"])}')
-            print(f'Time shape: {times_arr.shape}; MIN: {np.nanmin(times_arr)}; MAX: {np.nanmax(times_arr)}')
+                f'Image shape: {data_dict["image"].shape}; MIN: {np.nanmin(data_dict["image"])}; MAX: {np.nanmax(data_dict["image"])}'
+            )
+            print(
+                f"Time shape: {times_arr.shape}; MIN: {np.nanmin(times_arr)}; MAX: {np.nanmax(times_arr)}"
+            )
 
-        data_dict.pop('pose', None)
-        tensors = {k: v.reshape((-1, *v.shape[3:])) for k, v in data_dict.items() if
-                   k in ['image', 'rays', 'time', 'image_coords', 'hpc_coords', 'scaling_mask']}
+        data_dict.pop("pose", None)
+        tensors = {
+            k: v.reshape((-1, *v.shape[3:]))
+            for k, v in data_dict.items()
+            if k
+            in ["image", "rays", "time", "image_coords", "hpc_coords", "scaling_mask"]
+        }
 
         # FITS and correction pipelines can contain +/-Inf as well as NaN. Store
         # one canonical invalid representation so neither cache filtering nor
@@ -876,84 +1096,131 @@ class GenericThomsonDataset(TensorsDataset):
 
         # add observable information
         for observer in observers:
-            observer['observables'] = ['tB', 'pB'] if pB_files is not None else ['tB']
+            observer["observables"] = ["tB", "pB"] if pB_files is not None else ["tB"]
 
         # data config for model checkpoint
         data_config = {}
         # load reference info
         ref_map = Map(tB_files[0])
-        data_config['image_shape'] = ref_map.data.shape
-        data_config['wcs'] = ref_map.wcs
-        data_config['wavelength'] = ref_map.wavelength
-        data_config['observers'] = observers
-        data_config['instrument_key'] = instrument_key
-        data_config['image_norm'] = image_norm
-        data_config['hpc_norm'] = hpc_norm
-        data_config['reference_frame'] = reference_frame
-        data_config['azimuthal_equidistant'] = azimuthal_equidistant
-        data_config['scaling_mask_config'] = copy.deepcopy(scaling_mask_config)
+        data_config["image_shape"] = ref_map.data.shape
+        data_config["wcs"] = ref_map.wcs
+        data_config["wavelength"] = ref_map.wavelength
+        data_config["observers"] = observers
+        data_config["instrument_key"] = instrument_key
+        data_config["image_norm"] = image_norm
+        data_config["hpc_norm"] = hpc_norm
+        data_config["reference_frame"] = reference_frame
+        data_config["azimuthal_equidistant"] = azimuthal_equidistant
+        data_config["scaling_mask_config"] = copy.deepcopy(scaling_mask_config)
         self.data_config = data_config
         dataset_shuffle = (not test) if shuffle is None else shuffle
         dataset_filter_nans = (not test) if filter_nans is None else filter_nans
-        dataset_kwargs = {'instrument': instrument_key, **kwargs}
-        super().__init__(tensors=tensors, batch_size=batch_size, shuffle=dataset_shuffle, filter_nans=dataset_filter_nans,
-                         valid_mask=valid_mask, **dataset_kwargs)
+        dataset_kwargs = {"instrument": instrument_key, **kwargs}
+        super().__init__(
+            tensors=tensors,
+            batch_size=batch_size,
+            shuffle=dataset_shuffle,
+            filter_nans=dataset_filter_nans,
+            valid_mask=valid_mask,
+            **dataset_kwargs,
+        )
 
 
 class HAOThomsonDataset(GenericThomsonDataset):
-
     def __init__(self, **kwargs):
-        super().__init__(scaling=5e-5, reference_frame='heliographic', azimuthal_equidistant=True, **kwargs)
+        super().__init__(
+            scaling=5e-5,
+            reference_frame="heliographic",
+            azimuthal_equidistant=True,
+            **kwargs,
+        )
 
 
 class COR2Dataset(GenericThomsonDataset):
-
-    def __init__(self, **kwargs):
-        super().__init__(scaling=1.0e-9, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
+    def __init__(self, clip_negative=True, **kwargs):
+        super().__init__(
+            scaling=1.0e-9,
+            reference_frame="inertial",
+            azimuthal_equidistant=False,
+            clip_negative=clip_negative,
+            **kwargs,
+        )
 
 
 class LASCOC2Dataset(GenericThomsonDataset):
-
-    def __init__(self, **kwargs):
-        super().__init__(scaling=1.0e-9, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
+    def __init__(self, clip_negative=True, **kwargs):
+        super().__init__(
+            scaling=1.0e-9,
+            reference_frame="inertial",
+            azimuthal_equidistant=False,
+            clip_negative=clip_negative,
+            **kwargs,
+        )
 
 
 class MetisDataset(GenericThomsonDataset):
-
-    def __init__(self, **kwargs):
-        super().__init__(scaling=1.0e-9, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
+    def __init__(self, clip_negative=True, **kwargs):
+        super().__init__(
+            scaling=1.0e-9,
+            reference_frame="inertial",
+            azimuthal_equidistant=False,
+            clip_negative=clip_negative,
+            **kwargs,
+        )
 
 
 class PunchWFIDataset(GenericThomsonDataset):
-
-    def __init__(self, **kwargs):
-        super().__init__(scaling=1.0e-9, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
+    def __init__(self, clip_negative=True, **kwargs):
+        super().__init__(
+            scaling=1.0e-9,
+            reference_frame="inertial",
+            azimuthal_equidistant=False,
+            clip_negative=clip_negative,
+            **kwargs,
+        )
 
 
 class CCORDataset(GenericThomsonDataset):
-
-    def __init__(self, **kwargs):
-        super().__init__(scaling=1.0e-9, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
+    def __init__(self, clip_negative=True, **kwargs):
+        super().__init__(
+            scaling=1.0e-9,
+            reference_frame="inertial",
+            azimuthal_equidistant=False,
+            clip_negative=clip_negative,
+            **kwargs,
+        )
 
 
 class PSICMEDataset(GenericThomsonDataset):
-
     def __init__(self, **kwargs):
-        super().__init__(scaling=1.0e-9, reference_frame='inertial', azimuthal_equidistant=False, **kwargs)
+        super().__init__(
+            scaling=1.0e-9,
+            reference_frame="inertial",
+            azimuthal_equidistant=False,
+            **kwargs,
+        )
 
 
 class ReferenceCubeDataset(TensorsDataset):
-
-    def __init__(self, data_path, ref_date, seconds_per_dt, Rs_per_ds, min_radius=30, max_radius=100, **kwargs):
+    def __init__(
+        self,
+        data_path,
+        ref_date,
+        seconds_per_dt,
+        Rs_per_ds,
+        min_radius=30,
+        max_radius=100,
+        **kwargs,
+    ):
         o = scipy.io.readsav(data_path)
         date0 = parse("2010-04-03T09:04:00.000")
-        time = date0 + timedelta(hours=float(o['this_time']))
+        time = date0 + timedelta(hours=float(o["this_time"]))
         time = normalize_datetime(time, seconds_per_dt, ref_date)
 
-        density = o['dens'].astype(np.float32).T
-        ph = o['ph1d'].astype(np.float32)
-        r = o['r1d'].astype(np.float32)
-        th = o['th1d'].astype(np.float32) - np.pi / 2
+        density = o["dens"].astype(np.float32).T
+        ph = o["ph1d"].astype(np.float32)
+        r = o["r1d"].astype(np.float32)
+        th = o["th1d"].astype(np.float32) - np.pi / 2
 
         # clip radius to 100 Rsun
         mask = (r < max_radius) & (r > min_radius)
@@ -965,12 +1232,20 @@ class ReferenceCubeDataset(TensorsDataset):
 
         cartesian_coords = spherical_to_cartesian(spherical_coords)
         cartesian_coords = cartesian_coords / Rs_per_ds
-        x, y, z = cartesian_coords[..., 0], cartesian_coords[..., 1], cartesian_coords[..., 2]
+        x, y, z = (
+            cartesian_coords[..., 0],
+            cartesian_coords[..., 1],
+            cartesian_coords[..., 2],
+        )
 
         query_points = np.stack([x, y, z, t], axis=-1, dtype=np.float32)
         query_points = query_points[:, :, :, 0]  # squeeze time dimension
 
-        print('Query points range: ', query_points.reshape(-1, 4).min(0), query_points.reshape(-1, 4).max(0))
+        print(
+            "Query points range: ",
+            query_points.reshape(-1, 4).min(0),
+            query_points.reshape(-1, 4).max(0),
+        )
 
         self.cube_shape = query_points.shape[:-1]
 
@@ -978,9 +1253,11 @@ class ReferenceCubeDataset(TensorsDataset):
         density = density.reshape(-1)
         spherical_coords = spherical_coords.reshape(-1, 3)
 
-        tensors = {'query_points': query_points,
-                   'spherical_coords': spherical_coords,
-                   'rho': density}
+        tensors = {
+            "query_points": query_points,
+            "spherical_coords": spherical_coords,
+            "rho": density,
+        }
         super().__init__(tensors, **kwargs)
 
 
@@ -1001,20 +1278,25 @@ class RadialSlicesDataset(TensorsDataset):
     """
 
     def __init__(
-            self,
-            time_range,
-            Rs_per_ds,
-            seconds_per_dt, ref_date,
-            radii=(5, 7.5, 10, 15, 20),
-            Ntheta=180,
-            Nphi=360,
-            n_times=5,  # default: 5 time steps (rows)
-            **kwargs,
+        self,
+        time_range,
+        Rs_per_ds,
+        seconds_per_dt,
+        ref_date,
+        radii=(5, 7.5, 10, 15, 20),
+        Ntheta=180,
+        Nphi=360,
+        n_times=5,  # default: 5 time steps (rows)
+        **kwargs,
     ):
         # --- angular grids ---
         radii = np.asarray(radii, dtype=np.float32)  # (Nr,) in R_sun
-        theta = np.linspace(-np.pi / 2, np.pi / 2, int(Ntheta), endpoint=False, dtype=np.float32)  # lat
-        phi = np.linspace(0, 2 * np.pi, int(Nphi), endpoint=False, dtype=np.float32)  # lon
+        theta = np.linspace(
+            -np.pi / 2, np.pi / 2, int(Ntheta), endpoint=False, dtype=np.float32
+        )  # lat
+        phi = np.linspace(
+            0, 2 * np.pi, int(Nphi), endpoint=False, dtype=np.float32
+        )  # lon
 
         # --- time grid ---
         t0, t1 = float(time_range[0]), float(time_range[1])
@@ -1036,10 +1318,14 @@ class RadialSlicesDataset(TensorsDataset):
 
         coords = np.stack([rr, th, ph_query, tt], axis=-1)  # (Nr, Ntheta, Nphi, Nt, 4)
 
-        cart = spherical_to_cartesian(coords[..., :3], np).astype(np.float32)  # (..,3) in R_sun
+        cart = spherical_to_cartesian(coords[..., :3], np).astype(
+            np.float32
+        )  # (..,3) in R_sun
         cart /= Rs_per_ds  # normalize spatial coords
 
-        query_points = np.concatenate([cart, coords[..., 3:4]], axis=-1).astype(np.float32)  # (..,4)
+        query_points = np.concatenate([cart, coords[..., 3:4]], axis=-1).astype(
+            np.float32
+        )  # (..,4)
 
         # store shapes + meta for callbacks
         self.cube_shape = query_points.shape[:-1]  # (Nr, Ntheta, Nphi, Nt)
@@ -1051,8 +1337,7 @@ class RadialSlicesDataset(TensorsDataset):
         query_points = query_points.reshape(-1, 4)
         spherical_coords = spherical_coords.reshape(-1, 3)
 
-        tensors = {'query_points': query_points,
-                   'spherical_coords': spherical_coords}
+        tensors = {"query_points": query_points, "spherical_coords": spherical_coords}
         super().__init__(tensors, shuffle=False, filter_nans=False, **kwargs)
 
 
@@ -1076,17 +1361,17 @@ class LongitudeSlicesDataset(TensorsDataset):
     """
 
     def __init__(
-            self,
-            time_range,
-            Rs_per_ds,
-            seconds_per_dt,
-            ref_date,
-            longitude_deg=(0, 30, 60, 90, 120, 150),
-            radius_range=(1.5, 15),  # in R_sun
-            Nlatitude=360,
-            Nradius=180,
-            n_times=5,
-            **kwargs,
+        self,
+        time_range,
+        Rs_per_ds,
+        seconds_per_dt,
+        ref_date,
+        longitude_deg=(0, 30, 60, 90, 120, 150),
+        radius_range=(1.5, 15),  # in R_sun
+        Nlatitude=360,
+        Nradius=180,
+        n_times=5,
+        **kwargs,
     ):
         # --- radial + angular grids ---
         r0, r1 = float(radius_range[0]), float(radius_range[1])
@@ -1106,7 +1391,9 @@ class LongitudeSlicesDataset(TensorsDataset):
         times = np.linspace(t0, t1, int(n_times), dtype=np.float32)
 
         datetimes = [unnormalize_datetime(t, seconds_per_dt, ref_date) for t in times]
-        longitudes = convert_carrington_to_inertial(longitude_carrington * u.rad, datetimes)
+        longitudes = convert_carrington_to_inertial(
+            longitude_carrington * u.rad, datetimes
+        )
 
         # meshgrid: (Nr, Nlat, Nlon_slices, Nt)
         rr, lat, lon_carr, tt = np.meshgrid(
@@ -1125,9 +1412,9 @@ class LongitudeSlicesDataset(TensorsDataset):
         cart = spherical_to_cartesian(coords[..., :3], np).astype(np.float32)
         cart /= Rs_per_ds
 
-        query_points = np.concatenate(
-            [cart, coords[..., 3:4]], axis=-1
-        ).astype(np.float32)
+        query_points = np.concatenate([cart, coords[..., 3:4]], axis=-1).astype(
+            np.float32
+        )
 
         # meta for callbacks
         self.cube_shape = query_points.shape[:-1]  # (Nr, Nlat, Nlon_slices, Nt)
@@ -1154,22 +1441,23 @@ class FixedViewpointSeriesDataset(TensorsDataset):
     Returns instrument-style batch keys: rays, time, image, image_coords, hpc_coords, instrument
     """
 
-    def __init__(self,
-                 instrument_key,
-                 lat_deg=0.0,
-                 lon_deg=0.0,
-                 distance_AU=1.0,
-                 n_times=6,
-                 time_range=None,  # normalized [tmin,tmax]
-                 ref_date=None,
-                 seconds_per_dt=1.0,
-                 Rs_per_ds=1.0,
-                 resolution=(256, 256),
-                 scale_arcsec=(2400 / 256, 2400 / 256),
-                 image_norm=512,
-                 hpc_norm=1e4,
-                 **kwargs):
-
+    def __init__(
+        self,
+        instrument_key,
+        lat_deg=0.0,
+        lon_deg=0.0,
+        distance_AU=1.0,
+        n_times=6,
+        time_range=None,  # normalized [tmin,tmax]
+        ref_date=None,
+        seconds_per_dt=1.0,
+        Rs_per_ds=1.0,
+        resolution=(256, 256),
+        scale_arcsec=(2400 / 256, 2400 / 256),
+        image_norm=512,
+        hpc_norm=1e4,
+        **kwargs,
+    ):
         self.image_shape = tuple(int(x) for x in resolution)
         self.n_times = int(n_times)
 
@@ -1183,16 +1471,31 @@ class FixedViewpointSeriesDataset(TensorsDataset):
         # Note: use some reasonable reference coord; this is only for WCS/pixel geometry.
         # Observer at each time is encoded via pose, not WCS.
         t_ref = ref_date if isinstance(ref_date, datetime) else datetime(2010, 1, 1)
-        obs = SkyCoord(0 * u.deg, 0 * u.deg, (distance_AU * u.AU).to(u.solRad),
-                       frame=frames.HeliographicStonyhurst, obstime=t_ref)
-        reference_coord = SkyCoord(0 * u.arcsec, 0 * u.arcsec, obstime=t_ref, observer=obs,
-                                   frame=frames.Helioprojective)
+        obs = SkyCoord(
+            0 * u.deg,
+            0 * u.deg,
+            (distance_AU * u.AU).to(u.solRad),
+            frame=frames.HeliographicStonyhurst,
+            obstime=t_ref,
+        )
+        reference_coord = SkyCoord(
+            0 * u.arcsec,
+            0 * u.arcsec,
+            obstime=t_ref,
+            observer=obs,
+            frame=frames.Helioprojective,
+        )
 
         mock = np.zeros(self.image_shape, dtype=np.float32)
-        header = make_fitswcs_header(mock, reference_coord,
-                                     scale=[scale_arcsec[0], scale_arcsec[1]] * u.arcsec / u.pix)
+        header = make_fitswcs_header(
+            mock,
+            reference_coord,
+            scale=[scale_arcsec[0], scale_arcsec[1]] * u.arcsec / u.pix,
+        )
         ref_map = Map(mock, header)
-        img_coords = all_coordinates_from_map(ref_map).transform_to(frames.Helioprojective)
+        img_coords = all_coordinates_from_map(ref_map).transform_to(
+            frames.Helioprojective
+        )
 
         # rays for each time
         lat = np.deg2rad(float(lat_deg))
@@ -1211,11 +1514,14 @@ class FixedViewpointSeriesDataset(TensorsDataset):
         image_coords[..., 1] -= 0.5 * (nx - 1)
         image_coords /= float(image_norm)
 
-        hpc_coords = np.stack([
-            img_coords.Tx.to_value(u.arcsec) / float(hpc_norm),
-            img_coords.Ty.to_value(u.arcsec) / float(hpc_norm),
-            np.full((ny, nx), dist_solRad / float(Rs_per_ds), dtype=np.float32),
-        ], axis=-1).astype(np.float32)
+        hpc_coords = np.stack(
+            [
+                img_coords.Tx.to_value(u.arcsec) / float(hpc_norm),
+                img_coords.Ty.to_value(u.arcsec) / float(hpc_norm),
+                np.full((ny, nx), dist_solRad / float(Rs_per_ds), dtype=np.float32),
+            ],
+            axis=-1,
+        ).astype(np.float32)
 
         for tnorm in times_norm:
             pose = pose_spherical(lon, lat, dist_solRad / float(Rs_per_ds))
@@ -1245,8 +1551,8 @@ class FixedViewpointSeriesDataset(TensorsDataset):
             "hpc_coords": torch.from_numpy(hpccoords_all.reshape(-1, 3)),
         }
 
-        kwargs.pop('shuffle', None)
-        kwargs.pop('filter_nans', None)
+        kwargs.pop("shuffle", None)
+        kwargs.pop("filter_nans", None)
         super().__init__(tensors=tensors, shuffle=False, filter_nans=False, **kwargs)
 
 
@@ -1260,26 +1566,30 @@ class FullStarBackgroundDataset(TensorsDataset):
       - time: (Nlat*Nlon, 1) constant normalized time (midpoint of time_range)
     """
 
-    def __init__(self,
-                 instrument_key,
-                 time_range=None,
-                 Nlat=181,
-                 Nlon=360,
-                 **kwargs):
-        lat = np.linspace(-np.pi / 2, np.pi / 2, int(Nlat), endpoint=True, dtype=np.float32)
+    def __init__(self, instrument_key, time_range=None, Nlat=181, Nlon=360, **kwargs):
+        lat = np.linspace(
+            -np.pi / 2, np.pi / 2, int(Nlat), endpoint=True, dtype=np.float32
+        )
         lon = np.linspace(0, 2 * np.pi, int(Nlon), endpoint=False, dtype=np.float32)
         lat_grid, lon_grid = np.meshgrid(lat, lon, indexing="ij")
 
         cos_lat = np.cos(lat_grid)
-        rays_d = np.stack([
-            cos_lat * np.cos(lon_grid),
-            cos_lat * np.sin(lon_grid),
-            np.sin(lat_grid),
-        ], axis=-1).astype(np.float32)
+        rays_d = np.stack(
+            [
+                cos_lat * np.cos(lon_grid),
+                cos_lat * np.sin(lon_grid),
+                np.sin(lat_grid),
+            ],
+            axis=-1,
+        ).astype(np.float32)
         rays_o = np.zeros_like(rays_d, dtype=np.float32)
         rays = np.stack([rays_o, rays_d], axis=-2)
 
-        t_value = 0.0 if time_range is None else 0.5 * (float(time_range[0]) + float(time_range[1]))
+        t_value = (
+            0.0
+            if time_range is None
+            else 0.5 * (float(time_range[0]) + float(time_range[1]))
+        )
         time = np.full((*lat_grid.shape, 1), t_value, dtype=np.float32)
 
         self.sky_shape = lat_grid.shape
@@ -1291,17 +1601,31 @@ class FullStarBackgroundDataset(TensorsDataset):
             "rays": rays.reshape(-1, 2, 3),
             "time": time.reshape(-1, 1),
         }
-        super().__init__(tensors=tensors, shuffle=False, filter_nans=False, instrument=instrument_key, **kwargs)
+        super().__init__(
+            tensors=tensors,
+            shuffle=False,
+            filter_nans=False,
+            instrument=instrument_key,
+            **kwargs,
+        )
 
 
-def convert_carrington_to_inertial(longitude: list[float], datetimes: list[datetime]) -> list[float]:
+def convert_carrington_to_inertial(
+    longitude: list[float], datetimes: list[datetime]
+) -> list[float]:
     longitudes = []
     for t in datetimes:
         # convert longitude from Carrington to inertial frame
-        sky_coords = SkyCoord(lon=longitude, lat=0 * u.deg,
-                              radius=1 * u.AU,
-                              frame=frames.HeliographicCarrington, observer='self',
-                              obstime=t)
-        longitude_inertial = sky_coords.transform_to(frames.HeliocentricInertial).lon.to_value(u.rad)
+        sky_coords = SkyCoord(
+            lon=longitude,
+            lat=0 * u.deg,
+            radius=1 * u.AU,
+            frame=frames.HeliographicCarrington,
+            observer="self",
+            obstime=t,
+        )
+        longitude_inertial = sky_coords.transform_to(
+            frames.HeliocentricInertial
+        ).lon.to_value(u.rad)
         longitudes.append(longitude_inertial)
     return longitudes

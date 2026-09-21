@@ -26,7 +26,7 @@ PREP_DIR="${DATA_ROOT}/prep"
 python -m sunerf.data.download.download_cor \
   --start "${START}" \
   --end "${END}" \
-  --out "${COR_RAW_DIR}" \
+  --output "${COR_RAW_DIR}" \
   --detector COR2
 
 ################################################################################

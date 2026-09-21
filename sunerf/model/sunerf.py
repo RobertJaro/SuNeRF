@@ -81,6 +81,10 @@ class BaseSuNeRFModule(LightningModule):
         self._validation_output_keys.setdefault(dataset_key, set()).update(keys)
         self._validation_output_prefixes.setdefault(dataset_key, set()).update(prefixes)
 
+    def enable_validation_output_filter(self):
+        """Drop validation tensors that no configured callback consumes."""
+        self._validation_output_filter_enabled = True
+
     def _filter_validation_outputs(self, dataset_key, outputs):
         if not self._validation_output_filter_enabled:
             return outputs

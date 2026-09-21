@@ -1,98 +1,111 @@
 import os
+import re
 
-import matplotlib.pyplot as plt
 import numpy as np
 from h5py import File
-from matplotlib.colors import LogNorm
-
-from sunerf.train.coordinate_transformation import spherical_to_cartesian
 
 
-def read_PSI(rho_hdf5, T_hdf5, min_radius=1.0, max_radius=2.6):
+
+def _frame_id(path):
+    match = re.search(r"(\d+)$", os.path.splitext(os.path.basename(path))[0])
+    if match is None:
+        raise ValueError(f"Could not infer a numeric PSI frame id from {path}")
+    return int(match.group(1))
+
+
+def read_PSI_fields(
+    rho_hdf5,
+    T_hdf5,
+    *,
+    density_unit_scale_cm3,
+    temperature_unit_scale_K,
+    reference_frame_id,
+    min_radius=1.0,
+    max_radius=2.6,
+):
+    """Read PSI fields with explicit source-unit and temporal conversions.
+
+    ``density_unit_scale_cm3`` converts one source density unit to ``cm^-3``;
+    ``temperature_unit_scale_K`` converts one source temperature unit to K.
+    The returned time is a frame offset relative to ``reference_frame_id``.
+    """
+    for name, value in (
+        ("density_unit_scale_cm3", density_unit_scale_cm3),
+        ("temperature_unit_scale_K", temperature_unit_scale_K),
+    ):
+        if not np.isscalar(value) or not np.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be a finite positive scalar")
+    if isinstance(reference_frame_id, (bool, np.bool_)) or not isinstance(
+        reference_frame_id, (int, np.integer)
+    ):
+        raise TypeError("reference_frame_id must be an integer")
     print(f'Reading {rho_hdf5} and {T_hdf5}')
-    time = int(os.path.basename(rho_hdf5)[3:9]) - 1813
+    rho_frame = _frame_id(rho_hdf5)
+    temperature_frame = _frame_id(T_hdf5)
+    if rho_frame != temperature_frame:
+        raise ValueError(
+            f'PSI density/temperature frame mismatch: {rho_frame} != {temperature_frame}'
+        )
+
     with File(rho_hdf5, 'r') as h5file:
-        # get coordinate information
-        r_mhd = np.array(h5file['dim1'], dtype=np.float32)
-        th_mhd = np.array(h5file['dim2'], dtype=np.float32) - np.pi / 2
-        phi_mhd = np.array(h5file['dim3'], dtype=np.float32)
-
-        rho = np.array(h5file['Data'], dtype=np.float32).T
+        radius = np.asarray(h5file['dim1'], dtype=np.float32)
+        latitude = np.asarray(h5file['dim2'], dtype=np.float32) - np.pi / 2
+        longitude = np.asarray(h5file['dim3'], dtype=np.float32)
+        density = np.asarray(h5file['Data'], dtype=np.float32).T
     with File(T_hdf5, 'r') as h5file:
-        T = np.array(h5file['Data'], dtype=np.float32).T
+        temperature = np.asarray(h5file['Data'], dtype=np.float32).T
+        temperature_axes = tuple(
+            np.asarray(h5file[key], dtype=np.float32)
+            for key in ('dim1', 'dim2', 'dim3')
+            if key in h5file
+        )
 
-    print(f'r_range: {r_mhd.min(), r_mhd.max()}, th_range: {th_mhd.min(), th_mhd.max()}, phi_range: {phi_mhd.min(), phi_mhd.max()}')
-    # remove values outside of the max_radius
-    r_mask = (r_mhd <= max_radius)
+    expected_shape = (radius.size, latitude.size, longitude.size)
+    if density.shape != expected_shape or temperature.shape != expected_shape:
+        raise ValueError(
+            'PSI field shape does not match its coordinate axes: '
+            f'expected {expected_shape}, density={density.shape}, temperature={temperature.shape}'
+        )
+    if temperature_axes:
+        reference_axes = (radius, latitude + np.pi / 2, longitude)
+        if len(temperature_axes) != 3 or any(
+            source.shape != reference.shape or not np.allclose(source, reference)
+            for source, reference in zip(temperature_axes, reference_axes)
+        ):
+            raise ValueError('PSI density and temperature coordinate grids differ')
+
+    print(
+        f'r_range: {(radius.min(), radius.max())}, '
+        f'th_range: {(latitude.min(), latitude.max())}, '
+        f'phi_range: {(longitude.min(), longitude.max())}'
+    )
+    # Keep the bracketing node on either side so interpolation covers the full
+    # closed interval [min_radius, max_radius]; a strict crop leaves the layer
+    # between the requested boundary and the first retained node empty.
+    upper_nodes = np.flatnonzero(radius >= max_radius)
+    upper_limit = radius[upper_nodes[0]] if upper_nodes.size else radius[-1]
+    radial_mask = radius <= upper_limit
     if min_radius is not None:
-        r_mask = r_mask & (r_mhd > min_radius)
-    # apply mask
-    r_mhd = r_mhd[r_mask]
-    rho = rho[r_mask]
-    T = T[r_mask]
+        lower_nodes = np.flatnonzero(radius <= min_radius)
+        lower_limit = radius[lower_nodes[-1]] if lower_nodes.size else radius[0]
+        radial_mask &= radius >= lower_limit
+    radius = radius[radial_mask]
+    density = density[radial_mask]
+    temperature = temperature[radial_mask]
+    if radius.size == 0:
+        raise ValueError('PSI radial selection is empty')
 
-    # create spherical coordinates
-    spherical_coordinates = np.stack(np.meshgrid(r_mhd, th_mhd, phi_mhd, indexing='ij'), axis=-1)
-    # create cartesian coordinates
-    cartesian_coordinates = spherical_to_cartesian(spherical_coordinates)
+    density[density <= 0] = np.nan
+    temperature[temperature <= 0] = np.nan
+    density *= float(density_unit_scale_cm3)
+    temperature *= float(temperature_unit_scale_K)
 
-    T[T < 0] = np.nan
-    rho[rho < 0] = np.nan
-
-    # normalize values
-    T = T * 2.807066716734894e7
-    rho = rho * 1.0e8
-
-    return {'rho': rho, 'T': T, 'time': time,
-            'spherical_coordinates': spherical_coordinates, 'cartesian_coordinates': cartesian_coordinates}
-
-if __name__ == '__main__':
-    rho_hdf5 = '/glade/campaign/hao/radmhd/rjarolim/SuNeRF_2023_03/psi_data/mhd/rho/rho001813.h5'
-    T_hdf5 = '/glade/campaign/hao/radmhd/rjarolim/SuNeRF_2023_03/psi_data/mhd/t/t001813.h5'
-    psi_data = read_PSI(rho_hdf5, T_hdf5)
-    print(f'rho shape: {psi_data["rho"].shape}, T shape: {psi_data["T"].shape}, spherical_coordinates shape: {psi_data["spherical_coordinates"].shape}, time: {psi_data["time"]}')
-
-    ############################################################################################################
-    # lon slice
-    fig, axs = plt.subplots(1, 2, figsize=(10, 5))
-
-    im = axs[0].imshow(psi_data['rho'][:, :, 0], norm=LogNorm(), origin='lower')
-    axs[0].set_title('rho')
-    fig.colorbar(im, ax=axs[0])
-
-    im = axs[1].imshow(psi_data['T'][:, :, 0], norm=LogNorm(), origin='lower')
-    axs[1].set_title('T')
-    fig.colorbar(im, ax=axs[1])
-
-    fig.savefig('/glade/work/rjarolim/sunerf/psi_cube/lon_slice.jpg')
-    plt.close(fig)
-
-    ############################################################################################################
-    # integrated radius
-    fig, axs = plt.subplots(1, 2, figsize=(10, 5))
-
-    im = axs[0].imshow(psi_data['rho'].mean(0), norm=LogNorm(), origin='lower')
-    axs[0].set_title('rho')
-    fig.colorbar(im, ax=axs[0])
-
-    im = axs[1].imshow(psi_data['T'].mean(0), norm=LogNorm(), origin='lower')
-    axs[1].set_title('T')
-    fig.colorbar(im, ax=axs[1])
-
-    fig.savefig('/glade/work/rjarolim/sunerf/psi_cube/radial.jpg')
-    plt.close(fig)
-
-    ############################################################################################################
-    # lat slice
-    fig, axs = plt.subplots(1, 2, figsize=(10, 5))
-
-    im = axs[0].imshow(psi_data['rho'][:, 100, :], norm=LogNorm(), origin='lower')
-    axs[0].set_title('rho')
-    fig.colorbar(im, ax=axs[0])
-
-    im = axs[1].imshow(psi_data['T'][:, 100, :], norm=LogNorm(), origin='lower')
-    axs[1].set_title('T')
-    fig.colorbar(im, ax=axs[1])
-
-    fig.savefig('/glade/work/rjarolim/sunerf/psi_cube/lat_slice.jpg')
-    plt.close(fig)
+    return {
+        'rho': density,
+        'T': temperature,
+        'time': rho_frame - int(reference_frame_id),
+        'frame_id': rho_frame,
+        'radius': radius,
+        'latitude': latitude,
+        'longitude': longitude,
+    }

@@ -9,6 +9,9 @@ instruments:
 model:
   dim: 512
 
+module:
+  light_travel_time: false
+
 data:
   train_datasets:
     - type: 'HAO'

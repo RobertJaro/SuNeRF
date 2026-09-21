@@ -1,57 +1,94 @@
+"""Download time-matched GOES/SUVI level-2 channel sets."""
+
+from __future__ import annotations
+
 import argparse
-import os
 
+import astropy.units as u
 import numpy as np
-from astropy import units as u
-from astropy.io import fits
-from dateutil.parser import parse
-from sunpy.net import Fido
-from sunpy.net import attrs as a
+from sunpy.net import Fido, attrs as a
+
+from sunerf.data.download.core import (
+    DownloadRequest,
+    add_common_arguments,
+    cadence_indices,
+    fetch_fido,
+    nearest_indices,
+    parse_cadence,
+    request_from_args,
+    unique_indices,
+)
 
 
-# rename files
-def _rename_euvi(f, t):
-    header = fits.getheader(f)
-    source = header['OBSRVTRY']
-    obs_time = t.strftime('%Y%m%d_%H%M%S')
-    wl = header['WAVELNTH']
-
-    new_filename = f'{source}_{obs_time}_{wl}.fts'
-    base_path = os.path.dirname(f)
-    os.rename(f, os.path.join(base_path, new_filename))
-    # print(f, 'to', new_filename)
+DEFAULT_CHANNELS = (94, 131, 171, 195, 284, 304)
 
 
-def _download_suvi(time_range, channels):
-    target_wl = Fido.search(time_range, a.Instrument('suvi'),a.Level.two, a.goes.SatelliteNumber(16),
-                            a.Wavelength(304 * u.AA))
-    target_wl = target_wl[:, ::15]
-    target_times = target_wl['vso']['Start Time']
-
-    fetch_list = []
-    for wl in channels:
-        result = Fido.search(time_range, a.Instrument('suvi'),a.Level.two, a.goes.SatelliteNumber(16), a.Wavelength(wl * u.AA))
-        start_times = np.array(result['vso']['Start Time'])
-        indices = [np.argmin(np.abs(t - start_times)) for t in target_times]
-        fetch_list.append(result['vso'][indices])
-
-    download_files = Fido.fetch(*fetch_list, path=args.download_dir)
+def _records(response):
+    if len(response) == 0 or len(response[0]) == 0:
+        raise RuntimeError("Fido returned no matching SUVI records")
+    return response[0]
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--download_dir', type=str, required=True)
-    parser.add_argument('--t_start', type=str, required=True)
-    parser.add_argument('--t_end', type=str, required=False, default=None)
-    parser.add_argument('--channels', type=int, nargs='+', required=False, default=[94, 131, 171, 195, 284, 304])
-    args = parser.parse_args()
+def select_channel_sets(request, *, channels, cadence, satellite):
+    time = a.Time(request.start, request.end)
+    records_by_channel = [
+        _records(Fido.search(
+            time,
+            a.Instrument("suvi"),
+            a.Level.two,
+            a.goes.SatelliteNumber(int(satellite)),
+            a.Wavelength(int(channel) * u.AA),
+        ))
+        for channel in channels
+    ]
+    reference_times = np.asarray(records_by_channel[-1]["Start Time"])
+    reference_indices = cadence_indices(
+        reference_times, request.start, request.end, cadence
+    )
+    reference_times = reference_times[reference_indices]
+    selected = [records_by_channel[-1][reference_indices]]
+    for records in records_by_channel[:-1]:
+        indices = unique_indices(nearest_indices(reference_times, records["Start Time"]))
+        selected.append(records[indices])
+    # Restore configured channel order after using the last channel as anchor.
+    return tuple(selected[1:] + selected[:1])
 
-    os.makedirs(args.download_dir, exist_ok=True)
 
-    start_time = parse(args.t_start)
-    end_time = parse(args.t_end) if args.t_end is not None else None
-    cadence = args.cadence
+def download(
+    request: DownloadRequest,
+    *,
+    channels=DEFAULT_CHANNELS,
+    cadence=None,
+    satellite=16,
+):
+    selected = select_channel_sets(
+        request,
+        channels=tuple(channels),
+        cadence=cadence,
+        satellite=satellite,
+    )
+    return fetch_fido(*selected, request=request, description="SUVI download")
 
-    time_range = a.Time(start_time, end_time)
 
-    _download_suvi(time_range, args.channels)
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_common_arguments(parser)
+    parser.add_argument("--cadence", type=parse_cadence, default=parse_cadence("1h"))
+    parser.add_argument("--channels", type=int, nargs="+", default=list(DEFAULT_CHANNELS))
+    parser.add_argument("--satellite", type=int, default=16)
+    return parser
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    download(
+        request_from_args(args),
+        channels=args.channels,
+        cadence=args.cadence,
+        satellite=args.satellite,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

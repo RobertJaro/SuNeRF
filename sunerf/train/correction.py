@@ -7,9 +7,18 @@ from sunerf.model.model import SirenNet, SirenModel
 
 class CorrectionModule(nn.Module):
 
-    def __init__(self, corrections=None,**kwargs):
+    def __init__(self, corrections=None, additive_scale=1e-4,
+                 tB_additive_scale=None, pB_additive_scale=None, **kwargs):
         super().__init__()
         self.corrections = ['f_corona'] if corrections is None else corrections # use default corrections if none provided
+        self.tB_additive_scale = float(
+            additive_scale if tB_additive_scale is None else tB_additive_scale
+        )
+        self.pB_additive_scale = float(
+            additive_scale if pB_additive_scale is None else pB_additive_scale
+        )
+        if self.tB_additive_scale <= 0 or self.pB_additive_scale <= 0:
+            raise ValueError("Additive correction scales must be positive.")
         possible_img_corrections = ['tB_add', 'pB_add', 'tB_straylight', 'pB_straylight', 'tB_mul', 'pB_mul', 'img', 'transmission', 'leakage']
         possible_hpc_corrections = ['f_corona']
         possible_radial_corrections = ['calibration_gain', 'calibration_offset']
@@ -25,7 +34,7 @@ class CorrectionModule(nn.Module):
         temporal_corrections = [c for c in self.corrections if c in possible_temporal_corrections]
 
         if len(img_corrections) > 0:
-            self.img_correction_module = SirenModel(in_dim=2, out_dim=len(img_corrections), dim=64, n_layers=4, w0_init=3)
+            self.img_correction_module = SirenModel(in_dim=2, out_dim=len(img_corrections), dim=64, n_layers=4, w0_init=30)
         else:
             self.img_correction_module = None
         if len(hpc_corrections) > 0:
@@ -59,6 +68,8 @@ class CorrectionModule(nn.Module):
         # hpc_coords = torch.cat([hpc_coords, time], dim=-1)
 
         corrections = {}
+        calibration_gain = None
+        calibration_offset = None
         # 1. corrections of physical origin (F corona)
         if self.hpc_correction_module is not None:
             hpc_corrections = self.hpc_correction_module(hpc_coords[..., :2])
@@ -77,14 +88,10 @@ class CorrectionModule(nn.Module):
             i = 0
             if 'calibration_gain' in self.radial_corrections:
                 calibration_gain = torch.exp(radial_corrections[..., i:i+1] * 0.01)
-                tB = tB * calibration_gain
-                pB = pB * calibration_gain
                 corrections['calibration_gain'] = calibration_gain
                 i += 1
             if 'calibration_offset' in self.radial_corrections:
                 calibration_offset = radial_corrections[..., i:i+1]
-                tB = tB + calibration_offset
-                pB = pB + calibration_offset
                 corrections['calibration_offset'] = calibration_offset
                 i += 1
 
@@ -95,13 +102,13 @@ class CorrectionModule(nn.Module):
             i = 0
             if 'tB_add' in self.img_corrections:
                 raw = img_corrections[..., i:i+1]
-                tB_add = raw * 1e-4
+                tB_add = raw * self.tB_additive_scale
                 tB = tB + tB_add
                 corrections['tB_add'] = tB_add
                 i += 1
             if 'pB_add' in self.img_corrections:
                 raw = img_corrections[..., i:i+1]
-                pB_add = raw * 1e-4
+                pB_add = raw * self.pB_additive_scale
                 pB = pB + pB_add
                 corrections['pB_add'] = pB_add
                 i += 1
@@ -139,6 +146,15 @@ class CorrectionModule(nn.Module):
                 corrections['leakage'] = leakage
                 i += 1
 
+        # Apply shared radial calibration after image-coordinate additive terms,
+        # matching the synthetic forward model: (image + additive) * gain.
+        if calibration_offset is not None:
+            tB = tB + calibration_offset
+            pB = pB + calibration_offset
+        if calibration_gain is not None:
+            tB = tB * calibration_gain
+            pB = pB * calibration_gain
+
         # 4. temporal corrections (calibration)
         if self.temporal_correction_module is not None:
             temporal_corrections = self.temporal_correction_module(time)
@@ -165,12 +181,17 @@ class CalibrationModule(nn.Module):
 
 class AlignmentModule(nn.Module):
 
-    def __init__(self, **kwargs):
+    def __init__(self, angle_scale=1e-3, **kwargs):
         super().__init__()
+        self.angle_scale = float(angle_scale)
+        if self.angle_scale <= 0:
+            raise ValueError("angle_scale must be positive.")
         self.correction = SirenNet(in_dim=1, out_dim=1, dim=8, n_layers=2, w0_initial=1)
 
     def forward(self, rays, time):
-        theta = self.correction(time) * 0 # small angle in radians
+        # Keep the learned rotation small without severing its gradient.  The old
+        # ``* 0`` made an enabled alignment module an exact, untrainable no-op.
+        theta = self.correction(time) * self.angle_scale
 
         cos_theta = torch.cos(theta)
         sin_theta = torch.sin(theta)

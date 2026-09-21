@@ -6,17 +6,17 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 
 
 # download soho lasco c2
-python -m sunerf.data.download.download_lasco  --start 2024-09-15  --end 2024-10-02 --out /glade/work/rjarolim/data/sunerf-cme/2024_10/lasco --detector C2
+python -m sunerf.data.download.download_lasco  --start 2024-09-15  --end 2024-10-02 --output /glade/work/rjarolim/data/sunerf-cme/2024_10/lasco --detector C2
 # download stereo cor2
-python -m sunerf.data.download.download_cor --start 2024-09-15  --end 2024-10-02 --out /glade/work/rjarolim/data/sunerf-cme/2024_10/cor --detector COR2
+python -m sunerf.data.download.download_cor --start 2024-09-15  --end 2024-10-02 --output /glade/work/rjarolim/data/sunerf-cme/2024_10/cor --detector COR2
 # download stereo cor1
-python -m sunerf.data.download.download_cor --start 2024-09-15  --end 2024-10-02 --out /glade/work/rjarolim/data/sunerf-cme/2024_10/cor --detector COR1
+python -m sunerf.data.download.download_cor --start 2024-09-15  --end 2024-10-02 --output /glade/work/rjarolim/data/sunerf-cme/2024_10/cor --detector COR1
 # download lasco c3
-python -m sunerf.data.download.download_lasco  --start 2024-09-15  --end 2024-10-02 --out /glade/work/rjarolim/data/sunerf-cme/2024_10/lasco --detector C3
+python -m sunerf.data.download.download_lasco --start 2024-09-15 --end 2024-10-02 --output /glade/work/rjarolim/data/sunerf-cme/2024_10/lasco --detector C3 --product level_1
 
 
 # download PUNCH NFI data
-python -m sunerf.data.download.download_punch  --start 2025-09-01  --end 2025-09-02 --out /glade/work/rjarolim/data/sunerf-cme/2025_09/punch
+python -m sunerf.data.download.download_punch  --start 2025-09-01  --end 2025-09-02 --output /glade/work/rjarolim/data/sunerf-cme/2025_09/punch
 
 
 # clean up COR triplets

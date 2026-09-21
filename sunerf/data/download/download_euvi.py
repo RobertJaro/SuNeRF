@@ -1,60 +1,113 @@
+"""Download time-matched STEREO/SECCHI EUVI channel sets from VSO."""
+
+from __future__ import annotations
+
 import argparse
-import os
 
+import astropy.units as u
 import numpy as np
-from astropy import units as u
-from astropy.io import fits
-from dateutil.parser import parse
-from sunpy.net import Fido
-from sunpy.net import attrs as a
+from sunpy.net import Fido, attrs as a
+
+from sunerf.data.download.core import (
+    DownloadRequest,
+    add_common_arguments,
+    combine_results,
+    fetch_fido,
+    nearest_indices,
+    parse_cadence,
+    request_from_args,
+    unique_indices,
+)
 
 
-# rename files
-def _rename_euvi(f, t):
-    header = fits.getheader(f)
-    source = header['OBSRVTRY']
-    obs_time = t.strftime('%Y%m%d_%H%M%S')
-    wl = header['WAVELNTH']
-
-    new_filename = f'{source}_{obs_time}_{wl}.fts'
-    base_path = os.path.dirname(f)
-    os.rename(f, os.path.join(base_path, new_filename))
-    # print(f, 'to', new_filename)
+DEFAULT_CHANNELS = (171, 195, 284)
+DEFAULT_SOURCES = ("STEREO_A", "STEREO_B")
 
 
-def _download_euvi(time_range, channels, cadence, source):
-    target_wl = Fido.search(time_range, a.Instrument.secchi, a.Detector.euvi,
-                            a.Source(source), a.Wavelength(284 * u.AA), a.Sample(cadence * u.h))
-    target_times = target_wl['vso']['Start Time']
-
-    fetch_list = []
-    for wl in channels:
-        result = Fido.search(time_range, a.Instrument.secchi, a.Detector.euvi,
-                             a.Source(source), a.Wavelength(wl * u.AA))
-        start_times = np.array(result['vso']['Start Time'])
-        indices = [np.argmin(np.abs(t - start_times)) for t in target_times]
-        fetch_list.append(result['vso'][indices])
-
-    download_files = Fido.fetch(*fetch_list, path=args.download_dir)
+def _vso_records(response):
+    try:
+        records = response["vso"]
+    except (KeyError, IndexError) as error:
+        raise RuntimeError("VSO returned no matching records") from error
+    if len(records) == 0:
+        raise RuntimeError("VSO returned no matching records")
+    return records
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--download_dir', type=str, required=True)
-    parser.add_argument('--t_start', type=str, required=True)
-    parser.add_argument('--t_end', type=str, required=False, default=None)
-    parser.add_argument('--cadence', type=float, required=False, default=1, help='Cadence in hours')
-    parser.add_argument('--channels', type=int, nargs='+', required=False, default=[171, 195, 284, 304])
-    parser.add_argument('--sources', type=str, nargs='+', required=False, default=['STEREO_A', 'STEREO_B'])
-    args = parser.parse_args()
+def _times(records):
+    return np.asarray(records["Start Time"].datetime)
 
-    os.makedirs(args.download_dir, exist_ok=True)
 
-    start_time = parse(args.t_start)
-    end_time = parse(args.t_end) if args.t_end is not None else None
-    cadence = args.cadence
+def select_channel_sets(request, *, source, channels, cadence):
+    time = a.Time(request.start, request.end)
+    anchor_channel = 284 if 284 in channels else channels[0]
+    anchor_query = [
+        time,
+        a.Instrument.secchi,
+        a.Detector.euvi,
+        a.Source(source),
+        a.Wavelength(anchor_channel * u.AA),
+    ]
+    if cadence is not None:
+        anchor_query.append(a.Sample(cadence.total_seconds() * u.s))
+    anchors = _vso_records(Fido.search(*anchor_query))
+    anchor_times = _times(anchors)
 
-    time_range = a.Time(start_time, end_time)
+    selected = []
+    for channel in channels:
+        records = _vso_records(Fido.search(
+            time,
+            a.Instrument.secchi,
+            a.Detector.euvi,
+            a.Source(source),
+            a.Wavelength(channel * u.AA),
+        ))
+        indices = unique_indices(nearest_indices(anchor_times, _times(records)))
+        selected.append(records[indices])
+    return tuple(selected)
 
-    for source in args.sources:
-        _download_euvi(time_range, args.channels, cadence, source)
+
+def download(
+    request: DownloadRequest,
+    *,
+    channels=DEFAULT_CHANNELS,
+    sources=DEFAULT_SOURCES,
+    cadence=None,
+):
+    if not channels:
+        raise ValueError("channels must not be empty")
+    results = []
+    for source in sources:
+        selected = select_channel_sets(
+            request, source=source, channels=tuple(channels), cadence=cadence
+        )
+        results.append(fetch_fido(
+            *selected,
+            request=request,
+            description=f"EUVI download for {source}",
+        ))
+    return combine_results(results)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_common_arguments(parser)
+    parser.add_argument("--cadence", type=parse_cadence, default=parse_cadence("1h"))
+    parser.add_argument("--channels", type=int, nargs="+", default=list(DEFAULT_CHANNELS))
+    parser.add_argument("--sources", nargs="+", default=list(DEFAULT_SOURCES))
+    return parser
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    download(
+        request_from_args(args),
+        channels=args.channels,
+        sources=args.sources,
+        cadence=args.cadence,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

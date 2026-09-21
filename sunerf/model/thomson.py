@@ -1,6 +1,6 @@
-import os
 import copy
 import math
+import os
 import uuid
 
 import torch
@@ -13,7 +13,7 @@ from sunerf.model.sunerf import BaseSuNeRFModule
 from sunerf.model.util import jacobian
 from sunerf.rendering.base_tracing import BasicRenderingModule
 from sunerf.rendering.thomson import ThomsonScattering
-from sunerf.train.correction import CorrectionModule, CalibrationModule, AlignmentModule, StarBackgroundModule
+from sunerf.train.correction import AlignmentModule, CalibrationModule, CorrectionModule, StarBackgroundModule
 from sunerf.train.render_mode import RenderMode
 from sunerf.train.scaling import ImageAsinhScaling, ImageLinearScaling, ImageLogScaling
 
@@ -117,6 +117,10 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                  physics_update_interval=1,
                  insitu_jitter_std_rsun=0.0,
                  ballistic_acceleration_limit_ms2=10.0,
+                 radial_tolerance_deg=30.0,
+                 ratio_range=(0.0, 3.0),
+                 ratio_epsilon=1.0e-6,
+                 continuity_reference_velocity_kms=300.0,
                  **kwargs):
         # setup rendering
         sampling_config = sampling_config if sampling_config is not None else {}
@@ -242,24 +246,49 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         # solar wind
         velocity_min = (100.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
         self.velocity_min = nn.Parameter(torch.tensor(velocity_min, dtype=torch.float32), requires_grad=False)
-        velocity_max = (1000.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
+        velocity_max = (6000.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
         self.velocity_max = nn.Parameter(torch.tensor(velocity_max, dtype=torch.float32), requires_grad=False)
         velocity_avg = (300.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
         self.velocity_avg = nn.Parameter(torch.tensor(velocity_avg, dtype=torch.float32), requires_grad=False)
         velocity_loss_scale = (100.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt
         self.velocity_loss_scale = nn.Parameter(torch.tensor(velocity_loss_scale, dtype=torch.float32),
                                                 requires_grad=False)
+        # Polarization ratios pB/tB above 1 are unphysical but expected for noisy
+        # and uncalibrated observations; pixels outside the range are ignored.
+        self.ratio_range = (float(ratio_range[0]), float(ratio_range[1]))
+        self.ratio_epsilon = float(ratio_epsilon)
+        if not self.ratio_range[0] < self.ratio_range[1]:
+            raise ValueError("ratio_range must be an increasing (min, max) pair.")
+        if self.ratio_epsilon <= 0:
+            raise ValueError("ratio_epsilon must be positive.")
         if ballistic_acceleration_limit_ms2 <= 0:
             raise ValueError("ballistic_acceleration_limit_ms2 must be positive.")
         self.ballistic_acceleration_limit = (
             (ballistic_acceleration_limit_ms2 * u.m / u.s ** 2).to_value(u.R_sun / u.s ** 2)
             / Rs_per_ds * seconds_per_dt ** 2
         )
+        # The continuity residual is a rate (1/time) whose terms scale as v/r.
+        # Multiplying it by the local advection time r / v_ref makes it a
+        # dimensionless O(1) relative violation at every radius. ``None`` disables
+        # the scaling and keeps the raw residual in model time units.
+        if continuity_reference_velocity_kms is None:
+            self.continuity_reference_velocity = None
+        else:
+            continuity_reference_velocity_kms = float(continuity_reference_velocity_kms)
+            if not math.isfinite(continuity_reference_velocity_kms) or continuity_reference_velocity_kms <= 0:
+                raise ValueError("continuity_reference_velocity_kms must be finite and positive.")
+            self.continuity_reference_velocity = (
+                (continuity_reference_velocity_kms * u.km / u.s).to_value(u.R_sun / u.s)
+                / Rs_per_ds * seconds_per_dt
+            )
+        if not math.isfinite(radial_tolerance_deg) or not 0 <= radial_tolerance_deg < 90:
+            raise ValueError("radial_tolerance_deg must be finite and in [0, 90).")
+        self.radial_tolerance_deg = float(radial_tolerance_deg)
+        self.radial_tolerance_cos = math.cos(math.radians(self.radial_tolerance_deg))
         # radial weighting
         self.min_radius_weight = nn.Parameter(torch.tensor(1.0 / Rs_per_ds, dtype=torch.float32), requires_grad=False)
         self.max_radius_weight = nn.Parameter(torch.tensor(10.0 / Rs_per_ds, dtype=torch.float32), requires_grad=False)
 
-        print(f'Velocity min: {velocity_min}, max: {velocity_max}')
         drop_off_distance = (1 * u.AU).to_value(u.R_sun) / Rs_per_ds
         self.drop_off_distance = nn.Parameter(torch.tensor(drop_off_distance, dtype=torch.float32), requires_grad=False)
 
@@ -270,6 +299,23 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             return image
         # no clamping here, as scaling mask should already be properly regularized
         return image / scaling_mask
+
+    def _polarization_ratio(self, image: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return pB/tB and the mask of pixels with a ratio inside ``ratio_range``.
+
+        The denominator is bounded from below so that a vanishing or negative
+        model tB (e.g., from additive corrections) yields neither infinite
+        ratios nor NaN gradients.
+        """
+        tB, pB = image[..., 0], image[..., 1]
+        ratio = pB / (tB + self.ratio_epsilon).clamp_min(self.ratio_epsilon)
+        ratio_min, ratio_max = self.ratio_range
+        with torch.no_grad():
+            valid = (
+                torch.isfinite(ratio) & (tB > 0)
+                & (ratio >= ratio_min) & (ratio <= ratio_max)
+            )
+        return ratio, valid
 
     @staticmethod
     def _mean_or_zero(values, device):
@@ -312,7 +358,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             )
             aux['correction'] = correction
             if collect_regularization and correction_losses is not None:
-                correction_losses.append(self.get_correction_loss(correction))
+                correction_losses.append(self.get_correction_loss(correction, batch))
 
         if instrument_key in self.calibration_modules:
             model_image = self.calibration_modules[instrument_key](model_image)
@@ -360,20 +406,14 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             )
             tB_nan_mask = torch.isfinite(target_image[..., 0])
             pB_nan_mask = torch.isfinite(target_image[..., 1])
-            ratio_nan_mask = (
-                tB_nan_mask
-                & pB_nan_mask
-                & (target_image[..., 0] > 0)
-                & (target_image[..., 1] >= 0)
-            )
 
-            # compute polarization ratios
-            ratio_target_image = target_image[ratio_nan_mask, 1] / (target_image[ratio_nan_mask, 0] + 1e-8)
-            ratio_model_image = model_image[ratio_nan_mask, 1] / (model_image[ratio_nan_mask, 0] + 1e-8)
-
-            # clip ratios to prevent extreme values from dominating the loss
-            ratio_target_image = torch.clamp(ratio_target_image, 0.0, 1.0)
-            ratio_model_image = torch.clamp(ratio_model_image, 0.0, 1.0)
+            # compute polarization ratios; pixels where the target or the model
+            # ratio leaves the accepted range are masked instead of clamped
+            ratio_target_image, target_ratio_mask = self._polarization_ratio(target_image)
+            ratio_model_image, model_ratio_mask = self._polarization_ratio(model_image)
+            ratio_mask = target_ratio_mask & model_ratio_mask
+            ratio_target_image = ratio_target_image[ratio_mask]
+            ratio_model_image = ratio_model_image[ratio_mask]
 
             # scale images
             image_scaling = self.scaling_modules[instrument_key]
@@ -486,6 +526,11 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                 continuity_point_loss, continuity_terms = self.compute_log_continuity_loss(
                     v, jacobian_matrices['log_rho'], jacobian_matrices['v']
                 )
+                if self.continuity_reference_velocity is not None:
+                    continuity_terms['scaled_residual'] = self.scale_continuity_residual(
+                        continuity_terms['residual'], random_points
+                    )
+                    continuity_point_loss = continuity_terms['scaled_residual'].pow(2)
                 continuity_loss = continuity_point_loss.mean()
                 loss += self.lambdas['continuity']['value'] * continuity_loss
                 log_values['continuity.loss'] = continuity_loss
@@ -520,13 +565,12 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                     assert torch.isfinite(velocity_loss).all(), 'Invalid loss detected: velocity_loss'
 
                 if active_physics['radial']:
-                    normalization = (
-                        torch.norm(random_points[:, :3], dim=-1) * torch.norm(random_v, dim=-1) + 1e-7
+                    radial_point_loss = self.compute_radial_direction_loss(
+                        random_points[:, :3], random_v
                     )
-                    radial_loss = torch.norm(
-                        torch.cross(random_v, random_points[:, :3], dim=-1), dim=-1
-                    ) / normalization
-                    radial_loss = (radial_loss.pow(2) * radial_weight).sum() / (radial_weight.sum() + 1e-7)
+                    radial_loss = (
+                        radial_point_loss * radial_weight
+                    ).sum() / (radial_weight.sum() + 1e-7)
                     log_values['radial'] = radial_loss
                     loss += self.lambdas['radial']['value'] * radial_loss
                     assert torch.isfinite(radial_loss).all(), 'Invalid loss detected: radial_loss'
@@ -537,8 +581,24 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
         return loss
 
-    def get_correction_loss(self, correction):
+    def get_correction_loss(self, correction, batch):
         correction_losses = {}
+        # Penalize additive brightness in the same space as the image loss.
+        # Keep the forward-model corrections in their original brightness units.
+        scaled_additives = {}
+        for channel, key in enumerate(('tB_add', 'pB_add')):
+            if key not in correction or not (
+                self.lambdas[key]['value'] > 0.0
+                or self.lambdas[f'{key}_mean']['value'] > 0.0
+            ):
+                continue
+            additive = correction[key]
+            scaling_mask = batch.get('scaling_mask')
+            if scaling_mask is not None:
+                if scaling_mask.shape[-1] == 2:
+                    scaling_mask = scaling_mask[..., channel:channel + 1]
+                additive = additive / scaling_mask
+            scaled_additives[key] = self.scaling_modules[batch['instrument']](additive)
         if self.lambdas['calibration']['value'] > 0.0 and 'calibration' in correction:
             calibration = correction['calibration']
             # prefer temporal calibration close to 1
@@ -580,22 +640,22 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             tB_mul_loss = (tB_mul - 1.0).pow(2)
             correction_losses['tB_mul'] = tB_mul_loss
         if self.lambdas['pB_add']['value'] > 0.0 and 'pB_add' in correction:
-            pB_add = correction['pB_add']
+            pB_add = scaled_additives['pB_add']
             # prefer small pB additive correction
             pB_add_loss = pB_add.pow(2)
             correction_losses['pB_add'] = pB_add_loss
         if self.lambdas['tB_add']['value'] > 0.0 and 'tB_add' in correction:
-            tB_add = correction['tB_add']
+            tB_add = scaled_additives['tB_add']
             # prefer small tB additive correction
             tB_add_loss = tB_add.pow(2)
             correction_losses['tB_add'] = tB_add_loss
         if self.lambdas['pB_add_mean']['value'] > 0.0 and 'pB_add' in correction:
-            pB_add = correction['pB_add']
+            pB_add = scaled_additives['pB_add']
             # prefer zero-mean pB additive correction over the sample
             pB_add_mean_loss = pB_add.mean().pow(2).reshape(1, 1)
             correction_losses['pB_add_mean'] = pB_add_mean_loss
         if self.lambdas['tB_add_mean']['value'] > 0.0 and 'tB_add' in correction:
-            tB_add = correction['tB_add']
+            tB_add = scaled_additives['tB_add']
             # prefer zero-mean tB additive correction over the sample
             tB_add_mean_loss = tB_add.mean().pow(2).reshape(1, 1)
             correction_losses['tB_add_mean'] = tB_add_mean_loss
@@ -622,6 +682,24 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             (radius - self.min_radius_weight) / (self.max_radius_weight - self.min_radius_weight),
             min=0.0, max=1.0
         ).pow(2)
+
+    def compute_radial_direction_loss(self, position, velocity):
+        """Penalize velocity directions outside the configured outward radial cone.
+
+        The cosine margin gives a true dead zone: outward velocities at or below
+        ``radial_tolerance_deg`` have exactly zero loss.  Inward velocities are
+        outside the cone and are therefore penalized as well.
+        """
+        cosine = torch.nn.functional.cosine_similarity(
+            velocity, position, dim=-1, eps=1e-7
+        )
+        cosine = cosine.clamp(-1.0, 1.0)
+        return torch.relu(self.radial_tolerance_cos - cosine).pow(2)
+
+    def scale_continuity_residual(self, residual, points):
+        """Express the continuity residual in units of the local advection rate v_ref / r."""
+        advection_time = torch.norm(points[:, :3].detach(), dim=-1) / self.continuity_reference_velocity
+        return residual * advection_time
 
     @staticmethod
     def compute_log_continuity_loss(v, log_rho_jacobian, velocity_jacobian):
@@ -696,22 +774,12 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         model_image = model_out["image"]
         model_image, aux = self._apply_image_modules(batch, model_image)
 
-        # ratios (safe for NaNs)
-        valid_ratio = (
-            torch.isfinite(image[..., 0:1])
-            & torch.isfinite(image[..., 1:2])
-            & (image[..., 0:1] > 0)
-            & (image[..., 1:2] >= 0)
-        )
-        target_ratio = image[..., 1:2] / (image[..., 0:1] + 1e-8)
-        model_ratio = model_image[..., 1:2] / (model_image[..., 0:1] + 1e-8)
-
-        # clip ratios to prevent extreme values from dominating the loss
-        # >1 is unphysical, but can be caused by correction/calibration
-        target_ratio = torch.clamp(target_ratio, 0.0, 2.0)
-        model_ratio = torch.clamp(model_ratio, 0.0, 2.0)
-        target_ratio = torch.where(valid_ratio, target_ratio, torch.nan)
-        model_ratio = torch.where(valid_ratio, model_ratio, torch.nan)
+        # ratios (safe for NaNs); same range and masking as the training loss
+        target_ratio, target_ratio_mask = self._polarization_ratio(image)
+        model_ratio, model_ratio_mask = self._polarization_ratio(model_image)
+        valid_ratio = (target_ratio_mask & model_ratio_mask)[..., None]
+        target_ratio = torch.where(valid_ratio, target_ratio[..., None], torch.nan)
+        model_ratio = torch.where(valid_ratio, model_ratio[..., None], torch.nan)
 
         # scale images consistently
         image_scaling = self.scaling_modules[instrument_key]

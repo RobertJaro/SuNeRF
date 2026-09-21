@@ -1,3 +1,6 @@
+import math
+import warnings
+
 import torch
 from torch import nn
 from astropy import constants as const
@@ -5,6 +8,84 @@ from astropy import units as u
 
 from sunerf.train.sampling import SphericalSampler, HierarchicalSampler, StratifiedSampler
 from sunerf.train.util import TimeShuffler, NormalTimeShuffler
+
+
+def _maybe_shuffle_times(batch, shuffler, *, module_training, shuffle):
+    """Apply time augmentation without modifying tensors owned by the caller."""
+    should_shuffle = module_training if shuffle is None else bool(shuffle)
+    if shuffler is None or not should_shuffle:
+        return batch
+
+    copied_batch = {}
+    for dataset_key, dataset_batch in batch.items():
+        copied_dataset = dict(dataset_batch)
+        if 'time' in copied_dataset:
+            copied_dataset['time'] = copied_dataset['time'].clone()
+        copied_batch[dataset_key] = copied_dataset
+
+    # The legacy implementation fails for probability=1 and creates CPU index
+    # tensors for GPU batches. Keep its schedule, but perform the permutation at
+    # this boundary where the cloned batch and target device are known.
+    if isinstance(shuffler, TimeShuffler):
+        probability = min(max(float(shuffler.prob.detach()), 0.0), 1.0)
+        for dataset_key, dataset_batch in copied_batch.items():
+            if shuffler.data_sets is not None and dataset_key not in shuffler.data_sets:
+                continue
+            times = dataset_batch['time']
+            n_shuffle = min(int(times.shape[0] * probability), times.shape[0])
+            if n_shuffle <= 1:
+                continue
+            max_start = times.shape[0] - n_shuffle
+            if max_start:
+                start = int(torch.randint(
+                    0, max_start + 1, (), device=times.device
+                ).item())
+            else:
+                start = 0
+            permutation = torch.randperm(n_shuffle, device=times.device)
+            source = times[start:start + n_shuffle].clone()
+            times[start:start + n_shuffle] = source[permutation]
+        return copied_batch
+    return shuffler(copied_batch)
+
+
+def _batch_ray_validity(batch, dataset_keys):
+    validity = []
+    for dataset_key in dataset_keys:
+        dataset_batch = batch[dataset_key]
+        rays = dataset_batch['rays']
+        times = dataset_batch['time']
+        valid = torch.isfinite(rays).all(dim=(-2, -1))
+        valid &= torch.isfinite(times).reshape(times.shape[0], -1).all(dim=-1)
+        if 'ray_valid' in dataset_batch:
+            explicit = dataset_batch['ray_valid'].to(device=rays.device, dtype=torch.bool)
+            valid &= explicit.reshape(explicit.shape[0], -1).all(dim=-1)
+        validity.append(valid)
+    return torch.cat(validity, dim=0)
+
+
+def _mask_rendered_output(output, ray_valid):
+    """Zero renderer products for invalid rays while retaining a validity flag."""
+    masked = {}
+    for key, value in output.items():
+        if isinstance(value, torch.Tensor) and value.ndim and value.shape[0] == len(ray_valid):
+            mask = ray_valid.reshape(len(ray_valid), *([1] * (value.ndim - 1)))
+            masked[key] = torch.where(mask, value, torch.zeros_like(value))
+        else:
+            masked[key] = value
+    masked['ray_valid'] = ray_valid
+    return masked
+
+
+def _device_safe_normal_shuffler(**config):
+    shuffler = NormalTimeShuffler(**config)
+    # NormalTimeShuffler predates module device management and stores gamma as a
+    # plain CPU tensor. A non-persistent buffer follows the module to GPU without
+    # changing the state-dict schema expected by legacy checkpoints.
+    gamma = shuffler.gamma
+    del shuffler.gamma
+    shuffler.register_buffer('gamma', gamma, persistent=False)
+    return shuffler
 
 
 class MultiResolutionRenderingModule(nn.Module):
@@ -30,8 +111,8 @@ class MultiResolutionRenderingModule(nn.Module):
         self.rendering_modules = nn.ModuleDict(rendering_modules)
 
         # set default configurations
-        hierarchical_sampling_config = {} if hierarchical_sampling_config is None else hierarchical_sampling_config
-        sampling_config = {} if sampling_config is None else sampling_config
+        hierarchical_sampling_config = dict(hierarchical_sampling_config or {})
+        sampling_config = dict(sampling_config or {})
 
         # setup sampling strategy
         sampling_type = sampling_config.pop('type', 'stratified')
@@ -49,12 +130,14 @@ class MultiResolutionRenderingModule(nn.Module):
         else:
             raise ValueError(f'Unknown sampling type {hierarchical_sampling_type}')
 
-        self.shuffler = load_shuffler(shuffle_config)
+        self.shuffler = load_shuffler(
+            shuffle_config, seconds_per_dt=self.seconds_per_dt
+        )
 
         self.coarse_model = coarse_model
         self.fine_model = fine_model
 
-    def forward(self, batch, **kwargs):
+    def forward(self, batch, shuffle=None, diagnostics=False, **kwargs):
         r"""_summary_
         		Compute forward pass through model.
 
@@ -65,10 +148,11 @@ class MultiResolutionRenderingModule(nn.Module):
         		Returns:
         			outputs: Synthesized filtergrams/images.
         		"""
-        batch = self.shuffler(batch) if self.shuffler else batch
+        batch = _maybe_shuffle_times(
+            batch, self.shuffler, module_training=self.training, shuffle=shuffle
+        )
 
-        dataset_keys = batch.keys()
-        instrument_keys = self.rendering_modules.keys()
+        dataset_keys = tuple(batch)
 
         dataset_n_rays = {k: batch[k]['rays'].shape[0] for k in dataset_keys}
         dataset_instrument = {k: batch[k]['instrument'] for k in dataset_keys}
@@ -77,10 +161,14 @@ class MultiResolutionRenderingModule(nn.Module):
         rays = torch.cat([batch[k]['rays'] for k in dataset_keys], dim=0)
         rays_o, rays_d = rays[:, 0], rays[:, 1]
         times = torch.cat([batch[k]['time'] for k in dataset_keys], dim=0)
+        input_ray_valid = _batch_ray_validity(batch, dataset_keys)
+        times = torch.where(torch.isfinite(times), times, torch.zeros_like(times))
 
         # Sample query points along each ray.
         sampling_out = self.sampler(rays_o, rays_d)
         query_points, z_vals = sampling_out['points'], sampling_out['z_vals']
+        rays_o, rays_d = sampling_out['rays_o'], sampling_out['rays_d']
+        ray_valid = input_ray_valid & sampling_out['ray_valid']
 
         query_points_time = self.add_sample_times(query_points, rays_o, times)
 
@@ -88,8 +176,13 @@ class MultiResolutionRenderingModule(nn.Module):
         coarse_raw = self.coarse_model(query_points_time)
         state = {**coarse_raw, 'z_vals': z_vals,
                  'rays_d': rays_d, 'rays_o': rays_o,
-                 'query_points': query_points_time}
-        coarse_out = self.render_instruments(dataset_n_rays, dataset_instrument, state)
+                 'query_points': query_points_time, 'ray_valid': ray_valid}
+        coarse_out = self.render_instruments(
+            dataset_n_rays,
+            dataset_instrument,
+            state,
+            renderer_kwargs={'diagnostics': False},
+        )
 
         # Fine model pass.
         # Apply hierarchical sampling for fine query points.
@@ -104,11 +197,17 @@ class MultiResolutionRenderingModule(nn.Module):
         fine_raw = self.fine_model(query_points_time)
         state = {**fine_raw, 'z_vals': z_vals_combined,
                  'rays_d': rays_d, 'rays_o': rays_o,
-                 'query_points': query_points_time}
-        fine_out = self.render_instruments(dataset_n_rays, dataset_instrument, state)
+                 'query_points': query_points_time, 'ray_valid': ray_valid}
+        fine_out = self.render_instruments(
+            dataset_n_rays,
+            dataset_instrument,
+            state,
+            renderer_kwargs={'diagnostics': diagnostics},
+        )
 
         return {'fine_out': fine_out, 'coarse_out': coarse_out,
-                'z_vals_stratified': z_vals, 'z_vals_hierarchical': z_hierarch}
+                'z_vals_stratified': z_vals, 'z_vals_hierarchical': z_hierarch,
+                'ray_valid': ray_valid}
 
     def add_sample_times(self, query_points, rays_o, times):
         exp_times = times[:, None].repeat(1, query_points.shape[1], 1)
@@ -119,7 +218,10 @@ class MultiResolutionRenderingModule(nn.Module):
             exp_times = exp_times - light_time
         return torch.cat([query_points, exp_times], -1)
 
-    def render_instruments(self, dataset_n_rays, dataset_instrument, state):
+    def render_instruments(
+        self, dataset_n_rays, dataset_instrument, state, renderer_kwargs=None
+    ):
+        renderer_kwargs = {} if renderer_kwargs is None else dict(renderer_kwargs)
         ray_idx = 0
         render_out = {}
         # number of rays for instrument k
@@ -128,9 +230,18 @@ class MultiResolutionRenderingModule(nn.Module):
             instrument_state = {k: v[ray_idx:ray_idx + n_rays] for k, v in state.items()}
             # render instrument output
             instrument_key = dataset_instrument[k]
-            render_out[k] = self.rendering_modules[instrument_key](**instrument_state)
+            instrument_out = self.rendering_modules[instrument_key](
+                **instrument_state, **renderer_kwargs
+            )
+            render_out[k] = _mask_rendered_output(
+                instrument_out, instrument_state['ray_valid']
+            )
             ray_idx += n_rays
         return render_out
+
+    def on_train_batch_end(self, *args, **kwargs):
+        if self.shuffler is not None:
+            self.shuffler.on_train_batch_end(*args, **kwargs)
 
 
 class BasicRenderingModule(nn.Module):
@@ -156,8 +267,8 @@ class BasicRenderingModule(nn.Module):
         self.rendering_modules = nn.ModuleDict(rendering_modules)
 
         # set default configurations
-        sampling_config = {} if sampling_config is None else sampling_config
-        hierarchical_sampling_config = {} if hierarchical_sampling_config is None else hierarchical_sampling_config
+        sampling_config = dict(sampling_config or {})
+        hierarchical_sampling_config = dict(hierarchical_sampling_config or {})
 
         # setup sampling strategy
         sampling_type = sampling_config.pop('type', 'spherical')
@@ -175,13 +286,15 @@ class BasicRenderingModule(nn.Module):
         else:
             raise ValueError(f'Unknown sampling type {hierarchical_sampling_type}')
 
-        self.shuffler = load_shuffler(shuffle_config)
+        self.shuffler = load_shuffler(
+            shuffle_config, seconds_per_dt=self.seconds_per_dt
+        )
 
         print('Shuffle config:', self.shuffler)
 
         self.model = model
 
-    def forward(self, batch, **kwargs):
+    def forward(self, batch, shuffle=None, diagnostics=False, **kwargs):
         r"""_summary_
         		Compute forward pass through model.
 
@@ -192,9 +305,11 @@ class BasicRenderingModule(nn.Module):
         		Returns:
         			outputs: Synthesized filtergrams/images.
         		"""
-        batch = self.shuffler(batch) if self.shuffler else batch
+        batch = _maybe_shuffle_times(
+            batch, self.shuffler, module_training=self.training, shuffle=shuffle
+        )
 
-        dataset_keys = batch.keys()
+        dataset_keys = tuple(batch)
 
         dataset_n_rays = {k: batch[k]['rays'].shape[0] for k in dataset_keys}
         dataset_instrument = {k: batch[k]['instrument'] for k in dataset_keys}
@@ -203,10 +318,14 @@ class BasicRenderingModule(nn.Module):
         rays = torch.cat([batch[k]['rays'] for k in dataset_keys], dim=0)
         rays_o, rays_d = rays[:, 0], rays[:, 1]
         times = torch.cat([batch[k]['time'] for k in dataset_keys], dim=0)
+        input_ray_valid = _batch_ray_validity(batch, dataset_keys)
+        times = torch.where(torch.isfinite(times), times, torch.zeros_like(times))
 
         # Sample query points along each ray.
         sampling_out = self.sampler(rays_o, rays_d)
         query_points, z_vals = sampling_out['points'], sampling_out['z_vals']
+        rays_o, rays_d = sampling_out['rays_o'], sampling_out['rays_d']
+        ray_valid = input_ray_valid & sampling_out['ray_valid']
 
         query_points_time = self.add_sample_times(query_points, rays_o, times)
 
@@ -217,8 +336,13 @@ class BasicRenderingModule(nn.Module):
         with torch.no_grad():
             state = {**coarse_raw, 'z_vals': z_vals,
                      'rays_d': rays_d, 'rays_o': rays_o,
-                     'query_points': query_points_time}
-            coarse_out = self.render_instruments(dataset_n_rays, dataset_instrument, state)
+                     'query_points': query_points_time, 'ray_valid': ray_valid}
+            coarse_out = self.render_instruments(
+                dataset_n_rays,
+                dataset_instrument,
+                state,
+                renderer_kwargs={'diagnostics': False},
+            )
 
         # sample hierarchical points based on initial weights
         weights = torch.cat([coarse_out[k]['weights'] for k in dataset_keys], dim=0)
@@ -240,10 +364,21 @@ class BasicRenderingModule(nn.Module):
 
         state = {**fine_raw, 'z_vals': z_vals_combined,
                  'rays_d': rays_d, 'rays_o': rays_o,
-                 'query_points': self.add_sample_times(query_points, rays_o, times)}
-        model_out = self.render_instruments(dataset_n_rays, dataset_instrument, state)
+                 'query_points': self.add_sample_times(query_points, rays_o, times),
+                 'ray_valid': ray_valid}
+        model_out = self.render_instruments(
+            dataset_n_rays,
+            dataset_instrument,
+            state,
+            renderer_kwargs={'diagnostics': diagnostics},
+        )
 
-        return {'model_out': model_out, 'z_vals': z_vals_combined, 'z_vals_stratified': z_vals}
+        return {
+            'model_out': model_out,
+            'z_vals': z_vals_combined,
+            'z_vals_stratified': z_vals,
+            'ray_valid': ray_valid,
+        }
 
     def add_sample_times(self, query_points, rays_o, times):
         exp_times = times[:, None].repeat(1, query_points.shape[1], 1)
@@ -254,7 +389,10 @@ class BasicRenderingModule(nn.Module):
             exp_times = exp_times - light_time
         return torch.cat([query_points, exp_times], -1)
 
-    def render_instruments(self, dataset_n_rays, dataset_instrument, state):
+    def render_instruments(
+        self, dataset_n_rays, dataset_instrument, state, renderer_kwargs=None
+    ):
+        renderer_kwargs = {} if renderer_kwargs is None else dict(renderer_kwargs)
         ray_idx = 0
         render_out = {}
         for ds_key, n_rays in dataset_n_rays.items():
@@ -262,7 +400,12 @@ class BasicRenderingModule(nn.Module):
             instrument_state = {k: v[ray_idx:ray_idx + n_rays] for k, v in state.items()}
             # render instrument output
             instrument_key = dataset_instrument[ds_key]
-            render_out[ds_key] = self.rendering_modules[instrument_key](**instrument_state)
+            instrument_out = self.rendering_modules[instrument_key](
+                **instrument_state, **renderer_kwargs
+            )
+            render_out[ds_key] = _mask_rendered_output(
+                instrument_out, instrument_state['ray_valid']
+            )
             ray_idx += n_rays
         return render_out
 
@@ -332,13 +475,55 @@ def cumprod_exclusive(tensor: torch.Tensor, dim=1) -> torch.Tensor:
     return cumprod
 
 
-def load_shuffler(shuffle_config):
+def load_shuffler(shuffle_config, *, seconds_per_dt=None):
     if shuffle_config:
+        shuffle_config = dict(shuffle_config)
         shuffle_type = shuffle_config.pop('type')
         if shuffle_type == 'time':
             return TimeShuffler(**shuffle_config)
         elif shuffle_type == 'normal_time':
-            return NormalTimeShuffler(**shuffle_config)
+            seconds_keys = {'start_seconds', 'end_seconds'} & shuffle_config.keys()
+            normalized_keys = {'start', 'end'} & shuffle_config.keys()
+            if seconds_keys and normalized_keys:
+                raise ValueError(
+                    'normal_time shuffle cannot mix start_seconds/end_seconds '
+                    'with deprecated normalized start/end.'
+                )
+            if seconds_keys:
+                if 'start_seconds' not in shuffle_config:
+                    raise ValueError('normal_time start_seconds is required.')
+                if seconds_per_dt is None or not float(seconds_per_dt) > 0:
+                    raise ValueError(
+                        'A positive seconds_per_dt is required for physical time augmentation.'
+                    )
+                start_seconds = float(shuffle_config.pop('start_seconds'))
+                end_seconds = float(shuffle_config.pop('end_seconds', 1e-2))
+                if not (
+                    math.isfinite(start_seconds)
+                    and math.isfinite(end_seconds)
+                    and start_seconds > 0
+                    and 0 <= end_seconds <= start_seconds
+                ):
+                    raise ValueError(
+                        'Require finite normal_time widths with '
+                        '0 <= end_seconds <= start_seconds and start_seconds > 0.'
+                    )
+                if float(shuffle_config.get('iterations', 1e5)) <= 0:
+                    raise ValueError('normal_time iterations must be positive.')
+                shuffle_config['start'] = start_seconds / float(seconds_per_dt)
+                shuffle_config['end'] = end_seconds / float(seconds_per_dt)
+                shuffler = _device_safe_normal_shuffler(**shuffle_config)
+                shuffler.start_seconds = start_seconds
+                shuffler.end_seconds = end_seconds
+                return shuffler
+
+            warnings.warn(
+                'normal_time start/end are deprecated normalized model-time units; '
+                'use start_seconds/end_seconds instead.',
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return _device_safe_normal_shuffler(**shuffle_config)
         else:
             raise NotImplementedError(f"Shuffle type {shuffle_type} not implemented.")
     else:

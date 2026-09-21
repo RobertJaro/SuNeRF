@@ -10,7 +10,7 @@ DATA_ROOT=/glade/work/rjarolim/data/sunerf-cme/2010_03
 python -m sunerf.data.download.download_lasco \
   --start 2010-03-15 \
   --end 2010-04-15 \
-  --out ${DATA_ROOT}/lasco \
+  --output ${DATA_ROOT}/lasco \
   --instrument C2 \
   --product level_1 polarized \
   --workers 10
@@ -67,8 +67,8 @@ python -m sunerf.data.coronagraph.quicklook_coronagraph_video \
 python -m sunerf.data.coronagraph.clean_invalid --invalid_files "/glade/work/rjarolim/data/sunerf-cme/2010_03/invalid_files.txt" --base_path "/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/**/*" --dry_run
 
 # download stereo cor2
-python -m sunerf.data.download.download_cor --start 2010-03-15  --end 2010-04-15 --out ${DATA_ROOT}/stereo_a_cor2 --detector COR2 --source STEREO_A
-python -m sunerf.data.download.download_cor --start 2010-03-15  --end 2010-04-15 --out ${DATA_ROOT}/stereo_b_cor2 --detector COR2 --source STEREO_B
+python -m sunerf.data.download.download_cor --start 2010-03-15  --end 2010-04-15 --output ${DATA_ROOT}/stereo_a_cor2 --detector COR2 --source STEREO_A
+python -m sunerf.data.download.download_cor --start 2010-03-15  --end 2010-04-15 --output ${DATA_ROOT}/stereo_b_cor2 --detector COR2 --source STEREO_B
 
 # clean up COR triplets
 python -m sunerf.data.cor.remove_invalid_triplets \

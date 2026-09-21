@@ -6,7 +6,6 @@ from pathlib import Path
 from tqdm.auto import tqdm
 
 DEFAULT_BASE_URL = "https://www.predsci.com/~epalmerio/getpb/20211028/fakeC3/fits_{observer}/{product}/"
-DEFAULT_OBSERVERS = ["L1", "L4", "L5"]
 DEFAULT_PRODUCTS = ["pb", "tb"]
 
 
@@ -39,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--observers",
         nargs="+",
-        default=DEFAULT_OBSERVERS,
+        required=True,
         help="Observer IDs to download (e.g. L1 L4 L5).",
     )
     parser.add_argument(

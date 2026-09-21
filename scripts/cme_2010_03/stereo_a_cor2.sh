@@ -21,7 +21,7 @@ IDL_BATCH="/tmp/sunerf_stereo_a_cor2_$$.pro"
 python -m sunerf.data.download.download_cor \
   --start "${START}" \
   --end "${END}" \
-  --out "${DATA_ROOT}/stereo_a_cor2" \
+  --output "${DATA_ROOT}/stereo_a_cor2" \
   --detector COR2 \
   --source STEREO_A
 

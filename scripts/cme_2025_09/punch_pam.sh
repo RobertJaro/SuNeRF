@@ -28,7 +28,7 @@ python -m sunerf.data.download.download_punch \
   --start "${START}" \
   --end "${END}" \
   --cadence "${DOWNLOAD_CADENCE}" \
-  --out "${PUNCH_PAM_RAW_DIR}"
+  --output "${PUNCH_PAM_RAW_DIR}"
 
 ################################################################################
 # Prepare total- and polarized-brightness maps

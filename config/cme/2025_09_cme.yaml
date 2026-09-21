@@ -28,6 +28,9 @@ model:
   warm_steps: 0
   freeze_static: true
 
+module:
+  radial_tolerance_deg: 30.0
+
 data:
   # This must match the coarse/background stage so checkpoint time coordinates agree.
   ref_date: "2025-09-01T00:00:00"
@@ -181,7 +184,7 @@ sampling:
 lambda:
   image: 1.0
   ratio: 0.0
-  radial: 0.0 #1.0e-4
+  radial: 1.0e-2
   continuity: 1.0e-4
   ballistic: 1.0e-4
   velocity: 1.0e-1

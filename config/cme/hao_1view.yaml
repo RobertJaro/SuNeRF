@@ -10,6 +10,9 @@ model:
   dim: 512
   strict_radial: True
 
+module:
+  light_travel_time: false
+
 data:
   train_datasets:
     - type: 'HAO'

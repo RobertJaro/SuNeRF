@@ -1,0 +1,250 @@
+# Closed-loop test: reconstruct synthetic AIA/EUVI observations rendered from a
+# thermodynamic PSI/MAS snapshots with scripts/psi_euv/render.sh (one frame per
+# snapshot pair and observer). Data and reconstruction share the emission model
+# (packaged tables, TR cutoff). The data also contain the physical H/He limb
+# absorption of the cube; this first model replaces it by a fixed opaque sphere
+# at the EUV limb (sampling.min_distance) and reconstructs no cool plasma, so the
+# limb-ring residuals measure how good that approximation is. Gains are exactly
+# one in the synthetic data and therefore fixed; see docs/plasma_pointwise_plan.md.
+schema_version: 2
+
+
+base_path: "/glade/work/rjarolim/sunerf/sunerf/psi_euv_v02"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/psi_euv_v02"
+
+instruments:
+  - type: "plasma"
+    key: "AIA"
+    scaling: {type: "asinh", divisor: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_2023_03/psi_data/psi_euv/observers/image_scaling.yaml"}
+    temperature_response:
+      artifact: "builtin:aia"
+      channels: ["A94", "A131", "A171", "A193", "A211", "A335"]
+      learnable: false
+      temperature_cutoff: {T_cut_K: 4.0e5, delta_T_K: 5.0e4}
+
+  - type: "plasma"
+    key: "EUVI-A"
+    scaling: {type: "asinh", divisor: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_2023_03/psi_data/psi_euv/observers/image_scaling.yaml"}
+    temperature_response:
+      artifact: "builtin:euvi_a"
+      channels: ["171", "195", "284"]
+      learnable: false
+      temperature_cutoff: {T_cut_K: 4.0e5, delta_T_K: 5.0e4}
+
+  - type: "plasma"
+    key: "EUVI-B"
+    scaling: {type: "asinh", divisor: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_2023_03/psi_data/psi_euv/observers/image_scaling.yaml"}
+    temperature_response:
+      artifact: "builtin:euvi_b"
+      channels: ["171", "195", "284"]
+      learnable: false
+      temperature_cutoff: {T_cut_K: 4.0e5, delta_T_K: 5.0e4}
+
+data:
+  # One model-space distance unit is one solar radius and one model-time unit
+  # is one day. These values are mandatory because the renderer integrates dl
+  # in centimeters and time augmentation is configured in seconds.
+  Rs_per_ds: 1.0
+  seconds_per_dt: 86400.0
+  batch_size: 1024
+  validation_batch_size: 2048
+  num_workers: 4
+  preparation_workers: 4
+  debug: false
+  holdout: {strategy: "center", count: 1}
+
+  # Datasets stay in physical units and define no scaling. The fixed per-channel
+  # loss divisor belongs to the instrument (instruments[].scaling.divisor) and is
+  # shared by every dataset mapped to it. The table referenced there is written
+  # once by `python -m sunerf.data.euv.estimate_scaling --config <this file>`
+  # (99.5th absolute-valid-pixel percentile per training observation, then the
+  # median across observations) and reused unchanged afterwards.
+
+  # One dataset per explicit observer written by scripts/psi_euv/render.sh
+  # (one render call and output directory per observer). Observers that share an instrument
+  # share its response table and gains. Training uses the three ecliptic
+  # viewpoints: Earth, L4, and L5.
+  train_datasets:
+    - type: "AIA"
+      key: "AIA-earth"
+      instrument_key: "AIA"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_2023_03/psi_data/psi_euv/observers/aia_earth/*.prepared.fits"
+      wavelengths: [94, 131, 171, 193, 211, 335]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+    - type: "EUVI"
+      key: "EUVI-A-L4"
+      instrument_key: "EUVI-A"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_2023_03/psi_data/psi_euv/observers/euvi_a_l4/*.prepared.fits"
+      wavelengths: [171, 195, 284]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+    - type: "EUVI"
+      key: "EUVI-B-L5"
+      instrument_key: "EUVI-B"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_2023_03/psi_data/psi_euv/observers/euvi_b_l5/*.prepared.fits"
+      wavelengths: [171, 195, 284]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+  # The center snapshot of every training observer is held out for validation.
+  # The polar view (EUVI-A-north) is never trained on: it validates the
+  # reconstruction from a viewpoint outside the ecliptic and shares the EUVI-A
+  # response and loss divisor.
+  valid_datasets:
+    - type: "AIA"
+      key: "AIA-earth"
+      instrument_key: "AIA"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_2023_03/psi_data/psi_euv/observers/aia_earth/*.prepared.fits"
+      wavelengths: [94, 131, 171, 193, 211, 335]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+    - type: "EUVI"
+      key: "EUVI-A-L4"
+      instrument_key: "EUVI-A"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_2023_03/psi_data/psi_euv/observers/euvi_a_l4/*.prepared.fits"
+      wavelengths: [171, 195, 284]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+    - type: "EUVI"
+      key: "EUVI-B-L5"
+      instrument_key: "EUVI-B"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_2023_03/psi_data/psi_euv/observers/euvi_b_l5/*.prepared.fits"
+      wavelengths: [171, 195, 284]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+    - type: "EUVI"
+      key: "EUVI-A-north"
+      instrument_key: "EUVI-A"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_2023_03/psi_data/psi_euv/observers/euvi_a_north/*.prepared.fits"
+      wavelengths: [171, 195, 284]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+model:
+  # Swish MLP on a fixed positional encoding; type: "siren" selects the SIREN.
+  type: "mlp"
+  density_offset_log10_cm3: 8.0
+  # Radial baseline of the density: isothermal hydrostatic stratification
+  # n ~ exp[-(1/H0)(1 - 1/r)] with H0 = 0.1 R_sun (a 1.5 MK corona; 1.45 dex
+  # from 1.0 to 1.5 R_sun). The network learns the deviation from it.
+  density_profile: {type: "hydrostatic", scale_height_rsun: 0.1}
+  # Bounds of the pointwise temperature; step_dex is the bin width of the
+  # validation LOS emission-measure histogram. Without absorption there is no
+  # constraint below the temperature support of the channels.
+  temperature_grid:
+    log10_K_min: 5.4
+    log10_K_max: 7.5
+    step_dex: 0.05
+  initial_log_T: 6.1
+  dim: 512
+  n_layers: 8
+  activation: "swish"
+  encoding: "positional"
+  # Per input axis (x, y, z, t): frequencies are 2 ** linspace(0, max, num) * pi
+  # in model units, so the maxima are 256 cycles per 2 R_sun (~5.4 Mm
+  # wavelength) in space and 32 cycles per 2 days (1.5 h) in time.
+  num_frequencies: [64, 64, 64, 16]
+  max_frequencies: [8, 8, 8, 5]
+
+module:
+  regularization_density_scale_cm3: 1.0e8
+  # The synthetic FITS timestamps are the snapshot times (render.sh uses
+  # --no-light-travel-time), so no light travel correction is applied.
+  light_travel_time: false
+  lr_config:
+    start: 1.0e-3
+    end: 1.0e-4
+    iterations: 1000000
+
+sampling:
+  type: "spherical"
+  # Opaque sphere at the EUV limb instead of the photosphere. The chromosphere
+  # hides the far-side corona up to an impact parameter of ~1.007 R_sun; without
+  # an absorption model this fixed termination radius keeps rays just above the
+  # limb from seeing both sides of the corona.
+  min_distance: 1.007
+  max_distance: 1.5
+  n_samples: 64
+  perturb: true
+
+hierarchical_sampling:
+  type: "hierarchical"
+  n_samples: 128
+  perturb: true
+
+# First model: no absorption in the reconstruction. The synthetic data keep their
+# physical limb layer (absorption on in scripts/psi_euv/render.sh); the fixed
+# opaque sphere at sampling.min_distance stands in for it here.
+absorption:
+  type: null
+
+shuffle:
+  type: "normal_time"
+  start_seconds: 43200.0
+  end_seconds: 0.0
+  iterations: 100000
+
+training:
+  epochs: 1000
+  log_every_n_steps: 2000
+  check_val_every_n_epoch: 1
+  meta_path: "last"
+
+logging:
+  project: "sunerf"
+  name: "PSI closed-loop explicit observers"
+
+callbacks:
+  euv_tomography:
+    enabled: true
+    every_n_validations: 1
+    figure_dpi: 150
+    datasets:
+      AIA-earth:
+        channels: [A94, A131, A171, A193, A211, A335]
+      EUVI-A-L4:
+        channels: [171, 195, 284]
+      EUVI-B-L5:
+        channels: [171, 195, 284]
+      EUVI-A-north:
+        channels: [171, 195, 284]
+    products:
+      channel_comparison:
+        enabled: true
+        rows: [observation, prediction, residual]
+        stretch: log
+        intensity_percentile: 99.5
+        residual_percentile: 99.0
+      plasma_diagnostics:
+        enabled: true
+        quantities: [mean_log_temperature, column_electron_density, emission_measure,
+          emission_height, absorption_fraction]
+      thermal_distribution:
+        enabled: true
+        spatial_statistic: median
+        percentile_band: [16, 84]
+      response_and_gains: {enabled: true}
+      ray_sampling:
+        enabled: false
+        pixel_fraction: [0.25, 0.25]
+
+lambda:
+  image: 1.0
+  # Radial density penalty disabled: the hydrostatic baseline supplies the
+  # radial decline, and the one-sided penalty biased the outer shell low.
+  regularization: 0.0
+  absorption: 0.0
+  calibration: 0.0

@@ -22,7 +22,7 @@ WORKERS="10"
 python -m sunerf.data.download.download_lasco \
   --start "${START}" \
   --end "${END}" \
-  --out "${DATA_ROOT}/lasco" \
+  --output "${DATA_ROOT}/lasco" \
   --instrument C2 \
   --product level_1 polarized \
   --workers "${WORKERS}"

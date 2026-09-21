@@ -22,7 +22,7 @@ PSP_PREP_DIR="${DATA_ROOT}/prep/psp"
 python -m sunerf.data.download.download_psp_insitu \
   --start "${START}" \
   --end "${END}" \
-  --out "${PSP_RAW_DIR}"
+  --output "${PSP_RAW_DIR}"
 
 ################################################################################
 # Prepare PSP sparse trajectory constraints

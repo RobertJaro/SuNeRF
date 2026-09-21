@@ -7,7 +7,6 @@ import wandb
 from astropy import units as u
 from astropy.visualization import ImageNormalize, AsinhStretch
 from matplotlib import pyplot as plt
-from matplotlib.cm import get_cmap
 from matplotlib.colors import Normalize, LogNorm, TwoSlopeNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from lightning.pytorch import Callback
@@ -34,6 +33,15 @@ class BaseCallback(Callback):
             return None
         outputs = pl_module.validation_outputs[self.ds_key]
         return outputs
+
+    def validation_plot_key(self, namespace, quantity=None):
+        """Build a semantic W&B key, adding only explicitly configured names."""
+        parts = [namespace]
+        if quantity is not None:
+            parts.append(quantity)
+        if self.name != self.ds_key:
+            parts.append(self.name)
+        return ".".join(parts)
 
     def setup(self, trainer, pl_module, stage):
         """Tell the module exactly which tensors this callback consumes."""
@@ -163,6 +171,7 @@ class PlasmaImageCallback(BaseCallback):
     validation_output_keys = (
         'pred_image', 'target_image', 'height_map', 'mean_T', 'total_ne',
         'mean_absorption', 'z_vals_stratified', 'z_vals_hierarchical', 'distance',
+        'valid_mask',
     )
 
     def __init__(self, ds_key, image_shape, cmaps=None):
@@ -182,23 +191,31 @@ class PlasmaImageCallback(BaseCallback):
 
         pred_image = outputs['pred_image']
         target_image = outputs['target_image']
+        valid_mask = outputs['valid_mask'].astype(bool)
+        if valid_mask.shape != target_image.shape:
+            valid_mask = np.broadcast_to(valid_mask, target_image.shape)
 
         cmaps = self.cmaps
-        cmaps = ['gray'] * pred_image.shape[0] if cmaps is None else cmaps
+        cmaps = ['gray'] * pred_image.shape[-1] if cmaps is None else cmaps
 
         fig, axs = plt.subplots(2, len(cmaps), figsize=(3 * len(cmaps), 6))
         for i, cmap in enumerate(cmaps):
             cmap = plt.get_cmap(cmap)
             col = axs[:, i]
 
-            v_max = np.nanmax(target_image[..., i])
-            im = col[0].imshow(target_image[..., i], cmap=cmap, vmin=0, vmax=v_max)
+            channel_mask = valid_mask[..., i]
+            masked_target = np.where(channel_mask, target_image[..., i], np.nan)
+            masked_prediction = np.where(channel_mask, pred_image[..., i], np.nan)
+            finite_target = masked_target[np.isfinite(masked_target)]
+            v_max = float(np.max(finite_target)) if finite_target.size else 1.0
+            v_max = max(v_max, np.finfo(np.float32).eps)
+            im = col[0].imshow(masked_target, cmap=cmap, vmin=0, vmax=v_max)
             divider = make_axes_locatable(col[0])
             cax = divider.append_axes("right", size="5%", pad=0.05)
             plt.colorbar(im, cax=cax)
             col[0].set_title(f'Ground Truth')
 
-            im = col[1].imshow(pred_image[..., i], cmap=cmap, vmin=0, vmax=v_max)
+            im = col[1].imshow(masked_prediction, cmap=cmap, vmin=0, vmax=v_max)
             divider = make_axes_locatable(col[1])
             cax = divider.append_axes("right", size="5%", pad=0.05)
             plt.colorbar(im, cax=cax)
@@ -215,12 +232,26 @@ class PlasmaImageCallback(BaseCallback):
                                         outputs['z_vals_stratified'], outputs['z_vals_hierarchical'],
                                         outputs['distance'].mean())
 
-        val_loss = ((pred_image - target_image) ** 2).mean()
+        squared_error = (pred_image - target_image) ** 2
+        val_loss = float(np.mean(squared_error[valid_mask])) if np.any(valid_mask) else np.nan
         val_ssim = []
         for i in range(target_image.shape[-1]):
-            val_ssim += [structural_similarity(target_image[..., i], pred_image[..., i], data_range=1)]
-        val_ssim = np.mean(val_ssim)
-        val_psnr = -10. * np.log10(val_loss)
+            channel_mask = valid_mask[..., i]
+            if not np.any(channel_mask):
+                continue
+            target_channel = target_image[..., i]
+            prediction_channel = pred_image[..., i]
+            data_range = float(np.ptp(target_channel[channel_mask]))
+            data_range = max(data_range, np.finfo(np.float32).eps)
+            _, ssim_map = structural_similarity(
+                target_channel,
+                prediction_channel,
+                data_range=data_range,
+                full=True,
+            )
+            val_ssim.append(float(np.mean(ssim_map[channel_mask])))
+        val_ssim = float(np.mean(val_ssim)) if val_ssim else np.nan
+        val_psnr = -10. * np.log10(val_loss) if np.isfinite(val_loss) and val_loss > 0 else np.inf
 
         wandb.log({f'validation.loss.{self.ds_key}': val_loss,
                    f'validation.ssim.{self.ds_key}': val_ssim,
@@ -352,27 +383,6 @@ class ThomsonImageCallback(BaseCallback):
         fig.tight_layout()
         wandb.log({f'images.{self.ds_key}': wandb.Image(fig)})
         plt.close('all')
-
-        if scaling_mask is not None:
-            fig, axs = plt.subplots(1, scaling_mask.shape[-1], figsize=(4 * scaling_mask.shape[-1], 4), squeeze=False)
-            for channel_idx, channel_name in enumerate(('tB', 'pB')[:scaling_mask.shape[-1]]):
-                scale_image = scaling_mask[..., channel_idx]
-                positive = scale_image[np.isfinite(scale_image) & (scale_image > 0)]
-                if positive.size == 0:
-                    norm = None
-                else:
-                    vmin = float(np.nanmin(positive))
-                    vmax = float(np.nanmax(positive))
-                    if vmax <= vmin:
-                        vmax = np.nextafter(vmin, np.inf)
-                    norm = LogNorm(vmin=vmin, vmax=vmax)
-                im = axs[0, channel_idx].imshow(scale_image, cmap='viridis', norm=norm, origin='lower')
-                axs[0, channel_idx].set_title(f'{channel_name} radial scale')
-                axs[0, channel_idx].set_axis_off()
-                fig.colorbar(im, ax=axs[0, channel_idx], fraction=0.046, pad=0.02)
-            fig.tight_layout()
-            wandb.log({f'images.{self.ds_key}.radial_scale': wandb.Image(fig)})
-            plt.close(fig)
 
         val_loss = np.nanmean((model_image - target_image) ** 2)
         val_ssim = []
@@ -544,7 +554,9 @@ class CorrectionImageCallback(BaseCallback):
 
 @rank_zero_only
 def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date, ds_key=None,
-                 brightness_mode='physical brightness'):
+                 brightness_mode='physical brightness', scaling_masks=None, channel_labels=None):
+    # channel_labels switches from the Thomson (tB/pB) layout to a generic per-channel layout (e.g., EUV);
+    # cmap can then be a list with one colormap per channel
     dirs = np.stack([np.sum([0, 0, -1] * pose[:3, :3], axis=-1) for pose in poses])
     origins = poses[:, :3, -1] * Rs_per_ds
     colors = plt.get_cmap('viridis')(Normalize()(times))
@@ -566,8 +578,29 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
             vmax = np.nextafter(vmin, np.inf)
         return LogNorm(vmin=vmin, vmax=vmax)
 
+    if channel_labels is not None:
+        channel_labels = [str(label) for label in channel_labels]
+        if images.ndim != 4 or images.shape[-1] != len(channel_labels):
+            raise ValueError('channel_labels must contain one entry per image channel.')
+        channel_cmaps = [cmap] * len(channel_labels) if isinstance(cmap, str) else list(cmap)
+        if len(channel_cmaps) != len(channel_labels):
+            raise ValueError('cmap must contain one entry per image channel.')
+        channel_norms = []
+        for c in range(len(channel_labels)):
+            finite = images[..., c][np.isfinite(images[..., c])]
+            v_max = float(np.max(finite)) if finite.size else 1.0
+            channel_norms.append(Normalize(vmin=0, vmax=max(v_max, np.finfo(np.float32).eps)))
+
     tb_norm = _channel_lognorm(images[..., 0] if images.ndim == 4 else images)
     pb_norm = _channel_lognorm(images[..., 1]) if images.ndim == 4 and images.shape[-1] > 1 else None
+    scale_tb_norm = (
+        _channel_lognorm(scaling_masks[..., 0])
+        if scaling_masks is not None else None
+    )
+    scale_pb_norm = (
+        _channel_lognorm(scaling_masks[..., 1])
+        if scaling_masks is not None and scaling_masks.shape[-1] > 1 else None
+    )
 
     def _channel_linear_norm(data):
         finite = data[np.isfinite(data)]
@@ -586,7 +619,7 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
         tb_norm = _channel_linear_norm(images[..., 0] if images.ndim == 4 else images)
         pb_norm = _channel_linear_norm(images[..., 1]) if images.ndim == 4 and images.shape[-1] > 1 else None
 
-    def _imshow_log(ax, data2d, title, norm):
+    def _imshow_log(ax, data2d, title, norm, plot_cmap=None):
         finite = np.isfinite(data2d)
         good = finite & (data2d > 0)
         if not np.any(finite):
@@ -595,7 +628,7 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
         if not np.any(good) or norm is None:
             ax.set_axis_off()
             return None
-        cm = copy.deepcopy(get_cmap(cmap))
+        cm = copy.deepcopy(plt.get_cmap(plot_cmap or cmap))
         cm.set_bad('green', 1.)
         masked = np.ma.array(data2d, mask=~good)
         im = ax.imshow(masked, norm=norm, cmap=cm, origin='lower', interpolation='nearest')
@@ -605,12 +638,12 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
         cb.ax.tick_params(labelsize=8)
         return im
 
-    def _imshow_linear(ax, data2d, title, norm):
+    def _imshow_linear(ax, data2d, title, norm, plot_cmap=None):
         finite = np.isfinite(data2d)
         if not np.any(finite) or norm is None:
             ax.set_axis_off()
             return None
-        image_cmap = copy.deepcopy(get_cmap(cmap))
+        image_cmap = copy.deepcopy(plt.get_cmap(plot_cmap or cmap))
         image_cmap.set_bad('green', 1.)
         im = ax.imshow(
             np.ma.array(data2d, mask=~finite),
@@ -632,11 +665,16 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
     for i, img in iter_list[::step]:
         # detect availability of pB
         has_pb = (img.ndim >= 3) and (img.shape[-1] > 1)
+        scale_img = scaling_masks[i] if scaling_masks is not None else None
+        scale_channels = min(scale_img.shape[-1], 2) if scale_img is not None else 0
+        n_columns = 2 + int(has_pb) + scale_channels
+        if channel_labels is not None:
+            n_columns = 1 + len(channel_labels)
 
-        fig = plt.figure(figsize=((16, 8) if not has_pb else (22, 8)), dpi=100)
+        fig = plt.figure(figsize=(7 * n_columns, 8), dpi=100)
 
         # --- left: 3D overview (unchanged) ---
-        ax = plt.subplot(1, 2 + int(has_pb), 1, projection='3d')
+        ax = plt.subplot(1, n_columns, 1, projection='3d')
 
         _ = ax.quiver(
             origins[..., 0].flatten(),
@@ -672,12 +710,28 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
         fig.suptitle(f"Observer lon={obs_lon:.2f} deg, lat={obs_lat:.2f} deg | Time: {tstr}", fontsize=11)
 
         # --- right: images ---
-        ax = plt.subplot(1, 2 + int(has_pb), 2)
+        if channel_labels is not None:
+            for c, (label, channel_cmap, norm) in enumerate(zip(channel_labels, channel_cmaps, channel_norms)):
+                ax = plt.subplot(1, n_columns, 2 + c)
+                _imshow_linear(ax, img[..., c], label, norm, plot_cmap=channel_cmap)
+            wandb.log({f'Overview.{ds_key}': wandb.Image(fig)})
+            plt.close(fig)
+            continue
+
+        ax = plt.subplot(1, n_columns, 2)
         image_plotter(ax, img[..., 0], f"tB ({brightness_mode}) | Time: {tstr}", tb_norm)
 
         if has_pb:
-            ax = plt.subplot(1, 2 + int(has_pb), 3)
+            ax = plt.subplot(1, n_columns, 3)
             image_plotter(ax, img[..., 1], f"pB ({brightness_mode}) | Time: {tstr}", pb_norm)
+
+        if scale_img is not None:
+            scale_start = 3 + int(has_pb)
+            ax = plt.subplot(1, n_columns, scale_start)
+            _imshow_log(ax, scale_img[..., 0], "tB radial scaling mask", scale_tb_norm, plot_cmap='viridis')
+            if scale_channels > 1:
+                ax = plt.subplot(1, n_columns, scale_start + 1)
+                _imshow_log(ax, scale_img[..., 1], "pB radial scaling mask", scale_pb_norm, plot_cmap='viridis')
 
         wandb.log({f'Overview.{ds_key}': wandb.Image(fig)})
         plt.close(fig)
@@ -921,9 +975,9 @@ class RadialSlicesCallback(BaseCallback):
       - uses constrained_layout
     """
 
-    validation_output_keys = ('rho_pred', 'spherical_coords')
+    validation_output_keys = ('rho_pred', 'v_pred', 'spherical_coords')
 
-    def __init__(self, cube_shape, radii, drho_cm3, **kwargs):
+    def __init__(self, cube_shape, radii, drho_cm3, Rs_per_ds, seconds_per_dt, **kwargs):
         """
         Parameters
         ----------
@@ -936,6 +990,9 @@ class RadialSlicesCallback(BaseCallback):
         self.cube_shape = cube_shape
         self.radii = np.asarray(radii, dtype=np.float32)
         self.drho_cm3 = float(drho_cm3)
+        self.velocity_normalization = float(
+            (Rs_per_ds * u.solRad / (seconds_per_dt * u.s)).to_value(u.km / u.s)
+        )
 
         if len(self.radii) != cube_shape[0]:
             raise ValueError(
@@ -966,7 +1023,33 @@ class RadialSlicesCallback(BaseCallback):
             np.rad2deg(lat.max()),
         ]
 
-        norm = LogNorm(vmin=np.nanmin(rho), vmax=np.nanmax(rho))
+        self._plot_slices(
+            rho,
+            extent,
+            norm=LogNorm(vmin=np.nanmin(rho), vmax=np.nanmax(rho)),
+            cmap="inferno",
+            colorbar_label=r"Density [N$_e$ cm$^{-3}$]",
+            quantity="density",
+        )
+
+        velocity = out["v_pred"].detach().cpu().numpy().reshape(Nr, Nlat, Nlon, Nt, 3)
+        velocity_magnitude = np.linalg.norm(velocity, axis=-1) * self.velocity_normalization
+        velocity_min = np.nanmin(velocity_magnitude)
+        velocity_max = np.nanmax(velocity_magnitude)
+        if velocity_max <= velocity_min:
+            velocity_max = np.nextafter(velocity_min, np.inf)
+
+        self._plot_slices(
+            velocity_magnitude,
+            extent,
+            norm=Normalize(vmin=velocity_min, vmax=velocity_max),
+            cmap="cividis",
+            colorbar_label=r"Velocity magnitude [km s$^{-1}$]",
+            quantity="velocity",
+        )
+
+    def _plot_slices(self, values, extent, norm, cmap, colorbar_label, quantity):
+        Nr, _, _, Nt = self.cube_shape
 
         fig = plt.figure(
             figsize=(3.2 * (Nr + 1), 2.6 * Nt),
@@ -977,11 +1060,11 @@ class RadialSlicesCallback(BaseCallback):
         # mosaic with dedicated colorbar column
         layout = []
         for it in range(Nt):
-            row = [f"rho_t{it}_r{ir}" for ir in range(Nr)] + [f"cbar_t{it}"]
+            row = [f"slice_t{it}_r{ir}" for ir in range(Nr)] + [f"cbar_t{it}"]
             layout.append(row)
 
         per_subplot_kw = {
-            **{f"rho_t{it}_r{ir}": {} for it in range(Nt) for ir in range(Nr)},
+            **{f"slice_t{it}_r{ir}": {} for it in range(Nt) for ir in range(Nr)},
             **{f"cbar_t{it}": {} for it in range(Nt)},
         }
 
@@ -995,16 +1078,16 @@ class RadialSlicesCallback(BaseCallback):
             mappable_row = None
 
             for ir in range(Nr):
-                ax = axd[f"rho_t{it}_r{ir}"]
+                ax = axd[f"slice_t{it}_r{ir}"]
 
-                img = rho[ir, :, :, it]
+                img = values[ir, :, :, it]
 
                 mappable_row = ax.imshow(
                     img,
                     origin="lower",
                     extent=extent,
                     norm=norm,
-                    cmap="inferno",
+                    cmap=cmap,
                 )
 
                 if it == 0:
@@ -1023,10 +1106,10 @@ class RadialSlicesCallback(BaseCallback):
                 mappable_row,
                 cax=cax,
                 orientation="vertical",
-                label=r"Density [N$_e$ cm$^{-3}$]",
+                label=colorbar_label,
             )
 
-        wandb.log({f"radial_slices.{self.name}": wandb.Image(fig)})
+        wandb.log({self.validation_plot_key("radial_slices", quantity): wandb.Image(fig)})
         plt.close(fig)
 
 
@@ -1143,7 +1226,7 @@ class LongitudeSlicesCallback(BaseCallback):
                 label=r"Density [N$_e$ cm$^{-3}$]",
             )
 
-        wandb.log({f"longitude_slices.rho.{self.name}": wandb.Image(fig)})
+        wandb.log({self.validation_plot_key("longitude_slices", "density"): wandb.Image(fig)})
         plt.close(fig)
 
         if "v_pred" not in out:
@@ -1208,7 +1291,7 @@ class LongitudeSlicesCallback(BaseCallback):
                 label=r"|v| [km s$^{-1}$]",
             )
 
-        wandb.log({f"longitude_slices.vmag.{self.name}": wandb.Image(fig_v)})
+        wandb.log({self.validation_plot_key("longitude_slices", "velocity"): wandb.Image(fig_v)})
         plt.close(fig_v)
 
 

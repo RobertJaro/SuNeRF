@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import argparse
 import datetime as dt
 import re
 import subprocess
@@ -12,6 +11,13 @@ from pathlib import Path
 from typing import BinaryIO, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import urljoin
 from urllib.request import urlopen
+
+from sunerf.data.download.core import (
+    DownloadResult,
+    add_common_arguments,
+    parse_cadence,
+    request_from_args,
+)
 
 DEFAULT_ARCHIVE_ROOT = "https://umbra.nascom.nasa.gov/punch"
 DEFAULT_L1_BASE_URL = "https://umbra.nascom.nasa.gov/punch/1"
@@ -51,35 +57,6 @@ class LinkParser(HTMLParser):
         for key, value in attrs:
             if key.lower() == "href" and value:
                 self.links.append(value)
-
-
-def parse_iso_datetime(value: str) -> dt.datetime:
-    try:
-        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(
-            f"Invalid datetime '{value}'. Use ISO format, e.g. 2025-09-01T00:00:00"
-        ) from exc
-
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(dt.timezone.utc).replace(tzinfo=None)
-    return parsed
-
-
-def parse_cadence(value: str) -> Optional[dt.timedelta]:
-    if value.strip().lower() in {"none", "all"}:
-        return None
-
-    match = re.fullmatch(r"(?i)\s*(\d+)\s*([smhd])\s*", value)
-    if not match:
-        raise argparse.ArgumentTypeError(
-            f"Invalid cadence '{value}'. Use formats like 30m, 1h, 6h, 1d, or 'none'."
-        )
-
-    qty = int(match.group(1))
-    unit = match.group(2).lower()
-    seconds_per_unit = {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
-    return dt.timedelta(seconds=qty * seconds_per_unit)
 
 
 def parse_timestamp_from_name(filename: str) -> Optional[dt.datetime]:
@@ -543,12 +520,13 @@ def download_files(
     return downloaded, skipped, failed
 
 
-def main():
+def build_parser():
+    import argparse
+
     parser = argparse.ArgumentParser(
         description="Download PUNCH archive files with cadence sampling."
     )
-    parser.add_argument("--start", required=True, type=parse_iso_datetime)
-    parser.add_argument("--end", required=True, type=parse_iso_datetime)
+    add_common_arguments(parser, default_output="data/punch")
     parser.add_argument(
         "--level",
         choices=("l1", "l2", "l3"),
@@ -593,12 +571,6 @@ def main():
         help="For L1, max PM/PZ/PP timestamp separation when forming polarization sets (default: 3m).",
     )
     parser.add_argument(
-        "--out",
-        default="data/punch",
-        help="Local output directory (default: data/punch).",
-    )
-    parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument(
         "--workers",
         default=10,
         type=int,
@@ -622,25 +594,33 @@ def main():
         type=int,
         help="Maximum time allowed for one file attempt (default: 1800).",
     )
-    parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
+    return parser
 
-    if args.start >= args.end:
-        raise SystemExit("Error: --start must be earlier than --end.")
+
+def download(request, **options):
+    from types import SimpleNamespace
+
+    args = SimpleNamespace(
+        start=request.start,
+        end=request.end,
+        out=request.output,
+        overwrite=request.overwrite,
+        dry_run=request.dry_run,
+        **options,
+    )
+
     if args.workers < 1:
-        raise SystemExit("Error: --workers must be at least 1.")
+        raise ValueError("workers must be at least 1")
     if args.inactivity_timeout < 1:
-        raise SystemExit("Error: --inactivity-timeout must be at least 1.")
+        raise ValueError("inactivity-timeout must be at least 1")
     if args.max_download_seconds < args.inactivity_timeout:
-        raise SystemExit(
-            "Error: --max-download-seconds must be at least --inactivity-timeout."
-        )
+        raise ValueError("max-download-seconds must be at least inactivity-timeout")
     if args.l1_pair_tolerance is None:
-        raise SystemExit("Error: --l1-pair-tolerance must be a duration like 3m, not 'none'.")
+        raise ValueError("l1-pair-tolerance must be a duration like 3m, not 'all'")
     if args.level == "l1" and args.instrument is None:
-        raise SystemExit("Error: --instrument is required for --level l1.")
+        raise ValueError("instrument is required for level l1")
     if args.level == "l1" and args.product is not None:
-        raise SystemExit("Error: --product is only valid for --level l2 or --level l3.")
+        raise ValueError("product is only valid for level l2 or level l3")
     if args.level in LEVEL_PRODUCTS:
         if args.product is None:
             product = DEFAULT_PRODUCT_BY_LEVEL[args.level]
@@ -648,9 +628,9 @@ def main():
             product = args.product.upper()
             if product not in LEVEL_PRODUCTS[args.level]:
                 valid_products = ", ".join(LEVEL_PRODUCTS[args.level])
-                raise SystemExit(
-                    f"Error: --product {product} is not valid for --level {args.level}. "
-                    f"Valid values: {valid_products}."
+                raise ValueError(
+                    f"product {product} is not valid for level {args.level}; "
+                    f"valid values: {valid_products}"
                 )
     else:
         product = None
@@ -712,7 +692,7 @@ def main():
             for _, _, sampled_urls in day_selections:
                 for url in sampled_urls:
                     print(url)
-            return
+            return DownloadResult(selected=total_selected)
 
         for day_start, day_end, sampled_urls in day_selections:
             print(
@@ -758,7 +738,7 @@ def main():
         if args.dry_run:
             for url in sampled_urls:
                 print(url)
-            return
+            return DownloadResult(selected=len(sampled_urls))
 
         downloaded, skipped, failed = download_files(
             urls=sampled_urls,
@@ -771,8 +751,25 @@ def main():
 
     print(f"Done. Downloaded: {downloaded}, skipped existing: {skipped}, failed: {failed}.")
     if failed:
-        raise SystemExit(1)
+        raise RuntimeError(f"PUNCH download failed for {failed} files")
+    return DownloadResult(
+        selected=downloaded + skipped + failed,
+        downloaded=downloaded,
+        skipped=skipped,
+    )
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    request = request_from_args(args)
+    common = {"start", "end", "output", "overwrite", "dry_run"}
+    options = {key: value for key, value in vars(args).items() if key not in common}
+    try:
+        download(request, **options)
+    except ValueError as error:
+        raise SystemExit(f"Error: {error}.") from error
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

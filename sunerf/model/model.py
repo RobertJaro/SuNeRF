@@ -5,7 +5,6 @@ import torch
 from astropy import units as u
 from torch import nn
 from torch.distributions import Normal
-from torch.nn import Identity
 from torch.nn.functional import linear
 
 from sunerf.train.coordinate_transformation import to_carrington_rotation_frame
@@ -195,14 +194,16 @@ class SirenNet(nn.Module):
         return self.last_layer(x)
 
 
-class GenericModel(nn.Module):
+class MLPModel(nn.Module):
 
-    def __init__(self, in_dim, out_dim, dim=512, n_layers=8, encoding=None, activation='sine'):
+    def __init__(self, in_dim, out_dim, dim=512, n_layers=8, encoding='positional', activation='swish',
+                 num_frequencies=10, min_frequencies=0, max_frequencies=6):
         super().__init__()
         if encoding is None or encoding == 'none':
             self.d_in = nn.Linear(in_dim, dim)
         elif encoding == 'positional':
-            posenc = PositionalEncoding(in_dim, 10)
+            # frequencies are 2 ** linspace(min, max, num) * pi; scalars apply to every input axis
+            posenc = PositionalEncoding(in_dim, num_frequencies, min_frequencies, max_frequencies)
             d_in = nn.Linear(posenc.d_output, dim)
             self.d_in = nn.Sequential(posenc, d_in)
         elif encoding == 'gaussian':
@@ -221,128 +222,164 @@ class GenericModel(nn.Module):
 
     def forward(self, x):
         x = self.in_activation(self.d_in(x))
-        for l, a in zip(self.linear_layers, self.activations):
-            x = a(l(x))
+        for layer, activation in zip(self.linear_layers, self.activations):
+            x = activation(layer(x))
         x = self.d_out(x)
         return x
 
 
-class EmissionModel(GenericModel):
-
-    def __init__(self, n_channels=1, **kwargs):
-        super().__init__(in_dim=4, out_dim=n_channels * 2, **kwargs)
-        self.n_channels = n_channels
-
-    def forward(self, x):
-        out = super().forward(x)
-        emission = torch.exp(out[..., :self.n_channels])
-        alpha = nn.functional.relu(out[..., self.n_channels:])
-        return {'emission': emission, 'alpha': alpha}
-
-
-class PlasmaModel(GenericModel):
-
-    def __init__(self, log_T, decay_distance=2.0, encoding='positional', **kwargs):
-        super().__init__(in_dim=4, out_dim=3, encoding=encoding, **kwargs)
-        self.log_T = nn.Parameter(torch.tensor(log_T, dtype=torch.float32), requires_grad=False)
-        self.decay_distance = decay_distance
-
-        self.T_range = nn.Parameter(torch.tensor([3.8, 8.0], dtype=torch.float32), requires_grad=False)
-
-    def forward(self, x):
-        raw = super().forward(x)
-
-        center_log_T, scaling, sigma = raw[..., 0:1], raw[..., 1:2], raw[..., 2:3]
-        # velocity = raw[..., 3:]
-
-        # assure that mean_log_T is in the range of the temperature bins
-        # TODO: should we use fixed temperature range? filaments can be very cold 5e3 - 10e3 K?
-        # maybe allow for very dense plasma in the cold temperature regime?
-        center_log_T = torch.sigmoid(center_log_T) * (self.T_range[1] - self.T_range[0]) + self.T_range[0]
-        sigma = torch.sigmoid(sigma) + 0.01
-
-        log_T_range = self.log_T.reshape([1] * (len(center_log_T.shape) - 1) + [-1])
-        # log10 --> 10 ** (scaling) * exp(N) * (2 * pi * sigma ** 2) ** -0.5
-        log10_e = 0.4342944819032518  # log10(e)
-        log_ne = scaling - (log_T_range - center_log_T) ** 2 / (2 * sigma ** 2) * log10_e
-
-        distance = torch.norm(x[..., :3], dim=-1)
-        distance_threshold = torch.clip(distance - self.decay_distance, min=0, max=1) * 2
-        log_ne = log_ne - distance_threshold[..., None]
-
-        # compute total number density
-        ne = 10 ** log_ne
-        total_ne = torch.sum(ne, dim=-1, keepdim=True)
-        total_log_ne = torch.log10(total_ne)
-
-        # compute mean Temperature
-        temperatures = 10 ** log_T_range
-        mean_temperature = (temperatures * ne).sum(-1, keepdim=True) / total_ne
-        mean_log_T = torch.log10(mean_temperature)
-        # replace invalid values
-        mean_log_T[torch.isnan(mean_log_T)] = center_log_T[torch.isnan(mean_log_T)]
-
-        return {'log_ne': log_ne,
-                'mean_log_T': mean_log_T,
-                'total_ne': total_ne,
-                'total_log_ne': total_log_ne,
-                'ne': ne, 'sigma': sigma
-                }
+def _plasma_temperature_bounds(log_T, initial_log_T):
+    """Validate the temperature bounds and return the logit of the initial state."""
+    log_T = torch.as_tensor(log_T, dtype=torch.float32)
+    if log_T.ndim != 1 or log_T.numel() < 2 or not torch.all(log_T[1:] > log_T[:-1]):
+        raise ValueError("log_T must be a strictly increasing one-dimensional grid")
+    lower, upper = float(log_T[0]), float(log_T[-1])
+    if initial_log_T is None:
+        # Start in the emitting corona rather than at the range midpoint, which
+        # can lie below the temperature support of every channel.
+        initial_log_T = min(max(6.1, lower + 0.05 * (upper - lower)), upper - 0.05 * (upper - lower))
+    initial_log_T = float(initial_log_T)
+    if not lower < initial_log_T < upper:
+        raise ValueError('initial_log_T must lie strictly inside the temperature bounds')
+    fraction = (initial_log_T - lower) / (upper - lower)
+    return log_T, float(np.log(fraction / (1.0 - fraction)))
 
 
-class SirenPlasmaModel(SirenModel):
+DENSITY_PROFILE_TYPES = ("power_law", "hydrostatic")
 
-    def __init__(self, log_T, decay_distance=2.0, **kwargs):
-        super().__init__(in_dim=4, out_dim=3, **kwargs)
-        self.log_T = nn.Parameter(torch.tensor(log_T, dtype=torch.float32), requires_grad=False)
-        self.decay_distance = decay_distance
 
-        self.T_range = nn.Parameter(torch.tensor([3.8, 8.0], dtype=torch.float32), requires_grad=False)
+def _validated_density_profile(density_profile):
+    """Normalize the radial density baseline of the emitting plasma.
+
+    ``{"type": "power_law", "exponent": 2.0}`` is ``n ~ r**-exponent``, the mass
+    conservation of a constant-speed wind; it is the right shape several solar
+    radii out. ``{"type": "hydrostatic", "scale_height_rsun": H0}`` is the
+    isothermal stratification ``n ~ exp[-(1 / H0) * (1 - 1 / r)]`` with gravity
+    falling as ``r**-2``; ``H0 = kT / (mu m_H g_sun)`` is about 0.068 R_sun per
+    MK, so 0.1 R_sun corresponds to a 1.5 MK corona. Radii are in model units,
+    which schema-v2 fixes to solar radii. The network learns the deviation from
+    the baseline, so the profile is a prior shape and not a constraint.
+    """
+    profile = {"type": "power_law", "exponent": 2.0} if density_profile is None else dict(density_profile)
+    profile_type = profile.get("type")
+    if profile_type == "power_law":
+        allowed, key, default = {"type", "exponent"}, "exponent", 2.0
+    elif profile_type == "hydrostatic":
+        allowed, key, default = {"type", "scale_height_rsun"}, "scale_height_rsun", None
+    else:
+        raise ValueError(f"density_profile.type must be one of {DENSITY_PROFILE_TYPES}")
+    if set(profile) - allowed:
+        raise ValueError(f"density_profile contains unsupported fields {sorted(set(profile) - allowed)}")
+    value = profile.get(key, default)
+    if value is None or not np.isfinite(float(value)) or float(value) < 0 or (
+        profile_type == "hydrostatic" and float(value) == 0
+    ):
+        raise ValueError(f"density_profile.{key} must be a finite positive number")
+    return profile_type, float(value)
+
+
+def _log10_density_baseline(radius, profile_type, value):
+    """Base-10 logarithm of the radial density baseline, zero at ``r = 1``."""
+    radius = radius.clamp_min(1e-6)
+    if profile_type == "power_law":
+        return -value * torch.log10(radius)
+    return -(1.0 - 1.0 / radius) / (value * np.log(10.0))
+
+
+def _validated_cool_offset(cool_absorber, cool_density_offset_log10_cm3):
+    """Number of network outputs and the initial cool-absorber density."""
+    offset = float(cool_density_offset_log10_cm3)
+    if not np.isfinite(offset):
+        raise ValueError('cool_density_offset_log10_cm3 must be finite')
+    return (3 if cool_absorber else 2), offset
+
+
+def _pointwise_plasma_state(raw, T_range, temperature_logit_offset, total_log_ne,
+                            cool_density_offset_log10_cm3=None):
+    """Map raw network outputs to one bounded temperature and density per point.
+
+    A third output is the hydrogen density of a separate cool absorber. It
+    never emits, so it does not have to cross the temperature range in which a
+    dense emitting point is bright, and it starts optically negligible.
+    """
+    log_T = (
+        torch.sigmoid(raw[..., 0:1] + temperature_logit_offset)
+        * (T_range[1] - T_range[0]) + T_range[0]
+    )
+    # Squaring a float32 density above 1e19 overflows; the lower bound keeps
+    # logarithmic diagnostics finite.
+    total_log_ne = total_log_ne.clamp(-30.0, 18.0)
+    state = {
+        "total_ne": torch.pow(10.0, total_log_ne),
+        "total_log_ne": total_log_ne,
+        "mean_log_T": log_T,
+    }
+    if cool_density_offset_log10_cm3 is not None:
+        log_cool = (raw[..., 2:3] + cool_density_offset_log10_cm3).clamp(-30.0, 18.0)
+        state["cool_hydrogen_density"] = torch.pow(10.0, log_cool)
+    return state
+
+
+PLASMA_BACKENDS = {'siren': SirenModel, 'mlp': MLPModel}
+
+
+class PlasmaModel(nn.Module):
+    """Pointwise plasma state on a coordinate network.
+
+    ``backend`` selects the network (``siren`` or ``mlp``); all remaining
+    keywords are passed to it. The network learns the temperature logit and the
+    deviation of the density from the radial baseline.
+    """
+
+    def __init__(self, log_T, density_offset_log10_cm3, backend='siren',
+                 initial_log_T=None, cool_absorber=False,
+                 cool_density_offset_log10_cm3=7.0, density_profile=None, **backend_kwargs):
+        super().__init__()
+        if backend not in PLASMA_BACKENDS:
+            raise ValueError(f"Unknown plasma backend {backend!r}; expected one of {sorted(PLASMA_BACKENDS)}")
+        out_dim, cool_offset = _validated_cool_offset(
+            cool_absorber, cool_density_offset_log10_cm3
+        )
+        self.density_profile = _validated_density_profile(density_profile)
+        self.backend = PLASMA_BACKENDS[backend](in_dim=4, out_dim=out_dim, **backend_kwargs)
+        log_T, temperature_logit_offset = _plasma_temperature_bounds(log_T, initial_log_T)
+        density_offset_log10_cm3 = float(density_offset_log10_cm3)
+        if not np.isfinite(density_offset_log10_cm3):
+            raise ValueError('density_offset_log10_cm3 must be finite')
+        self.register_buffer(
+            'density_offset_log10_cm3',
+            torch.tensor(density_offset_log10_cm3, dtype=torch.float32),
+        )
+        self.register_buffer(
+            'temperature_logit_offset', torch.tensor(temperature_logit_offset, dtype=torch.float32)
+        )
+        self.T_range = nn.Parameter(log_T[[0, -1]].clone(), requires_grad=False)
+        self.cool_absorber = bool(cool_absorber)
+        self.register_buffer(
+            'cool_density_offset_log10_cm3', torch.tensor(cool_offset, dtype=torch.float32)
+        )
 
     def forward(self, x):
         radius = torch.norm(x[..., :3], dim=-1, keepdim=True)
-        raw = super().forward(x)
+        raw = self.backend(x)
+        total_log_ne = raw[..., 1:2] + self.density_offset_log10_cm3
 
-        center_log_T, scaling, sigma = raw[..., 0:1], raw[..., 1:2], raw[..., 2:3]
-        # velocity = raw[..., 3:]
+        # The network output is the deviation from the radial density baseline.
+        total_log_ne = total_log_ne + _log10_density_baseline(radius, *self.density_profile)
+        return _pointwise_plasma_state(
+            raw, self.T_range, self.temperature_logit_offset, total_log_ne,
+            self.cool_density_offset_log10_cm3 if self.cool_absorber else None,
+        )
 
-        # assure that mean_log_T is in the range of the temperature bins
-        # TODO: should we use fixed temperature range? filaments can be very cold 5e3 - 10e3 K?
-        # maybe allow for very dense plasma in the cold temperature regime?
-        center_log_T = torch.sigmoid(center_log_T) * (self.T_range[1] - self.T_range[0]) + self.T_range[0]
-        sigma = torch.sigmoid(sigma) + 0.01
-
-        # scale density with radius ** -2
-        scaling = scaling - 2 * torch.log10(radius)
-
-        log_T_range = self.log_T.reshape([1] * (len(center_log_T.shape) - 1) + [-1])
-        # log10 --> 10 ** (scaling) * exp(N) * (2 * pi * sigma ** 2) ** -0.5
-        log10_e = 0.4342944819032518  # log10(e)
-        log_ne = scaling - (log_T_range - center_log_T) ** 2 / (2 * sigma ** 2) * log10_e
-
-        # distance = torch.norm(x[..., :3], dim=-1)
-        # distance_threshold = torch.clip(distance - self.decay_distance, min=0, max=1) * 2
-        # log_ne = log_ne - distance_threshold[..., None]
-        # log_ne = torch.clamp(log_ne, min=-30)  # prevent negative infinity
-
-        # compute total number density
-        ne = 10 ** log_ne
-        total_ne = torch.sum(ne, dim=-1, keepdim=True)
-        total_log_ne = torch.log10(total_ne)
-
-        # compute mean Temperature
-        temperatures = 10 ** log_T_range
-        mean_temperature = (temperatures * ne).sum(-1, keepdim=True) / total_ne
-        mean_log_T = torch.log10(mean_temperature)
-        # replace invalid values
-        mean_log_T[torch.isnan(mean_log_T)] = center_log_T[torch.isnan(mean_log_T)]
-
-        return {'log_ne': log_ne,
-                'mean_log_T': mean_log_T,
-                'total_ne': total_ne,
-                'total_log_ne': total_log_ne,
-                'ne': ne, 'sigma': sigma
-                }
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        # Earlier models subclassed the network, so its weights had no backend prefix.
+        own = {'density_offset_log10_cm3', 'temperature_logit_offset', 'T_range',
+               'cool_density_offset_log10_cm3'}
+        for key in [k for k in state_dict if k.startswith(prefix)]:
+            name = key[len(prefix):]
+            if name not in own and not name.startswith('backend.'):
+                state_dict[prefix + 'backend.' + name] = state_dict.pop(key)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
 
 class RhoModel(nn.Module):
@@ -352,7 +389,7 @@ class RhoModel(nn.Module):
         v = 300 * (u.km / u.s)
         v = v.to_value(u.solRad / u.s) / Rs_per_ds * seconds_per_dt  # normalize to model units
         self.v_radial = nn.Parameter(torch.tensor(v, dtype=torch.float32), requires_grad=False)
-        v_scale = 500 * (u.km / u.s)
+        v_scale = 100 * (u.km / u.s)
         v_scale = v_scale.to_value(u.solRad / u.s) / Rs_per_ds * seconds_per_dt  # normalize to model units
         self.v_scale = nn.Parameter(torch.tensor(v_scale, dtype=torch.float32), requires_grad=False)
         self.seconds_per_dt = seconds_per_dt
@@ -395,9 +432,13 @@ class RhoModel(nn.Module):
             self.model.step(global_step)
 
 
-class AbsorptionModel(GenericModel):
+class AbsorptionModel(MLPModel):
+
+    is_deterministic_physical = False
 
     def __init__(self, freeze=False, **kwargs):
+        kwargs.setdefault('encoding', None)
+        kwargs.setdefault('activation', 'sine')
         super().__init__(in_dim=2, out_dim=1, n_layers=2, dim=16, **kwargs)
         if freeze:
             for param in self.parameters():
@@ -407,19 +448,37 @@ class AbsorptionModel(GenericModel):
         log_kappa = super().forward(x) - 2
         return {'log_kappa': log_kappa, 'kappa': 10 ** log_kappa}
 
+    def opacity(self, *, total_ne, total_log_ne, mean_log_T, **kwargs):
+        output = self(torch.cat([total_log_ne, mean_log_T], dim=-1))
+        exponent = torch.nan_to_num(
+            output['log_kappa'] + total_log_ne,
+            nan=-30.0, posinf=30.0, neginf=-30.0,
+        ).clamp(-30.0, 30.0)
+        return {**output, 'alpha_cm_inverse': torch.pow(10.0, exponent)}
+
 
 class ConstantAbsorptionModel(nn.Module):
+
+    is_deterministic_physical = False
 
     def __init__(self, coefficient=-5, **kwargs):
         super().__init__()
         self.coefficient = coefficient
 
     def forward(self, x):
-        total_log_ne = x[..., 0:1]
-        mean_log_T = x[..., 1:2]
-        # log_kappa = total_log_ne - mean_log_T + self.offset
         log_kappa = self.coefficient
         return {'log_kappa': log_kappa, 'kappa': 10 ** log_kappa}
+
+    def opacity(self, *, total_ne, total_log_ne, mean_log_T, **kwargs):
+        coefficient = torch.as_tensor(
+            self.coefficient, dtype=total_log_ne.dtype, device=total_log_ne.device
+        )
+        exponent = (coefficient + total_log_ne).clamp(-30.0, 30.0)
+        return {
+            'log_kappa': coefficient,
+            'kappa': torch.pow(10.0, coefficient),
+            'alpha_cm_inverse': torch.pow(10.0, exponent),
+        }
 
 
 class SirenLayer(nn.Module):
@@ -556,8 +615,8 @@ class MultispectralEncoding(nn.Module):
 
         layers = []
         for nd, w in zip(num_dims, weights):
-            l = SirenLayer(in_dim=1, out_dim=nd, w0=w, is_first=True)
-            layers.append(l)
+            layer = SirenLayer(in_dim=1, out_dim=nd, w0=w, is_first=True)
+            layers.append(layer)
         self.layers = nn.ModuleList(layers)
 
         self.d_output = sum(num_dims)

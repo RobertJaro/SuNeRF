@@ -25,7 +25,7 @@ python -m sunerf.data.download.download_ccor \
   --start "${START}" \
   --end "${END}" \
   --cadence "${CADENCE}" \
-  --out "${CCOR_RAW_DIR}" \
+  --output "${CCOR_RAW_DIR}" \
   --product-prefix "SWFO/GOES-19/CCOR-1/ccor1-l2_science"
 
 ################################################################################

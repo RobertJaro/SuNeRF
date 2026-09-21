@@ -1,0 +1,58 @@
+ 1  12.00  H
+ 2  10.914 He
+ 3   0.96  Li
+ 4   1.38  Be
+ 5   2.70  B
+ 6   8.46  C
+ 7   7.83  N
+ 8   8.69  O
+ 9   4.40  F
+10   8.06  Ne
+11   6.72  Na +0.5
+12   8.05  Mg +0.5
+13   6.93  Al +0.5
+14   8.01  Si +0.5
+15   5.41  P
+16   7.12  S
+17   5.31  Cl
+18   6.38  Ar
+19   5.57  K  +0.5
+20   6.80  Ca +0.5
+21   3.64  Sc +0.5
+22   5.47  Ti +0.5
+23   4.40  V  +0.5
+24   6.12  Cr +0.5
+25   5.92  Mn +0.5
+26   7.96  Fe +0.5
+27   5.44  Co +0.5
+28   6.70  Ni +0.5
+29   4.68  Cu +0.5
+30   5.06  Zn +0.5
+ -1
+ 
+filename: sun_coronal_2021_chianti.abund
+
+This is a general `coronal' set of abundances for active regions,
+where the abundances of the low-FIP elements
+have all been increased by 0.5 dex (as noted in the fourth column), compared to the
+photospheric abundances recommended by 
+ Asplund, M., Amarsi, A.M., & Grevesse, N. 2021, A&A, 653, A141
+ 
+The increase corresponds to a FIP bias=3.16 and is generally consistent with the
+coronal values recommended by
+Feldman, U., Mandelbaum, P., Seely, J.L., Doschek, G.A., Gursky H., 1992, ApJSS, 81, 387
+which were based on a series of papers where the relative abundances in active regions
+showed such FIP bias, compared to the photospheric relative abundances. 
+
+Note that the photospheric abundances accepted in 1992 were quite different
+than the most recent ones, hence the present revision.
+
+Also note that each solar feature might have different abundances.
+The present values provide a general set that is applicable to the
+hot (T > 1 MK) emission in active regions.
+
+Created for the CHIANTI database by Giulio Del Zanna, Apr 2023
+
+
+ -1
+

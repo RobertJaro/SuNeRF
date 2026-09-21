@@ -1,0 +1,183 @@
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/psi_obs/clean_2view_v3"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf-cme-obs/psi_obs/clean_2view_v3"
+
+# Observations rendered by scripts/psi_test/render_clean.sh in the field of view
+# of the instrument that each view imitates:
+#   L5_wide: PUNCH, 15--30 R_sun
+#   L5: CCOR, 3.7--17 R_sun, total brightness only
+#   L4: STEREO-A COR2, 2.5--15 R_sun
+# The clear polar P1 view (80 deg latitude, 2--30 R_sun) is withheld for evaluation.
+# All psi_clean_* and psi_degraded_* configs share one training setup.
+instruments:
+  - type: default
+    key: L5_wide
+    scaling: { type: "asinh", a: 1.0e-5 }
+  - type: default
+    key: L5
+    scaling: { type: "asinh", a: 1.0e-5 }
+  - type: default
+    key: L4
+    scaling: { type: "asinh", a: 1.0e-5 }
+  - type: default
+    key: P1
+    scaling: { type: "asinh", a: 1.0e-5 }
+
+# Split-temporal SIREN: a static Carrington-frame branch plus a dynamic branch.
+# Train the static branch for 2000 steps, then ramp in the dynamic contribution
+# over the next 2000 steps.
+model:
+  model_type: split_temporal
+  cold_steps: 0
+  warm_steps: 2000
+
+module:
+  light_travel_time: false
+  ballistic_acceleration_limit_ms2: 10.0
+  # SIREN volumes are unstable at the 1e-3 default learning rate.
+  lr_config: { start: 2.0e-4, end: 2.0e-5, iterations: 200000 }
+
+data:
+  # First pre-event frame: 12 days of the corotating first cube precede the
+  # eruption at 2021-10-28T15:30:00.
+  ref_date: "2021-10-16T15:30:00"
+  # Eruption phase covered by the 145 PSI cubes.
+  cme_time: &cme_time ["2021-10-28T15:30:00", "2021-10-29T03:30:00"]
+  # Every view is split into two equally sampled datasets that share the
+  # instrument modules: a background dataset at a fixed 6 h cadence over the
+  # full series and a CME dataset with every frame of the PSI cube sequence.
+  # Each takes half of the rays per batch of the view.
+  train_datasets:
+    - type: psi_cme
+      key: L5_wide_background
+      instrument_key: L5_wide
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5_wide/pb/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5_wide/tb/*"
+      cadence: "6h"
+      batch_size: 512
+      debug: false
+    - type: psi_cme
+      key: L5_wide_cme
+      instrument_key: L5_wide
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5_wide/pb/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5_wide/tb/*"
+      time_range: *cme_time
+      batch_size: 512
+      debug: false
+    - type: psi_cme
+      key: L5_background
+      instrument_key: L5
+      data_path_pB: null
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5/tb/*"
+      cadence: "6h"
+      batch_size: 512
+      debug: false
+    - type: psi_cme
+      key: L5_cme
+      instrument_key: L5
+      data_path_pB: null
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5/tb/*"
+      time_range: *cme_time
+      batch_size: 512
+      debug: false
+    - type: psi_cme
+      key: L4_background
+      instrument_key: L4
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L4/pb/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L4/tb/*"
+      cadence: "6h"
+      batch_size: 1024
+      debug: false
+    - type: psi_cme
+      key: L4_cme
+      instrument_key: L4
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L4/pb/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L4/tb/*"
+      time_range: *cme_time
+      batch_size: 1024
+      debug: false
+    - type: random
+      name: continuity
+      radius_range: [1.5, 30.2]
+      unit: solRad
+      batch_size: 4096
+      volume_uniform_sampling: true
+      radial_sampling_exponent: 2
+
+  valid_datasets:
+    - type: psi_cme
+      key: L5_wide
+      instrument_key: L5_wide
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5_wide/pb/L5_wide_pb0120.fts"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5_wide/tb/L5_wide_tb0120.fts"
+    - type: psi_cme
+      key: L5
+      instrument_key: L5
+      data_path_pB: null
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5/tb/L5_tb0120.fts"
+    - type: psi_cme
+      key: L4
+      instrument_key: L4
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L4/pb/L4_pb0120.fts"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L4/tb/L4_tb0120.fts"
+    - type: psi_cme
+      key: P1
+      instrument_key: P1
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/P1/pb/P1_pb0120.fts"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/P1/tb/P1_tb0120.fts"
+    # The slice timelines cover only the PSI cubes (145 dumps at 5 min), not
+    # the 12 pre-event days rendered from the static first cube.
+    - type: radial_slices
+      key: valid_radial
+      radii: [5, 10, 15, 20, 25]
+      validation_time_range: *cme_time
+    - type: longitude_slices
+      key: valid_lon_slices
+      radius_range: [2.0, 30.0]
+      validation_time_range: *cme_time
+
+  Rs_per_ds: 15
+  # The series spans 12.5 days (12 pre-event days plus 145 cubes at 5 min), so
+  # one model time unit is one day.
+  seconds_per_dt: 86400
+  batch_size: 4096
+  validation_batch_size: 4096
+  num_workers: 4
+
+callbacks:
+  - type: thomson_image
+    ds_key: L5_wide
+  - type: thomson_image
+    ds_key: L5
+  - type: thomson_image
+    ds_key: L4
+  - type: thomson_image
+    ds_key: P1
+  - type: radial_slices
+    ds_key: valid_radial
+  - type: longitude_density
+    ds_key: valid_lon_slices
+
+logging:
+  entity: robert_jarolim
+  project: sunerf-cme-obs-v4
+  name: "PSI obs clean 2-view PUNCH/CCOR/COR2 - P1 held out"
+
+sampling:
+  type: spherical
+  n_samples: 64
+  # The rendered lines of sight end at the 30.2 R_sun cube boundary.
+  max_distance: 30.2
+  radial_weighting: true
+
+lambda:
+  image: 1.0
+  ratio: 1.0
+  radial: {type: step, steps: 4000, start: 0.0, end: 1.0e-4}
+  # Weight of the dimensionless residual; ~14x the raw-residual weight keeps
+  # the previous strength at 10 R_sun.
+  continuity: {type: step, steps: 4000, start: 0.0, end: 1.0e-4}
+  ballistic: 0.0
+  velocity: {type: step, steps: 4000, start: 0.0, end: 1.0e-4}
+
+training:
+  log_every_n_steps: 1000

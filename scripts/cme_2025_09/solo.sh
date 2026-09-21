@@ -22,7 +22,7 @@ SOLO_PREP_DIR="${DATA_ROOT}/prep/solo"
 python -m sunerf.data.download.download_solo_insitu \
   --start "${START}" \
   --end "${END}" \
-  --out "${SOLO_RAW_DIR}"
+  --output "${SOLO_RAW_DIR}"
 
 ################################################################################
 # Prepare Solar Orbiter in-situ constraints
