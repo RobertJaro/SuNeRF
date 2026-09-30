@@ -100,7 +100,7 @@ def test_config_tables_pool_training_datasets_and_are_reused(tmp_path):
     entry = load_scaling_table(table_path)['instruments']['AIA']
     assert entry['divisor'] == [20.0, 80.0]
     assert entry['source']['datasets'] == ['background']
-    assert entry['source']['observation_count'] == 3
+    assert entry['source']['file_count'] == 6
 
     # An existing table is reused so resumed runs keep their constants ...
     assert estimate_config_scaling(config, percentile=100, workers=1) == []
@@ -110,3 +110,17 @@ def test_config_tables_pool_training_datasets_and_are_reused(tmp_path):
     entry = load_scaling_table(table_path)['instruments']['AIA']
     assert entry['divisor'] == [25.0, 100.0]
     assert entry['source']['datasets'] == ['background', 'event']
+
+
+def test_packaged_table_reference_resolves_like_a_path(tmp_path, monkeypatch):
+    from sunerf import resources
+
+    (tmp_path / 'calibration').mkdir()
+    _, entry = normalize_image_scaling([10.0, 40.0], ('171', '193'))
+    write_scaling_table(tmp_path / 'calibration' / 'image_scaling.yaml', {'AIA': entry})
+    monkeypatch.setattr(resources, 'resource_root', lambda: tmp_path)
+
+    resolved = resolve_instrument_scaling([_instrument('builtin:image_scaling')])
+    assert resolved[0]['scaling']['divisor'] == [10.0, 40.0]
+    with pytest.raises(ValueError, match='packaged table'):
+        write_scaling_table('builtin:image_scaling', {'AIA': entry})

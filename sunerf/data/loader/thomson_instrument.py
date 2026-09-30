@@ -418,14 +418,34 @@ class ThomsonDataModule(BaseDataModule):
                 assert (
                     len(train_dict) > 0
                 ), "Specify at least one dataset for reference times. The random dataset configuration needs to be last in config file."
-                times = np.concatenate(
-                    [
-                        dataset.normalized_times
-                        for dataset in train_dict.values()
-                        if isinstance(dataset, GenericThomsonDataset)
+                if ds_key != "random":
+                    raise ValueError(
+                        f"The random dataset must be keyed 'random' (got '{ds_key}'): the physics "
+                        "losses read the batch under that key. Remove the 'key' entry."
+                    )
+                # Sample times over the full span of the image datasets unless
+                # the config restricts them, e.g. to the eruption phase.
+                time_range = ds_config.pop("time_range", None)
+                if time_range is None:
+                    times = np.concatenate(
+                        [
+                            dataset.normalized_times
+                            for dataset in train_dict.values()
+                            if isinstance(dataset, GenericThomsonDataset)
+                        ]
+                    )
+                    time_range = [np.min(times), np.max(times)]
+                else:
+                    if len(time_range) != 2:
+                        raise ValueError("The random dataset time_range needs a start and an end date.")
+                    time_range = [
+                        normalize_datetime(
+                            GenericThomsonDataset._normalize_for_time_range(t),
+                            base_config["seconds_per_dt"],
+                            ref_date,
+                        )
+                        for t in time_range
                     ]
-                )
-                time_range = [np.min(times), np.max(times)]
                 radius_range = u.Quantity(
                     ds_config.pop("radius_range"), unit=ds_config.pop("unit", "AU")
                 )
@@ -487,6 +507,14 @@ class ThomsonDataModule(BaseDataModule):
                 ]
             ds_config = copy.deepcopy(base_config)
             ds_config.update(config)
+            image_types = ("hao", "cor", "lasco", "metis", "ccor", "punch", "psi_cme")
+            if ds_type.lower() in image_types and "time_range" not in config:
+                # Image datasets validate on one frame: the observation closest
+                # to validation_time, or the central frame of validation_time_range.
+                if validation_time is not None:
+                    ds_config["time_range"] = validation_time
+                elif validation_time_range is not None:
+                    ds_config["time_range"] = validation_time_range
             if ds_type.lower() == "hao":
                 dataset = HAOThomsonDataset(**ds_config, ds_key=ds_key, test=True)
                 dataset = self._wrap_validation_dataset(dataset, render_mode)
@@ -1194,7 +1222,7 @@ class CCORDataset(GenericThomsonDataset):
 class PSICMEDataset(GenericThomsonDataset):
     def __init__(self, **kwargs):
         super().__init__(
-            scaling=1.0e-9,
+            scaling=1.0e-12,
             reference_frame="inertial",
             azimuthal_equidistant=False,
             **kwargs,

@@ -31,6 +31,7 @@ from sunerf.model.plasma import (
 from sunerf.model.spherical_grid import SphericalGridPlasmaModel
 from sunerf.rendering.base_tracing import BasicRenderingModule, MultiResolutionRenderingModule
 from sunerf.rendering.plasma import PlasmaRadiativeTransfer
+from sunerf.rendering.thomson import ThomsonScattering
 from sunerf.train.coordinate_transformation import pose_spherical, spherical_to_cartesian
 
 
@@ -330,6 +331,8 @@ def _load_safe_grid_artifact(state_path, state=None):
         seconds_per_dt=rendering_spec['seconds_per_dt'],
         sampling_config=rendering_spec['sampling_config'],
         hierarchical_sampling_config=rendering_spec['hierarchical_sampling_config'],
+        # Grid artifacts written before the flag existed are instantaneous snapshots.
+        light_travel_time=bool(rendering_spec.get('light_travel_time', False)),
     )
     combined_state = {
         **{f'model.{key}': value for key, value in grid_state.items()},
@@ -688,7 +691,11 @@ class SuNeRFLoader:
             rendering_module = self.rendering.rendering_modules[instrument_key]
             response = getattr(rendering_module, 'temperature_response', None)
             n_channels = int(response.shape[-1]) if response is not None else None
-            is_thomson = any(config.get('type') == 'thomson' for config in matching_configs)
+            # Validation-only instruments have a rendering module but no training dataset.
+            is_thomson = (
+                any(config.get('type') == 'thomson' for config in matching_configs)
+                or isinstance(rendering_module, ThomsonScattering)
+            )
             if cmaps is None and is_thomson:
                 reconstructed[instrument_key] = {
                     'type': 'thomson',
@@ -1245,13 +1252,19 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
             mask = np.isnan(ref_map.data)
             img_coords[mask] = np.nan
 
-        pose_out = self.load_pose(img_coords, target_pose, map_data['observer']['time'],
+        # render only the valid pixels; masked pixels are zero
+        valid = ~np.isnan(img_coords).any(-1)
+        pose_out = self.load_pose(img_coords[valid][:, None], target_pose, map_data['observer']['time'],
                                   model_outputs=['image', 'density'], **kwargs)
+        image = np.zeros(valid.shape + (2,), dtype=pose_out['image'].dtype)
+        image[valid] = pose_out['image'][:, 0]
+        density = np.zeros(valid.shape, dtype=pose_out['density'].dtype)
+        density[valid] = pose_out['density'][:, 0]
 
         # create maps
-        tB_map = Map(pose_out['image'][..., 0], ref_map.meta)
-        pB_map = Map(pose_out['image'][..., 1], ref_map.meta)
-        density_map = Map(pose_out['density'], ref_map.meta)
+        tB_map = Map(image[..., 0], ref_map.meta)
+        pB_map = Map(image[..., 1], ref_map.meta)
+        density_map = Map(density, ref_map.meta)
         #
         return {'tB_map': tB_map, 'pB_map': pB_map, 'density_map': density_map}
 

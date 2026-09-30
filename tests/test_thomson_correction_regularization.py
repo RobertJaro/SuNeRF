@@ -73,3 +73,39 @@ def test_additive_regularization_uses_instrument_image_scaling(instrument, a, ma
     expected_gradient = torch.autograd.grad(expected_loss, correction.additive)[0]
     torch.testing.assert_close(actual_gradient, expected_gradient)
     assert torch.isfinite(actual_gradient).all()
+
+
+def test_image_correction_network_architecture():
+    from sunerf.train.correction import CorrectionModule
+
+    module = CorrectionModule(corrections=['tB_add', 'pB_add'])
+    net = module.img_correction_module
+    assert net.in_layer.activation.w0 == 30
+    assert len(net.layers) == 3 and net.layers[0].activation.w0 == 1.
+    assert net.out_layer.in_features == 64
+    image = torch.zeros(5, 2)
+    corrected, corrections = module(image, torch.rand(5, 2), torch.rand(5, 3), torch.rand(5, 1))
+    assert corrected.shape == (5, 2) and set(corrections) == {'tB_add', 'pB_add'}
+
+
+def test_exp_additive_parametrization():
+    from sunerf.train.correction import CorrectionModule
+
+    module = CorrectionModule(corrections=['tB_add', 'pB_add', 'tB_mul'], additive_parametrization='exp',
+                              additive_scale=1e-5)
+    # two output channels per additive term, one for the multiplicative term
+    assert module.img_correction_module.out_layer.out_features == 5
+    image = torch.ones(7, 2)
+    corrected, corrections = module(image, torch.rand(7, 2), torch.rand(7, 3), torch.rand(7, 1))
+    assert corrected.shape == (7, 2) and set(corrections) == {'tB_add', 'pB_add', 'tB_mul'}
+    assert torch.isfinite(corrected).all()
+
+    # add = scale * a * exp(b): the sign follows a, b is unbounded
+    raw = torch.tensor([[2.0, 0.0], [-2.0, 0.0], [1.0, 3.0], [1.0, -3.0]])
+    add = module._additive(raw, 1e-5)
+    torch.testing.assert_close(add[:, 0], torch.tensor([2e-5, -2e-5, 1e-5 * math.exp(3.0), 1e-5 * math.exp(-3.0)]))
+
+    # the default stays linear, so existing checkpoints keep their layout
+    assert CorrectionModule(corrections=['tB_add', 'pB_add']).img_correction_module.out_layer.out_features == 2
+    with pytest.raises(ValueError):
+        CorrectionModule(corrections=['tB_add'], additive_parametrization='asinh')

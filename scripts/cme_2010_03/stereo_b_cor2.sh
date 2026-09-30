@@ -45,10 +45,10 @@ exit
 IDL
 
 csh <<CSH
-cd \$HOME
+cd /glade/u/home/rjarolim
 module load idl
 setenv SSW_INSTR "SECCHI LASCO STEREO SOHO"
-setenv SSW \$HOME/ssw
+setenv SSW /glade/u/home/rjarolim/ssw
 setenv NRL_LIB \$SSW/soho/lasco
 source \$SSW/gen/setup/setup.ssw
 sswidl < "${IDL_BATCH}"

@@ -107,6 +107,6 @@ def test_start_wandb_logger_initializes_run_before_data_loading(tmp_path, monkey
     start_wandb_logger({"project": "sunerf-test"}, str(tmp_path), hparams={"a": 1})
     try:
         assert wandb.run is not None
-        wandb.log({"Overview.test": 1})  # must not raise "call wandb.init() first"
+        wandb.log({"overview/test": 1})  # must not raise "call wandb.init() first"
     finally:
         wandb.finish()

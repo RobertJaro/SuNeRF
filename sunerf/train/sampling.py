@@ -9,7 +9,13 @@ def _safe_ray_inputs(rays_o: torch.Tensor, rays_d: torch.Tensor):
             f'{tuple(rays_o.shape)} and {tuple(rays_d.shape)}.'
         )
     finite = torch.isfinite(rays_o).all(dim=-1) & torch.isfinite(rays_d).all(dim=-1)
-    safe_o = torch.where(finite[:, None], rays_o, torch.zeros_like(rays_o))
+    # Invalid rays get zero path length, so every sample sits at the fallback
+    # origin. It must not be the Sun's center: the density model evaluates
+    # log(r) there, and the infinite value leaks into the gradients even though
+    # the rendered output of the ray is masked.
+    fallback_o = torch.zeros_like(rays_o)
+    fallback_o[:, 0] = 1
+    safe_o = torch.where(finite[:, None], rays_o, fallback_o)
     fallback_d = torch.zeros_like(rays_d)
     fallback_d[:, 0] = 1
     safe_d = torch.where(finite[:, None], rays_d, fallback_d)
@@ -17,6 +23,18 @@ def _safe_ray_inputs(rays_o: torch.Tensor, rays_d: torch.Tensor):
     valid = finite & (norm_squared > torch.finfo(rays_d.dtype).eps)
     safe_d = torch.where(valid[:, None], safe_d, fallback_d)
     return safe_o, safe_d, valid
+
+
+def _masked_sqrt(value):
+    """Square root that is zero, with a zero gradient, where ``value`` is not positive.
+
+    ``sqrt(clamp_min(value, 0))`` has an infinite derivative at the clamp, which
+    turns into NaN gradients of the ray directions (learned pointing alignment)
+    for every ray that misses a sphere.
+    """
+    positive = value > 0
+    root = torch.sqrt(torch.where(positive, value, torch.ones_like(value)))
+    return torch.where(positive, root, torch.zeros_like(root))
 
 
 def _front_shell_intersection(
@@ -32,19 +50,19 @@ def _front_shell_intersection(
 
     outer_c = safe_o.square().sum(dim=-1) - outer_radius.square()
     outer_discriminant = b.square() - 4 * a * outer_c
-    valid &= outer_discriminant >= 0
-    outer_sqrt = torch.sqrt(outer_discriminant.clamp_min(0))
+    valid = valid & (outer_discriminant >= 0)
+    outer_sqrt = _masked_sqrt(outer_discriminant)
     denominator = 2 * a.clamp_min(torch.finfo(a.dtype).eps)
     outer_near = (-b - outer_sqrt) / denominator
     outer_far = (-b + outer_sqrt) / denominator
     distance_near = outer_near.clamp_min(0)
     distance_far = outer_far
-    valid &= distance_far > distance_near
+    valid = valid & (distance_far > distance_near)
 
     inner_c = safe_o.square().sum(dim=-1) - inner_radius.square()
     inner_discriminant = b.square() - 4 * a * inner_c
     intersects_inner = inner_discriminant >= 0
-    inner_sqrt = torch.sqrt(inner_discriminant.clamp_min(0))
+    inner_sqrt = _masked_sqrt(inner_discriminant)
     inner_near = (-b - inner_sqrt) / denominator
     inner_far = (-b + inner_sqrt) / denominator
 
@@ -62,7 +80,7 @@ def _front_shell_intersection(
         & (inner_near > distance_near) & (inner_near < distance_far)
     )
     distance_far = torch.where(hits_front_surface, inner_near, distance_far)
-    valid &= distance_far > distance_near
+    valid = valid & (distance_far > distance_near)
 
     distance_near = torch.where(valid, distance_near, torch.zeros_like(distance_near))
     distance_far = torch.where(valid, distance_far, torch.zeros_like(distance_far))

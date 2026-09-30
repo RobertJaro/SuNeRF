@@ -41,7 +41,11 @@ python -m sunerf.data.euv.estimate_scaling --config config/plasma/all_2012_08.ya
 
 For each channel, the estimator takes the 99.5th absolute-valid-pixel percentile
 of each training observation (held-out observations excluded) and then the
-median over time. An existing table is reused unless `--overwrite` is given, so
+median over time. The constants only set the loss scale, so it opens only 200
+evenly spaced prepared files per dataset (`--max-files 0` opens all; no header
+scan or channel matching) and prints each entry as YAML; paste the values into the packaged table
+`sunerf/resources/calibration/image_scaling.yaml` and reference it with
+`divisor: "builtin:image_scaling"` to reuse them across runs. An existing table is reused unless `--overwrite` is given, so
 resumed runs keep their constants. Every dataset mapped to the instrument
 shares the vector, including validation-only views and mixed sequences of one
 instrument; for a short high-cadence event sequence next to a background
@@ -52,6 +56,28 @@ in native units. With learnable response gains, set
 `temperature_response.global_reference: true` for exactly one instrument;
 unless that reference is independently calibrated, physical density amplitude
 is fixed only by this declared gauge.
+
+## Pointing alignment
+
+`alignment: true` on an instrument adds a learnable pointing correction: an image
+roll about the boresight and a helioprojective shift `(x, y)`, constant per
+instrument, applied to its ray directions before rendering (observer positions
+stay fixed). It absorbs systematic registration errors between views (e.g. a
+residual EUVI roll or pointing offset relative to AIA) and is bounded through
+`tanh` by `roll_limit_deg` (default 1) and `shift_limit_arcsec` (default 30):
+
+```yaml
+instruments:
+  - key: "EUVI-A"
+    alignment: true                      # or {roll_limit_deg: 1.0, shift_limit_arcsec: 30.0, trainable: true}
+```
+
+It may be enabled on every trained instrument: the observer positions are fixed
+and the sampling shell is centered on the Sun, which hold the frame. It cannot
+be enabled on validation-only instruments, which never train it. The learned
+values are logged as
+`alignment.<instrument>.{roll_deg,shift_x_arcsec,shift_y_arcsec}` and are stored
+in the artifact with the other weights.
 
 ## Packaged physics resources
 

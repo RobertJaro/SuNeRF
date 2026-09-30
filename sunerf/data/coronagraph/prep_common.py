@@ -343,12 +343,23 @@ class MapPreprocessor:
                 object_mask_radius=self.solar_system_object_mask_radius,
                 moon_mask_radius=self.moon_mask_radius,
             )
-        if self.resize is not None:
-            s_map = s_map.resample(self.resize * u.pixel)
         if self.value_min is not None:
             s_map.data[s_map.data < self.value_min] = np.nan
         if self.value_max is not None:
             s_map.data[s_map.data > self.value_max] = np.nan
+        # Masking first, then cropping, then resampling: the invalid pixels are
+        # already NaN when the frame is cut to the field that is kept, and the
+        # requested resolution is spent on that field instead of a NaN border.
+        limit = field_limit_angle(
+            s_map,
+            occ_min=self.occ_min,
+            occ_max=self.occ_max,
+            max_radius=self.max_radius,
+        )
+        if limit is not None:
+            s_map = crop_to_field_limit(s_map, limit)
+        if self.resize is not None:
+            s_map = s_map.resample(self.resize * u.pixel)
         return s_map
 
     @property
@@ -393,6 +404,44 @@ def mask_bright_background_objects(data, radius, threshold=10.0, degree=3):
     )
     data[bright] = np.nan
     return data
+
+
+def field_limit_angle(s_map, occ_min=None, occ_max=None, max_radius=None):
+    """Return the angular radius of the outermost line of sight that is kept.
+
+    ``occ_max`` is already an angular separation from Sun center, while
+    ``max_radius`` limits the impact parameter of the line of sight in solar
+    radii.  Inverting ``hpc_impact_parameter`` turns the latter into the same
+    angular measure, so the tighter of the two defines the field that survives
+    the radial masks.
+    """
+    limits = []
+    if occ_max is not None:
+        limits.append(u.Quantity(occ_max).to(u.arcsec))
+    if max_radius is not None:
+        sin_limit = (u.Quantity(max_radius, u.solRad) / s_map.dsun).decompose().value
+        if sin_limit < 1:
+            limits.append((np.arcsin(sin_limit) * u.rad).to(u.arcsec))
+    if not limits:
+        return None
+    limit = min(limits)
+    if occ_min is not None and limit <= u.Quantity(occ_min).to(u.arcsec):
+        return None
+    return limit
+
+
+def crop_to_field_limit(s_map, limit):
+    """Cut the map down to the square that encloses the retained field.
+
+    The angular separation from Sun center is maximal along ``Tx`` and ``Ty``,
+    so the circle of radius ``limit`` is exactly bounded by the box spanning
+    +/- ``limit`` in both helioprojective angles.  ``submap`` clips the request
+    to the array, which leaves frames smaller than the limit untouched.
+    """
+    frame = s_map.coordinate_frame
+    bottom_left = SkyCoord(-limit, -limit, frame=frame)
+    top_right = SkyCoord(limit, limit, frame=frame)
+    return s_map.submap(bottom_left, top_right=top_right)
 
 
 def prep_coronagraph_map(

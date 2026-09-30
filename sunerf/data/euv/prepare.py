@@ -10,7 +10,8 @@ The three supported adapters have deliberately different calibration contracts:
   external product and calibration identifiers are required and this module
   performs geometry operations only.
 * ``eui`` accepts calibrated Solar Orbiter/EUI level-2 data, validates the level,
-  and performs geometry operations only.
+  and performs geometry operations only.  The calibration identifier is read
+  from the level-2 header unless one is given explicitly.
 
 All adapters then use the same crop, reprojection, resampling, radial masking,
 and FITS writer. Detector values are never clipped or normalized and invalid
@@ -20,14 +21,17 @@ pixels remain NaN with a matching ``VALID_MASK`` FITS extension.
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import glob
 import hashlib
 import importlib.metadata
 import os
 import re
+import signal
 import sys
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -42,10 +46,10 @@ from astropy.table import QTable
 from astropy.time import Time
 from astropy.wcs import WCS
 from sunpy.map import Map, all_coordinates_from_map, make_fitswcs_header
+from tqdm import tqdm
 
 from sunerf.data.euv.observation import PREPARED_EUV_SCHEMA
 
-MAX_PREP_WORKERS = 8
 SENSITIVITY_CONVENTIONS = frozenset(
     {'native_epoch', 'reference_epoch', 'static_assumed'}
 )
@@ -58,8 +62,11 @@ class GeometryConfig:
     ``shape`` is ``(ny, nx)``. ``hpc_bounds_arcsec`` is
     ``(xmin, ymin, xmax, ymax)``.  A reprojection reference fixes both the WCS
     and shape and therefore cannot be combined with ``shape`` or explicit HPC
-    bounds. ``max_radius_rsun`` crops to a bounding square and masks the pixels
-    outside the requested apparent solar radius.
+    bounds. ``max_radius_rsun`` defines the field of view in solar radii: the
+    angular half-width follows from each image's own apparent solar radius, so
+    every observer covers the same physical extent. The image is cropped to
+    that view and every pixel outside the radius, and outside the detector, is
+    NaN.
     """
 
     shape: tuple[int, int] | None = None
@@ -84,8 +91,14 @@ class GeometryConfig:
                 raise ValueError(
                     'Exact HPC bounds require at least two pixels along each output axis.'
                 )
-        if self.max_radius_rsun is not None and self.max_radius_rsun <= 0:
-            raise ValueError('max_radius_rsun must be positive.')
+        if self.max_radius_rsun is not None:
+            if self.max_radius_rsun <= 0:
+                raise ValueError('max_radius_rsun must be positive.')
+            if self.shape is not None and any(int(value) < 2 for value in self.shape):
+                raise ValueError(
+                    'A solar-radii field of view requires at least two pixels '
+                    'along each output axis.'
+                )
         if self.reproject_reference is not None and (
             self.shape is not None or self.hpc_bounds_arcsec is not None
         ):
@@ -102,6 +115,20 @@ class PreparationResult:
     """One prepared FITS product."""
 
     output_path: Path
+
+
+@dataclass(frozen=True)
+class SkippedFile:
+    """One input left out of the product set, with the reason it was skipped.
+
+    Individual observations are routinely unusable (a nonzero AIA QUALITY flag,
+    a truncated download, a missing keyword). Those are data defects, not
+    pipeline failures, so preparation reports and continues.
+    """
+
+    source_path: Path
+    reason: str
+    already_prepared: bool = False
 
 
 def _sha256(path: str | Path) -> str:
@@ -220,14 +247,35 @@ def _aia_level1_input_unit(s_map) -> str:
     return 'DN' if unit is None or not str(unit).strip() else str(unit).strip()
 
 
+EXPOSURE_KEYWORDS = ('exptime', 'xposure')
+
+
 def _exposure_seconds(s_map) -> float:
-    value = s_map.meta.get('exptime')
+    """Resolve the effective exposure time of a calibrated input.
+
+    Solar Orbiter products (EUI included) carry the FITS-standard ``XPOSURE``
+    rather than the older ``EXPTIME`` used by AIA and SECCHI.  The keyword order
+    matches the prepared-product reader in ``sunerf.data.euv.observation``.
+    """
+    keyword = next(
+        (key for key in EXPOSURE_KEYWORDS if s_map.meta.get(key) is not None), None
+    )
+    if keyword is None:
+        raise ValueError(
+            'The input FITS file must declare a numeric exposure time as one of '
+            f'{"/".join(key.upper() for key in EXPOSURE_KEYWORDS)}.'
+        )
+    value = s_map.meta.get(keyword)
     try:
         seconds = float(value)
     except (TypeError, ValueError) as error:
-        raise ValueError('The input FITS file must declare a numeric EXPTIME.') from error
+        raise ValueError(
+            f'{keyword.upper()} must be numeric, got {value!r}.'
+        ) from error
     if not np.isfinite(seconds) or seconds <= 0:
-        raise ValueError(f'EXPTIME must be positive and finite, got {value!r}.')
+        raise ValueError(
+            f'{keyword.upper()} must be positive and finite, got {value!r}.'
+        )
     return seconds
 
 
@@ -279,6 +327,9 @@ _OBSERVATION_METADATA_KEYS = (
     'waveunit',
     'wavelnth',
     'wavelength',
+    # Solar Orbiter spells the exposure time XPOSURE; without it the prepared
+    # EUI product reaches the reader with no exposure metadata at all.
+    'xposure',
 )
 
 
@@ -327,11 +378,20 @@ def apply_common_geometry(
         )
         mask_map = mask_map.rotate(recenter=True, missing=0, order=0, clip=False)
 
+    bounds = geometry.hpc_bounds_arcsec
+    if bounds is None and geometry.max_radius_rsun is not None:
+        # The field of view is given in solar radii; the matching angular
+        # half-width comes from this image's own apparent solar radius
+        # (DSUN_OBS and RSUN_REF), so every observer sees the same extent.
+        radius = geometry.max_radius_rsun * data_map.rsun_obs.to_value(u.arcsec)
+        bounds = (-radius, -radius, radius, radius)
     exact_hpc_grid = (
-        geometry.hpc_bounds_arcsec is not None and geometry.shape is not None
+        bounds is not None
+        and geometry.shape is not None
+        and geometry.reproject_reference is None
     )
     if exact_hpc_grid:
-        xmin, ymin, xmax, ymax = geometry.hpc_bounds_arcsec
+        xmin, ymin, xmax, ymax = bounds
         ny, nx = (int(value) for value in geometry.shape)
         reference = SkyCoord(
             0.5 * (xmin + xmax) * u.arcsec,
@@ -349,15 +409,9 @@ def apply_common_geometry(
         mask_map = mask_map.reproject_to(
             target_wcs, order='nearest-neighbor', **reproject_kwargs
         )
-    elif geometry.hpc_bounds_arcsec is not None:
-        data_map, mask_map = _submap_pair(
-            data_map, mask_map, geometry.hpc_bounds_arcsec
-        )
-    elif geometry.max_radius_rsun is not None and geometry.reproject_reference is None:
-        radius = geometry.max_radius_rsun * data_map.rsun_obs.to_value(u.arcsec)
-        data_map, mask_map = _submap_pair(
-            data_map, mask_map, (-radius, -radius, radius, radius)
-        )
+    elif bounds is not None and geometry.reproject_reference is None:
+        # Without a target shape the crop stays on the native pixel grid.
+        data_map, mask_map = _submap_pair(data_map, mask_map, bounds)
 
     if exact_hpc_grid:
         pass
@@ -647,13 +701,19 @@ def _is_level_two(value: str) -> bool:
 def prepare_eui_map(
     s_map,
     *,
-    calibration_id: str,
+    calibration_id: str | None = None,
     sensitivity_convention: str,
     geometry: GeometryConfig | None = None,
     valid_mask: np.ndarray | None = None,
 ):
-    """Validate a calibrated EUI L2 product; do not recalibrate it."""
-    calibration_id = _nonempty(calibration_id, 'calibration_id')
+    """Validate a calibrated EUI L2 product; do not recalibrate it.
+
+    ``calibration_id`` defaults to the identifier the level-2 header carries
+    (``CAL_ID``, else ``VERS_CAL``).  An explicit value is still cross-checked
+    against the header.
+    """
+    if calibration_id is not None:
+        calibration_id = _nonempty(calibration_id, 'calibration_id')
     sensitivity_convention = _validated_sensitivity_convention(
         sensitivity_convention, context='EUI preparation'
     )
@@ -674,7 +734,17 @@ def prepare_eui_map(
     _measurement_unit(s_map)
     _exposure_seconds(s_map)
     header_calibration_id = s_map.meta.get('cal_id') or s_map.meta.get('vers_cal')
-    if header_calibration_id and str(header_calibration_id).strip() != calibration_id:
+    header_calibration_id = (
+        str(header_calibration_id).strip() if header_calibration_id else ''
+    )
+    if calibration_id is None:
+        if not header_calibration_id:
+            raise ValueError(
+                'EUI header carries neither CAL_ID nor VERS_CAL; pass an '
+                'explicit calibration_id.'
+            )
+        calibration_id = header_calibration_id
+    elif header_calibration_id and header_calibration_id != calibration_id:
         raise ValueError(
             f'EUI calibration metadata {header_calibration_id!r} does not match '
             f'{calibration_id!r}.'
@@ -786,6 +856,82 @@ def prepare_eui_file(source_path, output_path, **kwargs) -> PreparationResult:
     return _prepare_file(source_path, output_path, prepare_eui_map, **kwargs)
 
 
+MAX_REPORTED_FAILURES = 10
+
+
+class _ProgressLog:
+    """Per-file progress bar, plus the files a stalled run is blocked on.
+
+    Each input is read, calibrated and written independently, so the bar
+    advances once per file actually on disk.  Failures are reported as they
+    happen: a systematically unusable input set is then visible immediately
+    instead of only in the closing summary.
+    """
+
+    def __init__(self, total: int, description: str):
+        self._lock = threading.Lock()
+        self._failures = 0
+        self._written = 0
+        self._skipped = 0
+        self._done = 0
+        self._total = total
+        # Progress and diagnostics share one stream so that a redirected log
+        # keeps them in order; stderr is unbuffered, stdout is not.
+        self._bar = tqdm(total=total, desc=description, unit='file', file=sys.stderr)
+        self._update_counts()
+
+    def _update_counts(self) -> None:
+        self._bar.set_postfix_str(
+            f'written {self._written}, skipped {self._skipped}', refresh=False
+        )
+
+    def finish(self, source: Path, failure: str | None = None, *, skipped: bool = False) -> None:
+        with self._lock:
+            self._done += 1
+            if failure is not None or skipped:
+                self._skipped += 1
+            else:
+                self._written += 1
+            if failure is not None:
+                self._failures += 1
+                if self._failures <= MAX_REPORTED_FAILURES:
+                    self._bar.write(f'Skipped {source.name}: {failure}', file=sys.stderr)
+                elif self._failures == MAX_REPORTED_FAILURES + 1:
+                    self._bar.write(
+                        f'Further failures are counted but not listed '
+                        f'(first {MAX_REPORTED_FAILURES} shown).',
+                        file=sys.stderr,
+                    )
+            self._update_counts()
+            self._bar.update(1)
+
+    def close(self) -> None:
+        self._bar.close()
+
+    def report_in_flight(self, sources: Sequence[Path]) -> None:
+        self._bar.close()
+        print(
+            f'\nInterrupted after {self._done}/{self._total} prepared; '
+            f'{len(sources)} file(s) in flight:',
+            file=sys.stderr,
+        )
+        for source in sources:
+            print(f'  {source}', file=sys.stderr)
+        print(
+            'Worker stacks can be inspected without stopping a run with '
+            'kill -USR1 <worker pid>.',
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def _install_stall_diagnostics() -> None:
+    """Make a stalled run inspectable instead of showing only the idle main thread."""
+    faulthandler.enable()
+    if hasattr(signal, 'SIGUSR1'):
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
+
+
 def _bounded_workers(workers: int | None, task_count: int) -> int:
     if workers is None:
         workers = min(4, os.cpu_count() or 1)
@@ -793,7 +939,30 @@ def _bounded_workers(workers: int | None, task_count: int) -> int:
         raise ValueError('workers must be non-negative.')
     if task_count == 0:
         return 0
-    return max(1, min(int(workers) or 1, task_count, MAX_PREP_WORKERS))
+    return max(1, min(int(workers) or 1, task_count))
+
+
+_PREPARERS = {
+    'aia': prepare_aia_file,
+    'euvi': prepare_euvi_file,
+    'eui': prepare_eui_file,
+}
+
+
+def _prepare_one(adapter, source, destination, geometry, overwrite, adapter_kwargs):
+    """Prepare one file in a worker process; unusable inputs become SkippedFile."""
+    try:
+        return _PREPARERS[adapter](
+            source,
+            destination,
+            geometry=geometry,
+            overwrite=overwrite,
+            **adapter_kwargs,
+        )
+    except FileExistsError:
+        return SkippedFile(source, 'prepared output already exists', True)
+    except Exception as error:
+        return SkippedFile(source, f'{type(error).__name__}: {error}')
 
 
 def prepare_euv_files(
@@ -814,41 +983,107 @@ def prepare_euv_files(
         raise ValueError('The EUV input list contains duplicate source paths.')
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    preparers = {
-        'aia': prepare_aia_file,
-        'euvi': prepare_euvi_file,
-        'eui': prepare_eui_file,
-    }
-    try:
-        preparer = preparers[adapter.lower()]
-    except KeyError as error:
-        raise ValueError(f'Unsupported EUV adapter {adapter!r}.') from error
+    adapter = adapter.lower()
+    if adapter not in _PREPARERS:
+        raise ValueError(f'Unsupported EUV adapter {adapter!r}.')
 
     requests = []
+    already_prepared = []
     destinations = set()
     for source in sources:
         destination = output_dir / f'{source.stem}.prepared.fits'
         if destination in destinations:
             raise ValueError(f'Output filename collision for {destination.name}.')
         destinations.add(destination)
-        requests.append((source, destination))
-
-    def run_one(request):
-        source, destination = request
-        return preparer(
-            source,
-            destination,
-            geometry=geometry,
-            overwrite=overwrite,
-            **adapter_kwargs,
-        )
+        # Existing products are skipped before any calibration work is done.
+        if destination.exists() and not overwrite:
+            already_prepared.append(SkippedFile(source, 'prepared output already exists', True))
+        else:
+            requests.append((source, destination))
 
     worker_count = _bounded_workers(workers, len(requests))
+    print(
+        f'Preparing {len(requests)} {adapter} file(s) with {worker_count} worker '
+        f'process(es); {len(already_prepared)} already prepared. '
+        'Each file is written as it completes.',
+        file=sys.stderr,
+        flush=True,
+    )
+    outcomes: list[Any] = list(already_prepared)
+    if not requests:
+        return _report_skipped(outcomes, len(sources))
+
+    progress = _ProgressLog(len(requests), adapter)
+
+    def record(source, outcome):
+        failure = None
+        if isinstance(outcome, SkippedFile) and not outcome.already_prepared:
+            failure = outcome.reason
+        skipped = isinstance(outcome, SkippedFile) and outcome.already_prepared
+        progress.finish(source, failure, skipped=skipped)
+        outcomes.append(outcome)
+
     if worker_count == 1:
-        results = [run_one(request) for request in requests]
+        for source, destination in requests:
+            try:
+                outcome = _prepare_one(
+                    adapter, source, destination, geometry, overwrite, adapter_kwargs
+                )
+            except KeyboardInterrupt:
+                progress.report_in_flight([source])
+                raise
+            record(source, outcome)
     else:
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            results = list(executor.map(run_one, requests))
+        # Calibration and reprojection hold the GIL, so threads would run
+        # nearly serially; separate processes scale with the worker count.
+        executor = ProcessPoolExecutor(
+            max_workers=worker_count, initializer=_install_stall_diagnostics
+        )
+        futures = {
+            executor.submit(
+                _prepare_one, adapter, source, destination, geometry, overwrite, adapter_kwargs
+            ): source
+            for source, destination in requests
+        }
+        try:
+            for future in as_completed(futures):
+                record(futures[future], future.result())
+        except KeyboardInterrupt:
+            progress.report_in_flight(
+                [source for future, source in futures.items() if future.running()]
+            )
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+        executor.shutdown()
+    progress.close()
+    return _report_skipped(outcomes, len(sources))
+
+
+def _report_skipped(outcomes, requested: int) -> list[PreparationResult]:
+    """Log every skipped input and return the products that were written."""
+    results = [item for item in outcomes if isinstance(item, PreparationResult)]
+    skipped = [item for item in outcomes if isinstance(item, SkippedFile)]
+    existing = [item for item in skipped if item.already_prepared]
+    failed = [item for item in skipped if not item.already_prepared]
+    if existing:
+        print(
+            f'Skipped {len(existing)} of {requested} input(s) that are already '
+            'prepared; pass --overwrite to rebuild them.',
+            file=sys.stderr,
+            flush=True,
+        )
+    if failed:
+        print(
+            f'Skipped {len(failed)} of {requested} unusable input(s).',
+            file=sys.stderr,
+            flush=True,
+        )
+    # Nothing usable at all is a pipeline problem, not a data defect.
+    if not results and not existing:
+        raise ValueError(
+            f'None of the {requested} EUV inputs could be prepared; '
+            f'first reason: {failed[0].reason}'
+        )
     return results
 
 
@@ -906,7 +1141,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     eui = subparsers.add_parser('eui', help='Ingest a calibrated Solar Orbiter/EUI L2 product.')
     _add_common_arguments(eui)
-    eui.add_argument('--calibration-id', required=True)
+    eui.add_argument(
+        '--calibration-id',
+        help='Defaults to the level-2 header value (CAL_ID, else VERS_CAL); '
+             'an explicit value is cross-checked against it.',
+    )
     eui.add_argument(
         '--sensitivity-convention',
         choices=sorted(SENSITIVITY_CONVENTIONS),
@@ -917,6 +1156,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    _install_stall_diagnostics()
     args = build_parser().parse_args(argv)
     geometry = GeometryConfig(
         shape=tuple(args.shape) if args.shape else None,
@@ -943,8 +1183,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             calibration_id=args.calibration_id,
             sensitivity_convention=args.sensitivity_convention,
         )
+    inputs = _expand_inputs(args.input)
     results = prepare_euv_files(
-        _expand_inputs(args.input),
+        inputs,
         args.output_dir,
         adapter=args.adapter,
         geometry=geometry,
@@ -952,7 +1193,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         overwrite=args.overwrite,
         **adapter_kwargs,
     )
-    print(f'Prepared {len(results)} files with schema {PREPARED_EUV_SCHEMA}.')
+    print(
+        f'Prepared {len(results)} of {len(inputs)} files with schema '
+        f'{PREPARED_EUV_SCHEMA}.'
+    )
     return 0
 if __name__ == '__main__':
     raise SystemExit(main())

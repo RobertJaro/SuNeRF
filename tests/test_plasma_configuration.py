@@ -293,13 +293,12 @@ def test_learnable_response_calibration_requires_one_global_reference():
         validate_plasma_config(config)
 
     response["global_reference"] = True
-    response["common_gain_limit_dex"] = 1.5
-    response["common_gain_prior_sigma_dex"] = 0.5
+    response["common_gain_limit_dex"] = 0.5
     assert validate_plasma_config(config)["instruments"][0][
         "temperature_response"
     ]["global_reference"] is True
 
-    response["gain_prior_sigma_dex"] = 0
+    response["gain_prior_sigma_dex"] = 0.075
     with pytest.raises(PlasmaConfigError, match="gain_prior_sigma_dex"):
         validate_plasma_config(config)
 
@@ -517,6 +516,11 @@ def test_shipped_absorption_configuration_is_valid_and_portable():
 
 
 def test_light_travel_time_is_a_validated_module_option():
+    from inspect import signature
+    from sunerf.model.plasma import PlasmaSuNeRFModule
+
+    assert signature(PlasmaSuNeRFModule.__init__).parameters['light_travel_time'].default is True
+
     config = _config()
     config["module"]["light_travel_time"] = True
     validate_plasma_config(config)

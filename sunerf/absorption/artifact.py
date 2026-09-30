@@ -199,6 +199,15 @@ class AbsorptionBundle:
             )
         return True
 
+    def instrument_for_throughput(self, content_sha256: str) -> str:
+        """Bundle instrument key whose channels were folded with this throughput."""
+        for record in self.provenance.get("throughputs", ()):
+            if record.get("content_sha256") == content_sha256:
+                return str(record["instrument_key"])
+        raise KeyError(
+            f"absorption bundle has no instrument folded with throughput {content_sha256!r}"
+        )
+
     def indices_for(self, instrument_key: str, channels: Sequence[str]) -> np.ndarray:
         from sunerf.resources import builtin_name
 

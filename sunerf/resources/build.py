@@ -27,6 +27,9 @@ from sunerf.resources import (
 )
 
 INSTRUMENTS = ("aia", "euvi_a", "euvi_b", "eui_fsi")
+# Instrument calibration inputs that the data pipeline reads directly, shipped
+# unchanged next to the derived physics tables.
+AIA_CORRECTION_TABLE_NAME = "aia_correction_table"
 ABSORPTION_NAME = "h_he_photoionization"
 IONIZATION_NAME = "h_he_chianti"
 VERNER_NAME = "verner96_h_he.dat"
@@ -49,6 +52,8 @@ LICENSES = """# Packaged physics resources: sources and attribution
 - SDO/AIA effective areas: AIA team / SolarSoft calibration (Boerner et al. 2012).
 - STEREO/SECCHI EUVI effective areas: SECCHI team calibration files.
 - Solar Orbiter/EUI FSI spectral calibration: EUI consortium public release.
+- SDO/AIA V10 degradation table (`calibration/`): SolarSoft
+  `aia_V10_20201119_190000_response_table.txt`, redistributed unchanged.
 
 All derived tables in this directory are produced by `sunerf-resources build`;
 `manifest.json` records their hashes and builder provenance.
@@ -97,8 +102,10 @@ def build_resources(
         build_responses,
         export_throughputs,
         fetch_instrument_inputs,
+        pipeline_paths,
         resolve_throughput_paths,
     )
+    from sunerf.response.providers.aia import AIA_CORRECTION_SOURCE, fetch_aia_sources
     from sunerf.response.providers.chianti import (
         ABUNDANCE_RELATIVE_PATH,
         CHIANTI_VERSION,
@@ -119,6 +126,11 @@ def build_resources(
     if fetch or not all(path.is_file() for path in throughputs.values()):
         fetch_instrument_inputs(root, instruments=INSTRUMENTS, force=fetch)
         throughputs = export_throughputs(root, instruments=INSTRUMENTS)
+    correction_table = (
+        pipeline_paths(root)["aia_sources"] / AIA_CORRECTION_SOURCE.filename
+    )
+    if not correction_table.is_file():
+        fetch_aia_sources(correction_table.parent)
 
     build_directory = root / "resources_build"
     responses = build_responses(
@@ -165,6 +177,7 @@ def build_resources(
         "absorption": absorption_path,
         **{f"throughput/{key}": Path(path) for key, path in throughputs.items()},
         **{f"response/{key}": Path(path) for key, path in responses.items()},
+        AIA_CORRECTION_TABLE_NAME: correction_table,
         "_abundance_relative": Path(ABUNDANCE_RELATIVE_PATH),
     }
 
@@ -182,8 +195,14 @@ def install_resources(products: dict[str, Path], destination=None) -> Path:
         f"ionization/{products['ionization'].name}": products["ionization"],
         f"atomic/{products['verner'].name}": products["verner"],
         f"absorption/{products['absorption'].name}": products["absorption"],
+        f"calibration/{products[AIA_CORRECTION_TABLE_NAME].name}":
+            products[AIA_CORRECTION_TABLE_NAME],
     }
-    aliases = {ABSORPTION_NAME: f"absorption/{products['absorption'].name}"}
+    aliases = {
+        ABSORPTION_NAME: f"absorption/{products['absorption'].name}",
+        AIA_CORRECTION_TABLE_NAME:
+            f"calibration/{products[AIA_CORRECTION_TABLE_NAME].name}",
+    }
     for key in INSTRUMENTS:
         layout[f"throughput/{key}.throughput.npz"] = products[f"throughput/{key}"]
         layout[f"response/{key}.sunerf.npz"] = products[f"response/{key}"]

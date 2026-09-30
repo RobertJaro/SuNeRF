@@ -7,15 +7,13 @@ import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.colors import SymLogNorm
 import numpy as np
 from astropy.visualization import AsinhStretch, ImageNormalize
-from matplotlib.colors import TwoSlopeNorm
 from sunpy.map import Map
 from sunpy.visualization.colormaps import cm
 
 from sunerf.data.psi.prepare_psi_clear import paired_product_files
-from sunerf.data.psi.degrade_psi import radial_gain_mask
-from sunerf.data.psi.prepare_psi_clear import radial_rsun
 
 
 DISPLAY_NAME = {"tb": "tB", "pb": "pB"}
@@ -69,13 +67,8 @@ def plot_sample(
     truth_dir: Path | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(2, 4, figsize=(16, 8), constrained_layout=True)
-    titles = (
-        "Clean (matched FOV)",
-        "Actual degraded",
-        "Injected additive mask",
-        "Injected radial gain",
-    )
+    fig, axes = plt.subplots(2, 3, figsize=(13, 8), constrained_layout=True)
+    titles = ("True (clean, matched FOV)", "Degraded", "Difference (degraded - clean)")
     for column, title in enumerate(titles):
         axes[0, column].set_title(title)
 
@@ -84,84 +77,57 @@ def plot_sample(
         degraded_map = Map(degraded_paths[product])
         clean = _matched_clean(clean_map, degraded_map)
         degraded = np.asarray(degraded_map.data, dtype=np.float32)
-        required_gain_keys = ("occmin", "occmax", "gainin", "gainout", "gainpow")
-        if not all(key in degraded_map.meta for key in required_gain_keys):
-            raise ValueError(
-                f"Degraded map lacks radial-gain metadata: {degraded_paths[product]}"
-            )
-        multiplier = radial_gain_mask(
-            radial_rsun(degraded_map),
-            degraded_map.meta["occmin"],
-            degraded_map.meta["occmax"],
-            degraded_map.meta["gainin"],
-            degraded_map.meta["gainout"],
-            degraded_map.meta["gainpow"],
-        )
-        additive = degraded / multiplier - clean
-        additive[~np.isfinite(degraded)] = np.nan
+        difference = degraded - clean
+        difference[~np.isfinite(degraded)] = np.nan
+
         if truth_dir is not None:
-            # The injected term is constant in time. A recovered term that departs
-            # from it means that the clean and degraded files do not belong together.
+            # The injected additive term is constant in time and follows the
+            # (clean + additive) * multiplier convention. A recovered term that
+            # departs from it means that the clean and degraded files do not
+            # belong together.
+            multiplier = np.load(truth_dir / view / f"{product}_multiplier.npy")
+            additive = degraded / multiplier - clean
             injected = np.load(truth_dir / view / f"{product}_additive.npy")
-            both = np.isfinite(injected) & np.isfinite(additive) & (injected > 0)
-            mismatch = float(np.median(np.abs(additive[both] - injected[both]) / injected[both]))
-            if mismatch > 0.01:
+            # The residual is signed (background subtraction) and the recovered
+            # one carries the frame noise: compare where the residual is a
+            # sizable part of its amplitude, relative to that amplitude.
+            amplitude = float(np.nanmax(np.abs(injected)))
+            both = np.isfinite(injected) & np.isfinite(additive) & (np.abs(injected) > 0.1 * amplitude)
+            mismatch = float(np.median(np.abs(additive[both] - injected[both])) / amplitude)
+            if mismatch > 0.05:
                 print(
                     f"WARNING {view} {product} {degraded_paths[product].name}: recovered additive "
                     f"departs from the injected one by {100 * mismatch:.1f}% (median); the clean and "
                     "degraded sequences are inconsistent, e.g. one of them was re-rendered."
                 )
-        multiplier[~np.isfinite(degraded)] = np.nan
 
+        # Shared stretch for the true and degraded images. The degraded image is
+        # background-subtracted and may be negative, so the lower bound follows it.
         values = _finite_values(clean, degraded)
         vmax = max(float(np.nanpercentile(values, 99.5)), np.finfo(np.float32).tiny)
-        image_norm = ImageNormalize(vmin=0.0, vmax=vmax, stretch=AsinhStretch(1.0e-2))
+        vmin = min(0.0, float(np.nanpercentile(_finite_values(degraded), 0.5)))
+        image_norm = ImageNormalize(vmin=vmin, vmax=vmax, stretch=AsinhStretch(1.0e-2))
         for column, image in enumerate((clean, degraded)):
             artist = axes[row, column].imshow(
                 image, origin="lower", cmap=cm.soholasco2, norm=image_norm
             )
             fig.colorbar(artist, ax=axes[row, column], fraction=0.046, label="MSB")
 
-        # The additive term is positive and as steep as the corona, so it takes
-        # the stretch of the images with its own upper bound; on their scale only
-        # its innermost ring would exceed the linear part of the stretch.
-        additive_vmax = max(
-            float(np.nanpercentile(_finite_values(additive), 99.5)), np.finfo(np.float32).tiny
+        # The difference is signed and as steep as the corona: a symmetric log
+        # norm centered on zero keeps both the faint outer and the bright inner
+        # residuals visible.
+        difference_vmax = max(
+            float(np.nanpercentile(np.abs(_finite_values(difference)), 99.5)), np.finfo(np.float32).tiny
         )
-        additive_artist = axes[row, 2].imshow(
-            additive,
-            origin="lower",
-            cmap="viridis",
-            norm=ImageNormalize(vmin=0.0, vmax=additive_vmax, stretch=AsinhStretch(1.0e-2)),
-        )
-        fig.colorbar(
-            additive_artist,
-            ax=axes[row, 2],
-            fraction=0.046,
-            label="additive [MSB]",
-        )
-
-        multiplier_values = _finite_values(multiplier)
-        multiplier_limit = max(
-            float(np.nanpercentile(np.abs(multiplier_values - 1.0), 99.5)),
-            np.finfo(np.float32).eps,
-        )
-        multiplier_artist = axes[row, 3].imshow(
-            multiplier,
+        difference_artist = axes[row, 2].imshow(
+            difference,
             origin="lower",
             cmap="RdBu_r",
-            norm=TwoSlopeNorm(
-                vmin=1.0 - multiplier_limit,
-                vcenter=1.0,
-                vmax=1.0 + multiplier_limit,
+            norm=SymLogNorm(
+                linthresh=1.0e-2 * difference_vmax, vmin=-difference_vmax, vmax=difference_vmax
             ),
         )
-        fig.colorbar(
-            multiplier_artist,
-            ax=axes[row, 3],
-            fraction=0.046,
-            label="radial gain",
-        )
+        fig.colorbar(difference_artist, ax=axes[row, 2], fraction=0.046, label="difference [MSB]")
         axes[row, 0].set_ylabel(DISPLAY_NAME[product])
         for axis in axes[row]:
             axis.set_xticks([])

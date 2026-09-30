@@ -66,23 +66,30 @@ class SplitTemporalSirenModel(nn.Module):
             # fusion branch
             fusion_dim=256,
             fusion_layers=3,
+            # frequency of the hidden layers of all branches
+            w0=1.,
             # dynamic blending
             alpha=1.0,
-            cold_steps=2e4,
-            warm_steps=1e4,
+            cold_steps=None,
+            warm_steps=None,
             freeze_static=False):
         super().__init__()
         self.output_dim = output_dim
         self.alpha_max = nn.Parameter(torch.tensor(alpha, dtype=torch.float32), requires_grad=False)
-        self.current_alpha = nn.Parameter(torch.tensor(0.0, dtype=torch.float32), requires_grad=False)
+        # An unset phase is skipped: without cold and warm steps the dynamic
+        # branch contributes fully from the first step.
+        cold_steps = 0 if cold_steps is None else cold_steps
+        warm_steps = 0 if warm_steps is None else warm_steps
+        initial_alpha = alpha if cold_steps <= 0 and warm_steps <= 0 else 0.0
+        self.current_alpha = nn.Parameter(torch.tensor(initial_alpha, dtype=torch.float32), requires_grad=False)
         self.cold_steps = nn.Parameter(torch.tensor(int(cold_steps), dtype=torch.int64), requires_grad=False)
         self.warm_steps = nn.Parameter(torch.tensor(int(warm_steps), dtype=torch.int64), requires_grad=False)
-        self._dynamic_enabled = False
+        self._dynamic_enabled = initial_alpha != 0.0
 
         # initialize static branch
         static_blocks = [SirenLayer(in_dim=static_input_dim, out_dim=static_dim, w0=w0_static, is_first=True)]
         static_blocks.extend(
-            SirenLayer(in_dim=static_dim, out_dim=static_dim, w0=1)
+            SirenLayer(in_dim=static_dim, out_dim=static_dim, w0=w0)
             for _ in range(max(static_layers - 1, 0))
         )
         self.static_net = nn.Sequential(*static_blocks)
@@ -90,16 +97,16 @@ class SplitTemporalSirenModel(nn.Module):
         # initialize dynamic branch
         dynamic_blocks = [SirenLayer(in_dim=dynamic_input_dim, out_dim=dynamic_dim, w0=w0_dynamic, is_first=True)]
         dynamic_blocks.extend(
-            SirenLayer(in_dim=dynamic_dim, out_dim=dynamic_dim, w0=1)
+            SirenLayer(in_dim=dynamic_dim, out_dim=dynamic_dim, w0=w0)
             for _ in range(max(dynamic_layers - 1, 0))
         )
         self.dynamic_net = nn.Sequential(*dynamic_blocks)
 
         # initialize fusion branch
         fusion_in_dim = static_dim + dynamic_dim
-        fusion_blocks = [SirenLayer(in_dim=fusion_in_dim, out_dim=fusion_dim, w0=1)]
+        fusion_blocks = [SirenLayer(in_dim=fusion_in_dim, out_dim=fusion_dim, w0=w0)]
         fusion_blocks.extend(
-            SirenLayer(in_dim=fusion_dim, out_dim=fusion_dim, w0=1)
+            SirenLayer(in_dim=fusion_dim, out_dim=fusion_dim, w0=w0)
             for _ in range(max(fusion_layers - 1, 0))
         )
         self.fusion_net = nn.Sequential(*fusion_blocks)
@@ -401,6 +408,11 @@ class RhoModel(nn.Module):
             self.model = SplitTemporalSirenModel(output_dim=4, **kwargs)
         elif model_type == 'default':
             self.model = SirenModel(in_dim=4, out_dim=4, **kwargs)
+        elif model_type == 'mlp':
+            # Same network as the ``mlp`` backend of PlasmaModel. Model
+            # coordinates exceed [-1, 1], so the frequency range of the
+            # positional encoding has to be set per axis in the config.
+            self.model = MLPModel(in_dim=4, out_dim=4, **kwargs)
         else:
             raise ValueError(f"Unknown RhoModel model_type: {model_type}")
 
@@ -412,14 +424,16 @@ class RhoModel(nn.Module):
 
         if self.model_type == 'static':
             model_out = self.model(carrington_coords[..., :3])
-        elif self.model_type == 'default':
+        elif self.model_type in ('default', 'mlp'):
             model_out = self.model(carrington_coords)
         elif self.model_type == 'split_temporal':
             model_out = self.model(carrington_coords[..., :3], coords)
         else:
             raise ValueError(f"Unknown RhoModel model_type: {self.model_type}")
 
-        log_rho = model_out[..., 0:1] - 2 * torch.log(radial_distance)
+        # Bounded from below so that a sample at the center of the Sun yields a
+        # finite density and finite gradients instead of exp(inf).
+        log_rho = model_out[..., 0:1] - 2 * torch.log(radial_distance.clamp_min(1e-6))
         rho = torch.exp(log_rho)
 
         v = self.v_radial * radial + self.v_scale * model_out[..., 1:4]

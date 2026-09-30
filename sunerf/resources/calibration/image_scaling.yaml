@@ -1,0 +1,77 @@
+# Fixed per-channel loss divisors (prepared-image 99.5th percentile, temporal
+# median) shared by every run; reference with divisor: "builtin:image_scaling".
+# Re-estimate with `python -m sunerf.data.euv.estimate_scaling` and paste here.
+schema: sunerf.image_scaling_table.v1
+created: '2026-09-23T00:00:00+00:00'
+instruments:
+  AIA:
+    schema: sunerf.image_scaling.v1
+    operation: divide
+    channel_ids:
+    - A94
+    - A131
+    - A171
+    - A193
+    - A211
+    - A335
+    divisor:
+    - 10.329000473022461
+    - 57.695098876953125
+    - 1036.8580322265625
+    - 2073.3994140625
+    - 1063.56640625
+    - 82.42330169677734
+    inverse_operation: multiply
+    estimator:
+      strategy: robust_percentile
+      percentile: 99.5
+      pixel_statistic: absolute_valid_magnitude
+      temporal_reduction: median
+      file_count: 200
+    source:
+      campaign: scripts/plasma_polar_2025_10 (2025-09-27 .. 2025-11-05, 1 h; EUI FSI
+        2025-10-04 .. 10-29, 6 h)
+      prepared_geometry: 512x512, hpc bounds +/-1560 arcsec
+      estimated: '2026-09-23'
+  EUVI-A:
+    schema: sunerf.image_scaling.v1
+    operation: divide
+    channel_ids:
+    - '171'
+    - '195'
+    - '284'
+    divisor:
+    - 652.5565185546875
+    - 516.1240234375
+    - 77.1801986694336
+    inverse_operation: multiply
+    estimator:
+      strategy: robust_percentile
+      percentile: 99.5
+      pixel_statistic: absolute_valid_magnitude
+      temporal_reduction: median
+      file_count: 200
+    source:
+      campaign: scripts/plasma_polar_2025_10 (2025-09-27 .. 2025-11-05, 1 h; EUI FSI
+        2025-10-04 .. 10-29, 6 h)
+      prepared_geometry: 512x512, hpc bounds +/-1560 arcsec
+      estimated: '2026-09-23'
+  EUI:
+    schema: sunerf.image_scaling.v1
+    operation: divide
+    channel_ids:
+    - '174'
+    divisor:
+    - 2886.476806640625
+    inverse_operation: multiply
+    estimator:
+      strategy: robust_percentile
+      percentile: 99.5
+      pixel_statistic: absolute_valid_magnitude
+      temporal_reduction: median
+      file_count: 95
+    source:
+      campaign: scripts/plasma_polar_2025_10 (2025-09-27 .. 2025-11-05, 1 h; EUI FSI
+        2025-10-04 .. 10-29, 6 h)
+      prepared_geometry: 512x512, hpc bounds +/-1560 arcsec
+      estimated: '2026-09-23'

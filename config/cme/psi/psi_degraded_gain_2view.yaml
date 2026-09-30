@@ -1,0 +1,215 @@
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/psi_obs/degraded_gain_2view_v04"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf-cme-obs/psi_obs/degraded_gain_2view_v04"
+
+# Observations rendered by scripts/psi_test/render_clean.sh in the field of view
+# of the instrument that each view imitates:
+#   L5_wide: PUNCH, 15--30 R_sun
+#   L5: CCOR, 3.7--17 R_sun, total brightness only
+#   L4: STEREO-A COR2, 2.5--15 R_sun
+# The clear polar P1 view (80 deg latitude, 2--30 R_sun) is withheld for evaluation.
+# scripts/psi_test/prepare_data.sh degrades the training views (degraded_gain
+# set) as (clean + detector additive) * gain + noise - min_t, with a per-view
+# gain = calibration * radial vignetting * (1 + a cos 2phi). The model learns
+# per-channel additive and multiplicative image-plane fields without priors,
+# with the additive scale equal to the asinh knee of the view
+# (config/cme/2025_09/2025_09_cme.yaml uses the same setup on observations).
+# All psi_clean_* and psi_degraded_* configs share one training setup.
+instruments:
+  - type: default
+    key: L5_wide
+    scaling: { type: "asinh", a: 1.0e-5 }
+    correction:
+      corrections: [tB_add, pB_add, tB_mul, pB_mul]
+      additive_parametrization: exp  # add = scale * a * exp(b), sign carried by a
+      additive_scale: 1.0e-5
+  - type: default
+    key: L5
+    scaling: { type: "asinh", a: 1.0e-3 }
+    correction:
+      corrections: [tB_add, tB_mul]
+      additive_parametrization: exp  # add = scale * a * exp(b), sign carried by a
+      additive_scale: 1.0e-3
+  - type: default
+    key: L4
+    scaling: { type: "asinh", a: 1.0e-3 }
+    correction:
+      corrections: [tB_add, pB_add, tB_mul, pB_mul]
+      additive_parametrization: exp  # add = scale * a * exp(b), sign carried by a
+      additive_scale: 1.0e-3
+  - type: default
+    key: P1
+    scaling: { type: "asinh", a: 1.0e-3 }
+
+# Split-temporal SIREN: a static Carrington-frame branch plus a dynamic branch.
+# Long cold phase: the additive masks have to converge while only the static
+# branch is active; once the dynamic branch is on it absorbs static image-plane
+# structure and the masks stop improving.
+model:
+  model_type: split_temporal
+  cold_steps: 5000
+  warm_steps: 5000
+
+module:
+  light_travel_time: false
+  lr_config: { start: 1.0e-3, end: 1.0e-4, iterations: 200000 }
+
+data:
+  # First pre-event frame: scripts/psi_test/render_clean.sh prepends 20 days
+  # (80 frames at 6 h) of the corotating first cube before the eruption at
+  # 2021-10-28T15:30:00.
+  ref_date: "2021-10-08T15:30:00"
+  # Eruption phase covered by the 145 PSI cubes.
+  cme_time: &cme_time ["2021-10-28T15:30:00", "2021-10-29T03:30:00"]
+  # Every view is split into two equally sampled datasets that share the
+  # instrument modules: a background dataset at a fixed 6 h cadence over the
+  # full series and a CME dataset with every frame of the PSI cube sequence.
+  # Each takes half of the rays per batch of the view.
+  train_datasets:
+    - type: psi_cme
+      key: L5_wide_background
+      instrument_key: L5_wide
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/degraded_gain/L5_wide/pb/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/degraded_gain/L5_wide/tb/*"
+      cadence: "6h"
+      batch_size: 512
+      debug: false
+    - type: psi_cme
+      key: L5_wide_cme
+      instrument_key: L5_wide
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/degraded_gain/L5_wide/pb/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/degraded_gain/L5_wide/tb/*"
+      time_range: *cme_time
+      batch_size: 512
+      debug: false
+    - type: psi_cme
+      key: L5_background
+      instrument_key: L5
+      data_path_pB: null
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/degraded_gain/L5/tb/*"
+      cadence: "6h"
+      batch_size: 512
+      debug: false
+    - type: psi_cme
+      key: L5_cme
+      instrument_key: L5
+      data_path_pB: null
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/degraded_gain/L5/tb/*"
+      time_range: *cme_time
+      batch_size: 512
+      debug: false
+    - type: psi_cme
+      key: L4_background
+      instrument_key: L4
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/degraded_gain/L4/pb/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/degraded_gain/L4/tb/*"
+      cadence: "6h"
+      batch_size: 1024
+      debug: false
+    - type: psi_cme
+      key: L4_cme
+      instrument_key: L4
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/degraded_gain/L4/pb/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/degraded_gain/L4/tb/*"
+      time_range: *cme_time
+      batch_size: 1024
+      debug: false
+    - type: random
+      # Physics samples cover only the eruption phase.
+      time_range: *cme_time
+      radius_range: [1.5, 30.2]
+      unit: solRad
+      batch_size: 4096
+      volume_uniform_sampling: true
+      radial_sampling_exponent: 2
+
+  # Frame 0130 follows the 80 pre-event frames and renders cube 50.
+  valid_datasets:
+    - type: psi_cme
+      key: L5_wide
+      instrument_key: L5_wide
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/degraded_gain/L5_wide/pb/L5_wide_pb0130.fts"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/degraded_gain/L5_wide/tb/L5_wide_tb0130.fts"
+    - type: psi_cme
+      key: L5
+      instrument_key: L5
+      data_path_pB: null
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/degraded_gain/L5/tb/L5_tb0130.fts"
+    - type: psi_cme
+      key: L4
+      instrument_key: L4
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/degraded_gain/L4/pb/L4_pb0130.fts"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/degraded_gain/L4/tb/L4_tb0130.fts"
+    - type: psi_cme
+      key: P1
+      instrument_key: P1
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/P1/pb/P1_pb0130.fts"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/P1/tb/P1_tb0130.fts"
+    # The slice timelines cover only the PSI cubes (145 dumps at 5 min), not
+    # the 20 pre-event days rendered from the static first cube.
+    - type: radial_slices
+      key: valid_radial
+      radii: [5, 10, 15, 20, 25]
+      validation_time_range: *cme_time
+    - type: longitude_slices
+      key: valid_lon_slices
+      radius_range: [2.0, 30.0]
+      validation_time_range: *cme_time
+
+  Rs_per_ds: 15
+  # The series spans 20.5 days (20 pre-event days plus 145 cubes at 5 min);
+  # one model time unit is one day.
+  seconds_per_dt: 86400
+  batch_size: 4096
+  validation_batch_size: 4096
+  num_workers: 4
+
+callbacks:
+  - type: thomson_image
+    ds_key: L5_wide
+  - type: thomson_image
+    ds_key: L5
+  - type: thomson_image
+    ds_key: L4
+  - type: thomson_image
+    ds_key: P1
+  - type: correction_image
+    ds_key: L5_wide
+  - type: correction_image
+    ds_key: L5
+  - type: correction_image
+    ds_key: L4
+  - type: radial_slices
+    ds_key: valid_radial
+  - type: longitude_density
+    ds_key: valid_lon_slices
+
+logging:
+  entity: robert_jarolim
+  project: sunerf-cme-obs-v4
+  name: "PSI obs degraded+gain 2-view PUNCH/CCOR/COR2 - P1 held out"
+
+sampling:
+  type: spherical
+  n_samples: 64
+  # The rendered lines of sight end at the 30.2 R_sun cube boundary.
+  max_distance: 30.2
+  radial_weighting: true
+
+lambda:
+  image: 1.0
+  ratio: 1.0
+  # No prior on the image-plane fields: an L2 prior on the additive masks would
+  # only select the smallest mask and bias the static corona, and a pull of the
+  # multiplicative fields toward one would bias a correct gain. Smoothness comes
+  # from the correction network (w0 = 1, exp(0.01 x)); the static background is
+  # calibrated after training and the CME excess is unaffected.
+  tB_add: 0.0
+  pB_add: 0.0
+  tB_mul: 0.0
+  pB_mul: 0.0
+  continuity: 1.0e-3
+  ballistic: 0.0
+  velocity: 1.0
+  radial: 1.0
+training:
+  log_every_n_steps: 1000

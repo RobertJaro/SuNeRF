@@ -47,6 +47,7 @@ def _module():
         response_id="sha256:test",
         instrument_gain_delta_dex=torch.tensor([0.0, 0.05]),
         gain_limit_dex=0.15,
+        absorption=True,
     )
     outputs = {
         "target_image": torch.tensor(
@@ -149,3 +150,41 @@ def test_callback_cadence_and_all_plot_families(monkeypatch):
     )
     restored.load_state_dict(callback.state_dict())
     assert restored.state_dict() == {"validation_count": 2}
+
+
+def _diagnostic_titles(callback, module):
+    outputs = callback._reshape_outputs(module.validation_outputs["aia_valid"])
+    renderer = module.rendering.rendering_modules["AIA"]
+    figure = callback._plot_plasma_diagnostics(outputs, renderer)
+    if figure is None:
+        return []
+    return [axis.get_title() for axis in figure.axes if axis.get_title()]
+
+
+def test_plasma_diagnostics_track_modeled_physics():
+    products = _products()
+    products["plasma_diagnostics"]["quantities"] = [
+        "mean_log_temperature",
+        "absorption_fraction",
+        "cool_hydrogen_column",
+    ]
+    callback = EUVTomographyCallback(
+        "aia_valid", "AIA", (2, 2), ({"id": "A94"}, {"id": "A171"}), ("171",), products,
+    )
+
+    module = _module()
+    assert _diagnostic_titles(callback, module) == [
+        "Mean log$_{10}$(T / K)", "Mean absorbed fraction",
+    ]
+
+    module.validation_outputs["aia_valid"]["cool_hydrogen_column_cm2"] = torch.tensor(
+        [1e18, 2e18, 3e18, 4e18]
+    )
+    assert _diagnostic_titles(callback, module) == [
+        "Mean log$_{10}$(T / K)", "Mean absorbed fraction", "Cool H column [cm$^{-2}$]",
+    ]
+
+    module.rendering.rendering_modules["AIA"].absorption = False
+    assert _diagnostic_titles(callback, module) == [
+        "Mean log$_{10}$(T / K)", "Cool H column [cm$^{-2}$]",
+    ]

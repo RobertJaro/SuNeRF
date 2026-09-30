@@ -69,11 +69,11 @@ python -m sunerf.data.prep.solo_insitu \
 
 # prep COR files
 csh <<'CSH'
-cd $HOME
+cd /glade/u/home/rjarolim
 module load idl
 
 setenv SSW_INSTR "SECCHI STEREO"
-setenv SSW $HOME/ssw
+setenv SSW /glade/u/home/rjarolim/ssw
 source $SSW/gen/setup/setup.ssw
 sswidl <<'IDL'
 

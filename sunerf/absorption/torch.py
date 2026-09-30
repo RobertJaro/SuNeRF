@@ -46,6 +46,7 @@ class PhotoionizationOpacity(nn.Module):
         hydrogen_density_convention="fully_ionized_proxy",
         minimum_electron_per_hydrogen=0.1,
         cool_ion_fractions=None,
+        throughput_sha256=None,
     ):
         super().__init__()
         if hydrogen_density_convention not in HYDROGEN_DENSITY_CONVENTIONS:
@@ -59,7 +60,13 @@ class PhotoionizationOpacity(nn.Module):
         self.hydrogen_density_convention = hydrogen_density_convention
         self.minimum_electron_per_hydrogen = minimum_electron_per_hydrogen
         bundle = load_absorption_bundle(artifact)
-        indices = bundle.indices_for(instrument_key, channels)
+        # A response artifact records the throughput it was folded with; that
+        # identity selects the bundle rows regardless of the configured key.
+        bundle_instrument_key = (
+            instrument_key if throughput_sha256 is None
+            else bundle.instrument_for_throughput(throughput_sha256)
+        )
+        indices = bundle.indices_for(bundle_instrument_key, channels)
         self.bundle_id = bundle.bundle_id
         self.instrument_key = str(instrument_key)
         self.channels = tuple(str(channel) for channel in channels)

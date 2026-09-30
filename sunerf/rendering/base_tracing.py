@@ -79,8 +79,8 @@ def _mask_rendered_output(output, ray_valid):
 
 def _device_safe_normal_shuffler(**config):
     shuffler = NormalTimeShuffler(**config)
-    # NormalTimeShuffler predates module device management and stores gamma as a
-    # plain CPU tensor. A non-persistent buffer follows the module to GPU without
+    # NormalTimeShuffler predates module device management and stores its
+    # per-step decrement (gamma) as a plain CPU tensor. A non-persistent buffer follows the module to GPU without
     # changing the state-dict schema expected by legacy checkpoints.
     gamma = shuffler.gamma
     del shuffler.gamma
@@ -92,7 +92,7 @@ class MultiResolutionRenderingModule(nn.Module):
 
     def __init__(self, coarse_model, fine_model, rendering_modules, Rs_per_ds,
                  seconds_per_dt=None, sampling_config=None, hierarchical_sampling_config=None, shuffle_config=None,
-                 light_travel_time=False):
+                 light_travel_time=True):
         super().__init__()
         self.Rs_per_ds = Rs_per_ds
         self.seconds_per_dt = seconds_per_dt
@@ -248,7 +248,7 @@ class BasicRenderingModule(nn.Module):
 
     def __init__(self, model, rendering_modules, Rs_per_ds,
                  seconds_per_dt=None, sampling_config=None, hierarchical_sampling_config=None, shuffle_config=None,
-                 light_travel_time=False):
+                 light_travel_time=True):
         super().__init__()
         self.Rs_per_ds = Rs_per_ds
         self.seconds_per_dt = seconds_per_dt
@@ -497,7 +497,7 @@ def load_shuffler(shuffle_config, *, seconds_per_dt=None):
                         'A positive seconds_per_dt is required for physical time augmentation.'
                     )
                 start_seconds = float(shuffle_config.pop('start_seconds'))
-                end_seconds = float(shuffle_config.pop('end_seconds', 1e-2))
+                end_seconds = float(shuffle_config.pop('end_seconds', 0.0))
                 if not (
                     math.isfinite(start_seconds)
                     and math.isfinite(end_seconds)
@@ -512,7 +512,7 @@ def load_shuffler(shuffle_config, *, seconds_per_dt=None):
                     raise ValueError('normal_time iterations must be positive.')
                 shuffle_config['start'] = start_seconds / float(seconds_per_dt)
                 shuffle_config['end'] = end_seconds / float(seconds_per_dt)
-                shuffler = _device_safe_normal_shuffler(**shuffle_config)
+                shuffler = _device_safe_normal_shuffler(seconds_per_dt=seconds_per_dt, **shuffle_config)
                 shuffler.start_seconds = start_seconds
                 shuffler.end_seconds = end_seconds
                 return shuffler
@@ -523,7 +523,7 @@ def load_shuffler(shuffle_config, *, seconds_per_dt=None):
                 DeprecationWarning,
                 stacklevel=2,
             )
-            return _device_safe_normal_shuffler(**shuffle_config)
+            return _device_safe_normal_shuffler(seconds_per_dt=seconds_per_dt, **shuffle_config)
         else:
             raise NotImplementedError(f"Shuffle type {shuffle_type} not implemented.")
     else:

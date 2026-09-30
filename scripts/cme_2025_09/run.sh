@@ -14,7 +14,7 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 ################################################################################
 # Train coarse/background SuNeRF model
 ################################################################################
-python -m sunerf.run_thomson --config "config/cme/2025_09.yaml"
+python -m sunerf.run_thomson --config "config/cme/2025_09/2025_09_cme.yaml"
 
 ################################################################################
 # Fine-tune the CME window with fixed instrument corrections

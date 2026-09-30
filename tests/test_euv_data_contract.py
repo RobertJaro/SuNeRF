@@ -506,3 +506,26 @@ def torch_is_finite(value):
     # Keep torch out of module import until this integration test actually runs.
     import torch
     return bool(torch.isfinite(value).all())
+
+
+def test_prepared_eui_map_without_pc_keys_loads(tmp_path):
+    # sunpy's EUIMap declares _rotation_matrix_from_crota as a property that
+    # GenericMap.rotation_matrix calls; a CROTA-only header must still load.
+    from astropy.io import fits
+
+    from sunerf.data.euv.observation import load_prepared_map
+
+    header = fits.Header({
+        'OBSRVTRY': 'Solar Orbiter', 'INSTRUME': 'EUI', 'DETECTOR': 'FSI', 'WAVELNTH': 174,
+        'DATE-OBS': '2025-10-14T00:00:00', 'CTYPE1': 'HPLN-TAN', 'CTYPE2': 'HPLT-TAN',
+        'CUNIT1': 'arcsec', 'CUNIT2': 'arcsec', 'CDELT1': 6.0, 'CDELT2': 6.0,
+        'CRPIX1': 2.5, 'CRPIX2': 2.5, 'CRVAL1': 0.0, 'CRVAL2': 0.0, 'CROTA2': 0.0,
+        'DSUN_OBS': 8.9e10, 'HGLN_OBS': 0.0, 'HGLT_OBS': 16.8, 'RSUN_REF': 695700000.0,
+    })
+    path = tmp_path / 'eui.prepared.fits'
+    fits.PrimaryHDU(np.ones((4, 4), dtype=np.float32), header).writeto(path)
+
+    s_map = load_prepared_map(path)
+    assert type(s_map).__name__ == 'EUIMap'
+    np.testing.assert_allclose(s_map.rotation_matrix, np.eye(2))
+    assert s_map.wcs is not None

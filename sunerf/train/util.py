@@ -40,12 +40,19 @@ class TimeShuffler(nn.Module):
 
 
 class NormalTimeShuffler(nn.Module):
-    def __init__(self, start=50, end=1e-2, iterations=1e5, instruments=None):
+    """Gaussian time jitter whose width decays linearly from start to end."""
+
+    def __init__(self, start=50, end=0.0, iterations=1e5, instruments=None, seconds_per_dt=None):
         super().__init__()
         self.end = end
         self.scaling = nn.Parameter(torch.tensor(start, dtype=torch.float32), requires_grad=False)
-        self.gamma = torch.tensor((end / start) ** (1 / iterations), dtype=torch.float32)
+        # Width removed per training step; the schedule reaches ``end`` after
+        # ``iterations`` steps and stays there.
+        self.gamma = torch.tensor((start - end) / iterations, dtype=torch.float32)
         self.instruments = instruments
+        # Conversion from normalized model time to seconds; enables logging the
+        # jitter width in physical units (hours) alongside the normalized value.
+        self.seconds_per_dt = None if seconds_per_dt is None else float(seconds_per_dt)
 
     def forward(self, batch):
         if self.scaling == 0:
@@ -59,15 +66,14 @@ class NormalTimeShuffler(nn.Module):
         time += torch.randn_like(time) * self.scaling
 
     def on_train_batch_end(self, *args, **kwargs):
-        if self.scaling > self.end:
-            new_gamma = self.scaling * self.gamma
-            self.scaling.copy_(new_gamma)
-        else:
-            new_gamma = torch.zeros_like(self.scaling)
-            self.scaling.copy_(new_gamma)
+        self.scaling.copy_((self.scaling - self.gamma).clamp_min(self.end))
         @rank_zero_only
         def _log():
-            wandb.log({'time_random': self.scaling.detach().cpu().numpy()}, commit=False)
+            scaling = float(self.scaling.detach().cpu())
+            if self.seconds_per_dt is not None:
+                wandb.log({'time_random_hours': scaling * self.seconds_per_dt / 3600.0}, commit=False)
+            else:
+                wandb.log({'time_random': scaling}, commit=False)
         _log()
 
 class RotatedTimeShuffler(nn.Module):

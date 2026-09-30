@@ -373,6 +373,8 @@ def build_synthetic_state(args):
         seconds_per_dt=args.seconds_per_dt,
         sampling_config=sampling_config,
         hierarchical_sampling_config=hierarchical_sampling_config,
+        # The grid holds instantaneous PSI snapshots stamped with their own times.
+        light_travel_time=False,
     ).eval()
 
     ny, nx = args.resolution
@@ -444,6 +446,7 @@ def build_synthetic_state(args):
                 "seconds_per_dt": float(args.seconds_per_dt),
                 "sampling_config": sampling_config,
                 "hierarchical_sampling_config": hierarchical_sampling_config,
+                "light_travel_time": False,
                 "temperature_response_config": response_config,
                 "absorption_config": absorption_config,
             },

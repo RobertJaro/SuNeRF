@@ -17,13 +17,16 @@ from sunerf.data.download.core import (
     parse_cadence,
     parse_iso_datetime,
     request_from_args,
+    search_with_retry,
 )
 
 
 DEFAULT_CHANNELS = (174, 304)
 
 
-def _soar_records(response):
+def _soar_search(*query):
+    """Search SOAR and reject empty responses so transient failures are retried."""
+    response = Fido.search(*query)
     try:
         records = response["soar"]
     except (KeyError, IndexError) as error:
@@ -37,23 +40,31 @@ def _times(records):
     return np.asarray([parse_iso_datetime(str(value)) for value in records["Start time"]])
 
 
-def select_channel_sets(request, *, channels, cadence, match_tolerance):
-    try:
-        from sunpy_soar import Product, SOOP
-    except ImportError as error:
-        raise ImportError(
-            "EUI downloads require the optional sunpy-soar package."
-        ) from error
+def select_channel_sets(request, *, channels, cadence, match_tolerance, soop=None):
+    # sunpy >= 6 ships the SOAR attrs as ``a.soar``; older installs need sunpy-soar.
+    soar_attrs = getattr(a, "soar", None)
+    if soar_attrs is None:
+        try:
+            import sunpy_soar.attrs as soar_attrs
+        except ImportError as error:
+            raise ImportError(
+                "EUI downloads require the optional sunpy-soar package."
+            ) from error
+    Product, SOOP = soar_attrs.Product, soar_attrs.SOOP
     time = a.Time(request.start, request.end)
+    # Most FSI synoptic frames are taken under a SOOP (e.g.
+    # R_FULL_LRES_LCAD_RS-Synoptics-High); filtering on SOOP "none" discards them.
+    soop_query = [] if soop is None else [SOOP(soop)]
     records_by_channel = []
     for channel in channels:
-        records_by_channel.append(_soar_records(Fido.search(
+        records_by_channel.append(search_with_retry(
+            _soar_search,
             time,
             a.Instrument.eui,
             Product(f"eui-fsi{int(channel)}-image"),
             a.Level(2),
-            SOOP("none"),
-        )))
+            *soop_query,
+        ))
 
     reference_times = _times(records_by_channel[0])
     reference_indices = cadence_indices(
@@ -85,12 +96,14 @@ def download(
     channels=DEFAULT_CHANNELS,
     cadence=None,
     match_tolerance=dt.timedelta(minutes=1),
+    soop=None,
 ):
     selected = select_channel_sets(
         request,
         channels=tuple(channels),
         cadence=cadence,
         match_tolerance=match_tolerance,
+        soop=soop,
     )
     return fetch_fido(*selected, request=request, description="EUI download")
 
@@ -106,6 +119,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=parse_cadence("1m"),
         help="Maximum separation within a multi-channel observation set.",
     )
+    parser.add_argument(
+        "--soop",
+        default=None,
+        help="Restrict to one SOOP name (e.g. 'none'); default keeps every SOOP.",
+    )
     return parser
 
 
@@ -118,6 +136,7 @@ def main(argv=None) -> int:
         channels=args.channels,
         cadence=args.cadence,
         match_tolerance=args.match_tolerance,
+        soop=args.soop,
     )
     return 0
 

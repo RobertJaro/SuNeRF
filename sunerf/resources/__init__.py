@@ -26,6 +26,7 @@ _CANDIDATE_PATTERNS = (
     "throughput/{name}.throughput.npz",
     "spectral/{name}.spectral.npz",
     "ionization/{name}.npz",
+    "calibration/{name}.yaml",
 )
 
 

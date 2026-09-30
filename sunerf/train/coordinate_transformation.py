@@ -79,31 +79,6 @@ def carrington_rotation_rate(f=torch):
     return omega_carrington
 
 
-def differential_rotation_rate(latitude, f=torch):
-    """
-    Compute the solar differential rotation angular velocity at a given latitude.
-
-    Parameters
-    ----------
-    latitude : array-like or tensor
-        Heliographic latitude(s) in radians (positive northward).
-    f : module, optional
-        Math module to use for calculations (default: torch; can also use numpy).
-
-    Returns
-    -------
-    omega : array-like or tensor
-        Angular velocity (rad/s) at the given latitude(s).
-    """
-    A = 14.713 * (f.pi / 180) / 86400  # rad/s
-    B = -2.396 * (f.pi / 180) / 86400  # rad/s
-    C = -1.787 * (f.pi / 180) / 86400  # rad/s
-
-    sin_lat = f.sin(latitude)
-    omega = A + B * sin_lat ** 2 + C * sin_lat ** 4
-    return omega  # in rad/s
-
-
 def to_carrington_rotation_frame(coords, seconds_per_dt):
     time = coords[..., 3:4]  # 3 = reference time
     spherical_coords = cartesian_to_spherical(coords[..., :3], torch)
@@ -113,20 +88,6 @@ def to_carrington_rotation_frame(coords, seconds_per_dt):
     lon_shift = omega_carrington * time * seconds_per_dt
     spherical_coords_shift = torch.cat([spherical_coords[..., 0:1], spherical_coords[..., 1:2],
                                         lon - lon_shift], dim=-1)
-    cartesian_coords_shift = spherical_to_cartesian(spherical_coords_shift, torch)
-    coords_shift = torch.cat([cartesian_coords_shift, time], dim=-1)
-    return coords_shift
-
-
-def to_differential_rotation_frame(coords, seconds_per_dt):
-    time = coords[..., 3:4]  # 3 = reference time
-    spherical_coords = cartesian_to_spherical(coords[..., :3], torch)
-    lat = spherical_coords[..., 1:2]
-    lon = spherical_coords[..., 2:3]
-    omega_differential = differential_rotation_rate(lat, torch)
-    lon_shift = omega_differential * time * seconds_per_dt
-    spherical_coords_shift = torch.cat([spherical_coords[..., 0:1], spherical_coords[..., 1:2],
-                                        lon + lon_shift], dim=-1)
     cartesian_coords_shift = spherical_to_cartesian(spherical_coords_shift, torch)
     coords_shift = torch.cat([cartesian_coords_shift, time], dim=-1)
     return coords_shift

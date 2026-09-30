@@ -21,35 +21,33 @@ instruments:
       global_reference: true
       reference_channel: "A193"
       gain_limit_dex: 0.15
-      gain_prior_sigma_dex: 0.075
-      common_gain_limit_dex: 1.0
-      common_gain_prior_sigma_dex: 0.5
+      common_gain_limit_dex: 0.3
 
   - type: "plasma"
     key: "EUVI-A"
     scaling: {type: "asinh", divisor: "/glade/work/rjarolim/data/sunerf/2012_08_prepared_v2/image_scaling.yaml"}
+    # Learnable pointing registration against AIA (roll + shift, see README).
+    alignment: true
     temperature_response:
       artifact: "builtin:euvi_a"
       channels: ["171", "195", "284"]
       learnable: true
       reference_channel: "195"
       gain_limit_dex: 0.15
-      gain_prior_sigma_dex: 0.075
-      common_gain_limit_dex: 1.0
-      common_gain_prior_sigma_dex: 0.5
+      common_gain_limit_dex: 0.3
 
   - type: "plasma"
     key: "EUVI-B"
     scaling: {type: "asinh", divisor: "/glade/work/rjarolim/data/sunerf/2012_08_prepared_v2/image_scaling.yaml"}
+    # Learnable pointing registration against AIA (roll + shift, see README).
+    alignment: true
     temperature_response:
       artifact: "builtin:euvi_b"
       channels: ["171", "195", "284"]
       learnable: true
       reference_channel: "195"
       gain_limit_dex: 0.15
-      gain_prior_sigma_dex: 0.075
-      common_gain_limit_dex: 1.0
-      common_gain_prior_sigma_dex: 0.5
+      common_gain_limit_dex: 0.3
 
 data:
   # One model-space distance unit is one solar radius and one model-time unit

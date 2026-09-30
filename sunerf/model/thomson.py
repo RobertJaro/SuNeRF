@@ -121,6 +121,9 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                  ratio_range=(0.0, 3.0),
                  ratio_epsilon=1.0e-6,
                  continuity_reference_velocity_kms=300.0,
+                 continuity_reference_length_rsun=10.0,
+                 velocity_min_kms=100.0,
+                 velocity_max_kms=None,
                  **kwargs):
         # setup rendering
         sampling_config = sampling_config if sampling_config is not None else {}
@@ -243,11 +246,22 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             raise ValueError("insitu_jitter_std_rsun must be non-negative.")
         self.insitu_jitter_std = float(insitu_jitter_std_rsun) / float(Rs_per_ds)
 
-        # solar wind
-        velocity_min = (100.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
+        # solar wind: radial speeds below velocity_min are penalized by the velocity loss
+        velocity_min_kms = float(velocity_min_kms)
+        if not math.isfinite(velocity_min_kms) or velocity_min_kms < 0:
+            raise ValueError("velocity_min_kms must be finite and non-negative.")
+        velocity_min = (velocity_min_kms * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
         self.velocity_min = nn.Parameter(torch.tensor(velocity_min, dtype=torch.float32), requires_grad=False)
-        velocity_max = (6000.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
-        self.velocity_max = nn.Parameter(torch.tensor(velocity_max, dtype=torch.float32), requires_grad=False)
+        # Optional upper bound on the radial speed; ``None`` (default) leaves the
+        # velocity loss one-sided, since the images and continuity limit the speed.
+        if velocity_max_kms is None:
+            self.velocity_max = None
+        else:
+            velocity_max_kms = float(velocity_max_kms)
+            if not math.isfinite(velocity_max_kms) or velocity_max_kms <= velocity_min_kms:
+                raise ValueError("velocity_max_kms must be finite and above velocity_min_kms.")
+            velocity_max = (velocity_max_kms * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt
+            self.velocity_max = nn.Parameter(torch.tensor(velocity_max, dtype=torch.float32), requires_grad=False)
         velocity_avg = (300.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt  # km/s --> ds/dt
         self.velocity_avg = nn.Parameter(torch.tensor(velocity_avg, dtype=torch.float32), requires_grad=False)
         velocity_loss_scale = (100.0 * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt
@@ -261,26 +275,42 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             raise ValueError("ratio_range must be an increasing (min, max) pair.")
         if self.ratio_epsilon <= 0:
             raise ValueError("ratio_epsilon must be positive.")
-        if ballistic_acceleration_limit_ms2 <= 0:
-            raise ValueError("ballistic_acceleration_limit_ms2 must be positive.")
+        # Material acceleration beyond this limit (acceleration or deceleration,
+        # the magnitude is penalized) counts as a violation; 0 penalizes any.
+        if ballistic_acceleration_limit_ms2 < 0:
+            raise ValueError("ballistic_acceleration_limit_ms2 must be non-negative.")
         self.ballistic_acceleration_limit = (
             (ballistic_acceleration_limit_ms2 * u.m / u.s ** 2).to_value(u.R_sun / u.s ** 2)
             / Rs_per_ds * seconds_per_dt ** 2
         )
-        # The continuity residual is a rate (1/time) whose terms scale as v/r.
-        # Multiplying it by the local advection time r / v_ref makes it a
-        # dimensionless O(1) relative violation at every radius. ``None`` disables
-        # the scaling and keeps the raw residual in model time units.
+        # The continuity residual is a rate (1/time). Multiplying it by a fixed
+        # characteristic time L / v_ref makes it dimensionless and O(1) for a
+        # violation at the scale of the reference wind, while every point keeps
+        # the same weight per unit network error (a local r / v_ref weighting
+        # would amplify the noise of the outer volume). ``None`` for the velocity
+        # disables the scaling and keeps the raw residual in model time units.
+        # The same reference velocity normalizes the velocity-range loss, so
+        # its value is a squared relative violation (dv / v_ref)^2, and with the
+        # reference length the ballistic excess, (excess / (v_ref^2 / L))^2.
+        self.velocity_reference = 1.0
+        self.acceleration_reference = 1.0
         if continuity_reference_velocity_kms is None:
-            self.continuity_reference_velocity = None
+            self.continuity_time_scale = None
         else:
             continuity_reference_velocity_kms = float(continuity_reference_velocity_kms)
+            continuity_reference_length_rsun = float(continuity_reference_length_rsun)
             if not math.isfinite(continuity_reference_velocity_kms) or continuity_reference_velocity_kms <= 0:
                 raise ValueError("continuity_reference_velocity_kms must be finite and positive.")
-            self.continuity_reference_velocity = (
+            if not math.isfinite(continuity_reference_length_rsun) or continuity_reference_length_rsun <= 0:
+                raise ValueError("continuity_reference_length_rsun must be finite and positive.")
+            reference_velocity = (
                 (continuity_reference_velocity_kms * u.km / u.s).to_value(u.R_sun / u.s)
                 / Rs_per_ds * seconds_per_dt
-            )
+            )  # ds / dt
+            reference_length = continuity_reference_length_rsun / Rs_per_ds  # ds
+            self.continuity_time_scale = reference_length / reference_velocity  # dt
+            self.velocity_reference = reference_velocity  # ds / dt
+            self.acceleration_reference = reference_velocity ** 2 / reference_length  # ds / dt^2
         if not math.isfinite(radial_tolerance_deg) or not 0 <= radial_tolerance_deg < 90:
             raise ValueError("radial_tolerance_deg must be finite and in [0, 90).")
         self.radial_tolerance_deg = float(radial_tolerance_deg)
@@ -291,6 +321,27 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
         drop_off_distance = (1 * u.AU).to_value(u.R_sun) / Rs_per_ds
         self.drop_off_distance = nn.Parameter(torch.tensor(drop_off_distance, dtype=torch.float32), requires_grad=False)
+
+    def _polarization_prediction(self, target_image: torch.Tensor, model_image: torch.Tensor):
+        """Predict pB from the target tB and the model's degree of polarization.
+
+        The linearized residual ``pB_target - tB_target * (pB_model / tB_model)``
+        carries the same depth information as a comparison of degrees of
+        polarization but never divides the noisy target images, so the noise of
+        the faint pB channel is not amplified by 1 / tB. Returns the predicted
+        image ``(tB_target, tB_target * p_model)`` and the mask of pixels with a
+        valid model polarization and finite targets.
+        """
+        p_model, model_mask = self._polarization_ratio(model_image)
+        with torch.no_grad():
+            target_mask = torch.isfinite(target_image[..., 0]) & torch.isfinite(target_image[..., 1])
+        # A non-finite target tB must not enter the product: the masked pixel
+        # drops out of the loss, but its backward pass still multiplies the
+        # zero gradient by the NaN target and poisons the density network.
+        target_tB = target_image[..., 0]
+        target_tB = torch.where(torch.isfinite(target_tB), target_tB, torch.zeros_like(target_tB))
+        predicted_image = torch.stack([target_tB, target_tB * p_model], dim=-1)
+        return predicted_image, model_mask & target_mask
 
     @staticmethod
     def _normalize_with_scaling_mask(image: torch.Tensor, batch: dict) -> torch.Tensor:
@@ -407,26 +458,27 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             tB_nan_mask = torch.isfinite(target_image[..., 0])
             pB_nan_mask = torch.isfinite(target_image[..., 1])
 
-            # compute polarization ratios; pixels where the target or the model
-            # ratio leaves the accepted range are masked instead of clamped
-            ratio_target_image, target_ratio_mask = self._polarization_ratio(target_image)
-            ratio_model_image, model_ratio_mask = self._polarization_ratio(model_image)
-            ratio_mask = target_ratio_mask & model_ratio_mask
-            ratio_target_image = ratio_target_image[ratio_mask]
-            ratio_model_image = ratio_model_image[ratio_mask]
+            # polarization term: pB predicted from the target tB and the model's
+            # degree of polarization; pixels with an invalid model polarization
+            # are masked instead of clamped
+            predicted_image, ratio_mask = self._polarization_prediction(target_image, model_image)
 
-            # scale images
+            # scale images (the predicted pB shares the scaling of the target pB)
             image_scaling = self.scaling_modules[instrument_key]
             model_image = self._normalize_with_scaling_mask(model_image, image_batch)
             target_image = self._normalize_with_scaling_mask(target_image, image_batch)
+            predicted_image = self._normalize_with_scaling_mask(predicted_image, image_batch)
             scaled_model_image = image_scaling(model_image)
             scaled_target_image = image_scaling(target_image)
+            scaled_predicted_image = image_scaling(predicted_image)
 
             # backpropagation
             # optimize model
             tB_image_diff = (scaled_model_image[tB_nan_mask, 0] - scaled_target_image[tB_nan_mask, 0]).pow(2)
             pB_image_diff = (scaled_model_image[pB_nan_mask, 1] - scaled_target_image[pB_nan_mask, 1]).pow(2)
-            ratio_diff = (ratio_model_image - ratio_target_image).pow(2)
+            ratio_diff = (
+                scaled_predicted_image[ratio_mask, 1] - scaled_target_image[ratio_mask, 1]
+            ).pow(2)
 
             instrument_tB_image_diff.append(tB_image_diff)
             instrument_pB_image_diff.append(pB_image_diff)
@@ -526,9 +578,9 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                 continuity_point_loss, continuity_terms = self.compute_log_continuity_loss(
                     v, jacobian_matrices['log_rho'], jacobian_matrices['v']
                 )
-                if self.continuity_reference_velocity is not None:
+                if self.continuity_time_scale is not None:
                     continuity_terms['scaled_residual'] = self.scale_continuity_residual(
-                        continuity_terms['residual'], random_points
+                        continuity_terms['residual']
                     )
                     continuity_point_loss = continuity_terms['scaled_residual'].pow(2)
                 continuity_loss = continuity_point_loss.mean()
@@ -557,9 +609,15 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                         torch.norm(random_points[:, :3], dim=-1, keepdim=True) + 1e-7
                     )
                     v_radial = (random_v * r_hat).sum(dim=-1)
-                    min_v = torch.clip(v_radial - self.velocity_min, max=0).pow(2)
-                    max_v = torch.clip(v_radial - self.velocity_max, min=0).pow(2)
-                    velocity_loss = ((min_v + max_v) * radial_weight).sum() / (radial_weight.sum() + 1e-7)
+                    # Radial speeds below velocity_min (and above the optional
+                    # velocity_max) are penalized relative to the reference
+                    # velocity, dimensionless like the continuity term.
+                    velocity_violation = (torch.clip(v_radial - self.velocity_min, max=0) / self.velocity_reference).pow(2)
+                    if self.velocity_max is not None:
+                        velocity_violation = velocity_violation + (
+                            torch.clip(v_radial - self.velocity_max, min=0) / self.velocity_reference
+                        ).pow(2)
+                    velocity_loss = (velocity_violation * radial_weight).sum() / (radial_weight.sum() + 1e-7)
                     log_values['velocity'] = velocity_loss
                     loss += self.lambdas['velocity']['value'] * velocity_loss
                     assert torch.isfinite(velocity_loss).all(), 'Invalid loss detected: velocity_loss'
@@ -576,8 +634,8 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                     assert torch.isfinite(radial_loss).all(), 'Invalid loss detected: radial_loss'
         assert torch.isfinite(loss).all(), 'Invalid loss detected: loss'
         # log results to WANDB
-        self.log("loss", loss)
-        self.log_dict({f'train.{k}': v for k, v in log_values.items()})
+        self.log("train/loss", loss)
+        self.log_dict({f'train/{k}': v for k, v in log_values.items()})
 
         return loss
 
@@ -696,10 +754,9 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         cosine = cosine.clamp(-1.0, 1.0)
         return torch.relu(self.radial_tolerance_cos - cosine).pow(2)
 
-    def scale_continuity_residual(self, residual, points):
-        """Express the continuity residual in units of the local advection rate v_ref / r."""
-        advection_time = torch.norm(points[:, :3].detach(), dim=-1) / self.continuity_reference_velocity
-        return residual * advection_time
+    def scale_continuity_residual(self, residual):
+        """Express the continuity residual in units of the characteristic rate v_ref / L."""
+        return residual * self.continuity_time_scale
 
     @staticmethod
     def compute_log_continuity_loss(v, log_rho_jacobian, velocity_jacobian):
@@ -720,13 +777,17 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         return loss, continuity_terms
 
     def compute_ballistic_loss(self, v, velocity_jacobian):
-        """Penalize material acceleration only above the configured magnitude limit."""
+        """Penalize the magnitude of the material acceleration above the limit.
+
+        Acceleration and deceleration count alike. The excess is expressed in
+        units of the characteristic acceleration v_ref^2 / L.
+        """
         dv_dt = velocity_jacobian[:, :, 3]
         advective_acceleration = torch.einsum('ni,nji->nj', v, velocity_jacobian[:, :, :3])
         material_acceleration = dv_dt + advective_acceleration
         acceleration_magnitude = torch.norm(material_acceleration, dim=-1)
         acceleration_excess = torch.relu(acceleration_magnitude - self.ballistic_acceleration_limit)
-        loss = (acceleration_excess / self.ballistic_acceleration_limit).pow(2)
+        loss = (acceleration_excess / self.acceleration_reference).pow(2)
         terms = {
             'dv_dt': torch.norm(dv_dt, dim=-1),
             'advective_acceleration': torch.norm(advective_acceleration, dim=-1),
@@ -899,6 +960,10 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         state_dict = checkpoint.setdefault('state_dict', {})
         for key, value in self.lambdas.state_dict().items():
             state_dict.setdefault(f'lambdas.{key}', value.detach().clone())
+        # The velocity upper bound is optional; drop it from older checkpoints
+        # when this configuration has none.
+        if getattr(self, 'velocity_max', None) is None:
+            state_dict.pop('velocity_max', None)
         super().on_load_checkpoint(checkpoint)
 
     def on_train_batch_end(self, *args, **kwargs):

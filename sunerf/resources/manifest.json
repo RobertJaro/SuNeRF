@@ -8,10 +8,12 @@
   },
   "aliases": {
     "aia": "response/aia.sunerf.npz",
+    "aia_correction_table": "calibration/aia_V10_20201119_190000_response_table.txt",
     "eui_fsi": "response/eui_fsi.sunerf.npz",
     "euvi_a": "response/euvi_a.sunerf.npz",
     "euvi_b": "response/euvi_b.sunerf.npz",
-    "h_he_photoionization": "absorption/h_he_photoionization.npz"
+    "h_he_photoionization": "absorption/h_he_photoionization.npz",
+    "image_scaling": "calibration/image_scaling.yaml"
   },
   "atomic_database": {
     "filename": "chianti_11.0.2.h5",
@@ -48,6 +50,14 @@
     "atomic/verner96_h_he.dat": {
       "bytes": 564,
       "sha256": "237a6bae676eead0e20a2dee5ba5d30dd70f6994e854d6a0384e2d3622858c2d"
+    },
+    "calibration/aia_V10_20201119_190000_response_table.txt": {
+      "bytes": 17400,
+      "sha256": "0a3f2db39d05c44185f6fdeec928089fb55d1ce1e0a805145050c6356cbc6e98"
+    },
+    "calibration/image_scaling.yaml": {
+      "bytes": 2243,
+      "sha256": "3ab9ed6b15634d6de1771239c793b16a5ecaf42e84f948fade9a6028196129d8"
     },
     "ionization/h_he_chianti_11.0.2.npz": {
       "bytes": 6414,

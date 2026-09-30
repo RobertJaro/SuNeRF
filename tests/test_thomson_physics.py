@@ -35,11 +35,32 @@ def test_density_normalization_default_white_light_value():
     assert np.isclose(actual, 909.3228035477399, rtol=1e-14)
 
 
-def _ballistic_module(acceleration_limit=1.0):
+def _ballistic_module(acceleration_limit=1.0, acceleration_reference=1.0):
     module = ThomsonSuNeRFModule.__new__(ThomsonSuNeRFModule)
     nn.Module.__init__(module)
     module.ballistic_acceleration_limit = acceleration_limit
+    module.acceleration_reference = acceleration_reference
     return module
+
+
+def test_ballistic_loss_is_relative_to_the_characteristic_acceleration_and_two_sided():
+    # Decelerating (v = -x) and accelerating (v = 2x) flows with |a| = 1 and 4.
+    query_points = torch.tensor(
+        [[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], requires_grad=True
+    )
+    factors = torch.tensor([-1.0, 2.0])
+    velocity = torch.stack(
+        [factors * query_points[:, 0], torch.zeros(2), torch.zeros(2)], dim=-1
+    )
+    velocity_jacobian = ThomsonSuNeRFModule.compute_physics_jacobians(
+        query_points, v=velocity
+    )['v']
+
+    module = _ballistic_module(acceleration_limit=0.0, acceleration_reference=2.0)
+    loss, terms = module.compute_ballistic_loss(velocity, velocity_jacobian)
+
+    torch.testing.assert_close(terms['material_acceleration'], torch.tensor([1.0, 4.0]))
+    torch.testing.assert_close(loss, torch.tensor([0.25, 4.0]))
 
 
 def _radial_module(tolerance_deg=30.0):
@@ -117,3 +138,16 @@ def test_ballistic_loss_includes_explicit_time_acceleration():
     torch.testing.assert_close(terms['advective_acceleration'], torch.zeros(2))
     torch.testing.assert_close(terms['material_acceleration'], torch.full((2,), 2.0))
     torch.testing.assert_close(terms['acceleration_excess'], torch.ones(2))
+
+
+def test_density_model_is_finite_with_finite_gradients_at_the_solar_center():
+    from sunerf.model.model import RhoModel
+
+    model = RhoModel(Rs_per_ds=100, seconds_per_dt=86400, model_type='static', dim=16, n_layers=2)
+    coords = torch.tensor([[0.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]])
+
+    out = model(coords)
+    out['rho'].sum().backward()
+
+    assert torch.isfinite(out['rho']).all()
+    assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)

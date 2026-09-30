@@ -121,12 +121,23 @@ def save_prepared_map(
     meta["OCCUNIT"] = "R_sun"
     if "mask_fraction" in metadata:
         meta["MASKFR"] = float(metadata["mask_fraction"])
+    if "calibration" in metadata:
+        meta["GAINCAL"] = float(metadata["calibration"])
+        meta["GAINAZ"] = float(metadata["azimuthal_gain"])
     if "inner_gain" in metadata:
         meta["GAININ"] = float(metadata["inner_gain"])
         meta["GAINOUT"] = float(metadata["outer_gain"])
         meta["GAINPOW"] = float(metadata["gain_power"])
+    if "noise_fraction" in metadata:
+        meta["NOISEFR"] = float(metadata["noise_fraction"])
+    if "background_subtraction" in metadata:
+        meta["BKGSUB"] = bool(metadata["background_subtraction"])
     if "mask_fraction" in metadata and metadata.get("synthetic") != "CLEAR":
-        meta["DEGFORM"] = "(clear+additive)*multiplier"
+        meta["DEGFORM"] = (
+            "(clear+mask)*multiplier+noise-min_t"
+            if metadata.get("background_subtraction")
+            else "(clear+mask)*multiplier+noise"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     Map(np.asarray(data, dtype=np.float32), meta).save(path, overwrite=overwrite)
 

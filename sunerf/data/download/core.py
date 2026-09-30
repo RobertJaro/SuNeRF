@@ -133,6 +133,51 @@ def ensure_output(request: DownloadRequest) -> None:
         request.output.mkdir(parents=True, exist_ok=True)
 
 
+def split_request(request: DownloadRequest, chunk: dt.timedelta | None):
+    """Yield consecutive sub-requests of at most ``chunk`` so archive queries stay small."""
+    if chunk is None:
+        yield request
+        return
+    if chunk <= dt.timedelta(0):
+        raise ValueError("chunk must be positive")
+    start = request.start
+    while start < request.end:
+        end = min(start + chunk, request.end)
+        yield DownloadRequest(
+            start=start,
+            end=end,
+            output=request.output,
+            overwrite=request.overwrite,
+            dry_run=request.dry_run,
+        )
+        start = end
+
+
+def search_with_retry(search, *query, attempts=5, initial_delay=10.0, sleep=None, label="Search"):
+    """Call ``search(*query)`` again after transient archive failures.
+
+    VSO and SOAR intermittently return empty or malformed responses that the
+    callers turn into ``RuntimeError``; the delay doubles between attempts.
+    """
+    import time
+
+    sleep = time.sleep if sleep is None else sleep
+    attempts = max(int(attempts), 1)
+    delay = float(initial_delay)
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return search(*query)
+        except (RuntimeError, OSError, ValueError) as error:
+            last_error = error
+            if attempt == attempts:
+                break
+            print(f"{label} attempt {attempt}/{attempts} failed ({error}); retrying in {delay:g}s")
+            sleep(delay)
+            delay *= 2
+    raise RuntimeError(f"{label} failed after {attempts} attempts: {last_error}") from last_error
+
+
 def result_count(response) -> int:
     """Count records in a SunPy UnifiedResponse or table-like response."""
     if hasattr(response, "colnames"):

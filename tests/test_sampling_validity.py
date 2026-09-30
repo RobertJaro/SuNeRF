@@ -42,6 +42,8 @@ def _rendering(shuffle_config=None):
         },
         hierarchical_sampling_config={'n_samples': 3, 'perturb': False},
         shuffle_config=shuffle_config,
+        # These tests compare sampled times to the batch times directly.
+        light_travel_time=False,
     )
 
 
@@ -73,6 +75,42 @@ def test_shell_misses_are_finite_and_explicitly_invalid():
         assert torch.isfinite(output['points']).all()
         assert torch.isfinite(output['z_vals']).all()
         torch.testing.assert_close(output['z_vals'][1], torch.zeros(4))
+
+
+def test_ray_gradients_are_finite_for_grazing_rays_and_shell_misses():
+    # Learned pointing alignment differentiates the shell intersection with
+    # respect to the rays. In float32 the discriminant of a grazing ray is
+    # exactly zero, where the derivative of the square root is infinite.
+    rays_o = torch.tensor([
+        [215.0, 0.0, 0.0],  # disk center
+        [215.0, 1.2, 0.0],  # off limb
+        [215.0, 1.0, 0.0],  # tangent to the inner sphere
+        [215.0, 1.5, 0.0],  # tangent to the outer sphere
+        [215.0, 3.0, 0.0],  # misses the shell
+    ])
+    rays_d = torch.tensor([[-1.0, 0.0, 0.0]]).repeat(len(rays_o), 1).requires_grad_()
+    sampler = SphericalSampler(Rs_per_ds=1, min_distance=1, max_distance=1.5, n_samples=4, perturb=False)
+
+    sampled = sampler(rays_o, rays_d)
+    sampled['points'][sampled['ray_valid']].square().sum().backward()
+
+    assert sampled['ray_valid'].tolist() == [True, True, True, False, False]
+    assert torch.isfinite(rays_d.grad).all()
+    assert torch.count_nonzero(rays_d.grad[:2]) > 0
+
+
+def test_invalid_rays_are_not_sampled_at_the_solar_center():
+    # A non-finite ray keeps zero path length; its samples must stay away from
+    # r = 0, where the density model takes log(r).
+    rays_o = torch.tensor([[215.0, 0.0, 0.0], [float('nan'), 0.0, 0.0]])
+    rays_d = torch.tensor([[-1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]])
+    sampler = SphericalSampler(Rs_per_ds=1, min_distance=1, max_distance=1.5, n_samples=4, perturb=False)
+
+    sampled = sampler(rays_o, rays_d)
+
+    assert sampled['ray_valid'].tolist() == [True, False]
+    assert torch.isfinite(sampled['points']).all()
+    assert (torch.linalg.norm(sampled['points'][1], dim=-1) > 0).all()
 
 
 def test_rendering_masks_shell_misses_instead_of_forming_an_image():

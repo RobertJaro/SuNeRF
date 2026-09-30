@@ -104,28 +104,11 @@ class PlasmaRadiativeTransfer(nn.Module):
         self.gain_limit_dex = float(temperature_response_config.get('gain_limit_dex', 0.3))
         if not np.isfinite(self.gain_limit_dex) or self.gain_limit_dex <= 0:
             raise ValueError('gain_limit_dex must be finite and strictly positive')
-        self.gain_prior_sigma_dex = float(
-            temperature_response_config.get('gain_prior_sigma_dex', self.gain_limit_dex / 2)
-        )
-        if not np.isfinite(self.gain_prior_sigma_dex) or self.gain_prior_sigma_dex <= 0:
-            raise ValueError('gain_prior_sigma_dex must be finite and strictly positive')
         self.common_gain_limit_dex = float(
-            temperature_response_config.get('common_gain_limit_dex', 1.0)
+            temperature_response_config.get('common_gain_limit_dex', 0.3)
         )
         if not np.isfinite(self.common_gain_limit_dex) or self.common_gain_limit_dex <= 0:
             raise ValueError('common_gain_limit_dex must be finite and strictly positive')
-        self.common_gain_prior_sigma_dex = float(
-            temperature_response_config.get(
-                'common_gain_prior_sigma_dex', self.common_gain_limit_dex / 2
-            )
-        )
-        if (
-            not np.isfinite(self.common_gain_prior_sigma_dex)
-            or self.common_gain_prior_sigma_dex <= 0
-        ):
-            raise ValueError(
-                'common_gain_prior_sigma_dex must be finite and strictly positive'
-            )
         self.common_gain_identifiability = (
             'fixed_global_reference' if self.global_reference else 'learned_relative_to_global_reference'
         )
@@ -253,11 +236,12 @@ class PlasmaRadiativeTransfer(nn.Module):
         return torch.pow(10.0, self.effective_instrument_scaling)
 
     def calibration_regularization(self):
+        """Quadratic pull toward nominal gains, normalized by the tanh limits."""
         channel_penalty = (
-            self.instrument_gain_delta_dex / self.gain_prior_sigma_dex
+            self.instrument_gain_delta_dex / self.gain_limit_dex
         ).square().mean()
         common_penalty = (
-            self.common_gain_delta_dex / self.common_gain_prior_sigma_dex
+            self.common_gain_delta_dex / self.common_gain_limit_dex
         ).square()
         return channel_penalty + common_penalty
 
@@ -549,7 +533,9 @@ class PlasmaRadiativeTransfer(nn.Module):
         return output
 
 
-def init_absorption_model(absorption_config, *, instrument_key=None, channels=None):
+def init_absorption_model(
+    absorption_config, *, instrument_key=None, channels=None, response_artifact=None
+):
     absorption_config = copy.deepcopy(absorption_config)
     absorption_type = absorption_config.pop('type', None)
     if absorption_type == 'photoionization':
@@ -557,6 +543,11 @@ def init_absorption_model(absorption_config, *, instrument_key=None, channels=No
             raise ValueError(
                 'photoionization absorption requires an instrument key and ordered channels'
             )
+        if response_artifact is not None:
+            throughput = load_response_artifact(response_artifact).provenance.get(
+                'instrument_throughput', {}
+            )
+            absorption_config['throughput_sha256'] = throughput.get('content_sha256')
         return PhotoionizationOpacity(
             instrument_key=instrument_key,
             channels=channels,

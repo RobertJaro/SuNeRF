@@ -176,7 +176,7 @@ Remaining before real data: run `scripts/psi_euv/render.sh`, `run.sh`, and
 
 ### Light travel time (EUV)
 
-`module.light_travel_time: true` evaluates every sample at its emission time,
+`module.light_travel_time` (default `true`) evaluates every sample at its emission time,
 `t_obs - |x - x_obs| / c`, using the FITS timestamps as detector times (the
 implementation shared with the Thomson renderer). The model time axis is then
 Sun time: observers at different heliocentric distances agree (8.3 min at 1 AU,

@@ -139,8 +139,10 @@ def test_module_rejects_absorption_built_with_other_abundances(tmp_path):
 
 def test_light_travel_time_evaluates_samples_at_their_emission_time(tmp_path):
     response, bundle = _artifacts(tmp_path)
-    delayed = _module(response, bundle, absorption=False, light_travel_time=True)
-    instantaneous = _module(response, bundle, absorption=False)
+    # Observations carry detector timestamps, so retardation is the default;
+    # synthetic snapshot reconstructions opt out explicitly.
+    delayed = _module(response, bundle, absorption=False)
+    instantaneous = _module(response, bundle, absorption=False, light_travel_time=False)
 
     assert delayed.construction_spec["light_travel_time"] is True
     assert instantaneous.construction_spec["light_travel_time"] is False

@@ -1,0 +1,246 @@
+schema_version: 2
+
+# Solar Orbiter polar validation, north pass October 2025. Training views are
+# SDO/AIA and STEREO-A/EUVI (48 deg apart, both within +/-7 deg of the solar
+# equator); Solar Orbiter/EUI FSI 174 is a validation-only view while the
+# spacecraft is above +15 deg heliographic latitude (2025-10-04 .. 10-28, peak
+# +16.8 deg on 10-14, 8 deg east of the Earth-Sun line). Same as
+# polar_2025_10.yaml but with H/He photoionization absorption and a separate
+# learnable cool absorber field (as in all_2012_08_absorption.yaml); the
+# reconstruction must predict the north polar cap seen from 11 deg further
+# north than any training view.
+base_path: "/glade/work/rjarolim/sunerf/polar_2025_10_plasma_absorption_v01"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/polar_2025_10_plasma_absorption_v01"
+
+instruments:
+  - type: "plasma"
+    key: "AIA"
+    scaling: {type: "asinh", divisor: "builtin:image_scaling"}
+    # Learnable pointing correction (roll + shift, see README).
+    alignment: true
+    temperature_response:
+      artifact: "builtin:aia"
+      channels: ["A94", "A131", "A171", "A193", "A211", "A335"]
+      learnable: true
+      global_reference: true
+      reference_channel: "A193"
+      gain_limit_dex: 0.15
+      common_gain_limit_dex: 0.3
+
+  - type: "plasma"
+    key: "EUVI-A"
+    scaling: {type: "asinh", divisor: "builtin:image_scaling"}
+    # Learnable pointing correction (roll + shift, see README).
+    alignment: true
+    temperature_response:
+      artifact: "builtin:euvi_a"
+      channels: ["171", "195", "284"]
+      learnable: true
+      reference_channel: "195"
+      gain_limit_dex: 0.15
+      common_gain_limit_dex: 0.3
+
+  # Held-out instrument: its gain is never trained, so the FSI prediction is an
+  # absolute test of the packaged FSI response and the reconstruction. The
+  # 304 channel is chromospheric and excluded: the cool absorber does not emit.
+  - type: "plasma"
+    key: "EUI"
+    scaling: {type: "asinh", divisor: "builtin:image_scaling"}
+    temperature_response:
+      artifact: "builtin:eui_fsi"
+      channels: ["174"]
+      learnable: false
+
+data:
+  Rs_per_ds: 1.0
+  seconds_per_dt: 86400.0
+  batch_size: 1024
+  validation_batch_size: 2048
+  num_workers: 16
+  preparation_workers: 16
+  debug: false
+  holdout: {strategy: "center", count: 1}
+
+  train_datasets:
+    - type: "AIA"
+      key: "AIA"
+      instrument_key: "AIA"
+      data_path: "/glade/work/rjarolim/data/sunerf/polar_2025_10_prepared/aia/*.prepared.fits"
+      wavelengths: [94, 131, 171, 193, 211, 335]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+    - type: "EUVI"
+      key: "EUVI-A"
+      instrument_key: "EUVI-A"
+      data_path: "/glade/work/rjarolim/data/sunerf/polar_2025_10_prepared/euvi_a/*.prepared.fits"
+      wavelengths: [171, 195, 284]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+  valid_datasets:
+    - type: "AIA"
+      key: "AIA"
+      instrument_key: "AIA"
+      data_path: "/glade/work/rjarolim/data/sunerf/polar_2025_10_prepared/aia/*.prepared.fits"
+      wavelengths: [94, 131, 171, 193, 211, 335]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+    - type: "EUVI"
+      key: "EUVI-A"
+      instrument_key: "EUVI-A"
+      data_path: "/glade/work/rjarolim/data/sunerf/polar_2025_10_prepared/euvi_a/*.prepared.fits"
+      wavelengths: [171, 195, 284]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+    # Validation-only view with its own files; nothing of it is ever trained
+    # on. The validation callback renders one frame per dataset, so only the
+    # central FSI frame (~2025-10-16) is evaluated during training; the full
+    # sequence is rendered afterwards with the evaluation tools.
+    - type: "EUI"
+      key: "EUI"
+      instrument_key: "EUI"
+      data_path: "/glade/work/rjarolim/data/sunerf/polar_2025_10_prepared/eui/*.prepared.fits"
+      wavelengths: [174]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+      holdout: {strategy: "center", count: 1}
+
+model:
+  type: "mlp"
+  density_offset_log10_cm3: 8.0
+  density_profile: {type: "hydrostatic", scale_height_rsun: 0.1}
+  # 10^4 K is required because the same temperature selects the H/He ion
+  # fractions of the opacity; step_dex is the bin width of the validation LOS
+  # emission-measure histogram.
+  temperature_grid:
+    log10_K_min: 4.0
+    log10_K_max: 7.5
+    step_dex: 0.05
+  initial_log_T: 6.1
+  # Separate cool absorber: a hydrogen density that never emits. Filament,
+  # prominence and limb material is reconstructed here instead of forcing an
+  # emitting point through the temperature range in which it would be bright.
+  cool_absorber: true
+  cool_density_offset_log10_cm3: 7.0
+  dim: 512
+  n_layers: 8
+  activation: "swish"
+  encoding: "positional"
+  # Spatial maxima as in all_2012_08.yaml; the temporal maximum is 16 cycles
+  # per 2 days (3 h) for the 39-day sequence sampled at 1 h.
+  num_frequencies: [64, 64, 64, 16]
+  max_frequencies: [8, 8, 8, 4]
+
+module:
+  regularization_density_scale_cm3: 1.0e8
+  light_travel_time: true
+  lr_config:
+    start: 1.0e-3
+    end: 1.0e-4
+    iterations: 1000000
+
+sampling:
+  type: "spherical"
+  # Rays end at the photosphere; the limb layer is modeled by the absorption.
+  min_distance: 1.0
+  # 0.3 R_sun (three scale heights) beyond the 1.4 R_sun field of view prepared
+  # by scripts/plasma_polar_2025_10/prepare.sh. The shell must overshoot the
+  # data: a ray at the edge of the field of view would otherwise intersect a
+  # sliver of shell and could only match its observed intensity with a density
+  # spike, which the shared MLP then leaks inward. With the buffer the outermost
+  # supervised ray still integrates a 1.93 R_sun chord and captures 99.9% of a
+  # hydrostatic line of sight. The field of view must not grow past 1.4: rays
+  # that miss the shell are rendered and only then dropped from the loss.
+  max_distance: 1.7
+  # Uniform along the chord: 64 samples integrate a hydrostatic profile over this
+  # shell to 0.4% at disk centre, where the chord is shortest and the gradient
+  # steepest. Radial weighting gains nothing across so thin a shell. Raise this
+  # to 96 (0.2%) if disk-centre residuals come out systematically biased.
+  n_samples: 64
+  perturb: true
+
+hierarchical_sampling:
+  type: "hierarchical"
+  n_samples: 128
+  perturb: true
+
+absorption:
+  type: "photoionization"
+  artifact: "builtin:h_he_photoionization"
+  # The density field traces total hydrogen as in a fully ionized single-fluid
+  # model; equilibrium neutral fractions select how much of it absorbs.
+  hydrogen_density_convention: "fully_ionized_proxy"
+  # Assumed ionization state of the cool absorber (photoionized prominence
+  # plasma, not an equilibrium result). The inferred hydrogen column scales
+  # roughly inversely with the neutral fractions.
+  cool_ion_fractions: {H_I: 0.7, He_I: 0.7, He_II: 0.3}
+
+shuffle:
+  type: "normal_time"
+  start_seconds: 864000.0 # 10 days
+  end_seconds: 0.0
+  iterations: 100000
+
+training:
+  epochs: 1000
+  log_every_n_steps: 2000
+  check_val_every_n_epoch: 1
+  meta_path: "last"
+
+logging:
+  project: "sunerf"
+  name: "2025-10 polar validation + absorption: AIA + EUVI-A train, EUI FSI 174 held out"
+
+callbacks:
+  euv_tomography:
+    enabled: true
+    every_n_validations: 1
+    figure_dpi: 150
+    datasets:
+      AIA:
+        channels: [A94, A131, A171, A193, A211, A335]
+      EUVI-A:
+        channels: [171, 195, 284]
+      EUI:
+        channels: ["174"]
+    products:
+      channel_comparison:
+        enabled: true
+        rows: [observation, prediction, residual]
+        stretch: log
+        intensity_percentile: 99.5
+        residual_percentile: 99.0
+      plasma_diagnostics:
+        enabled: true
+        quantities:
+          - mean_log_temperature
+          - column_electron_density
+          - emission_measure
+          - emission_height
+          - absorption_fraction
+          - cool_hydrogen_column
+      thermal_distribution:
+        enabled: true
+        spatial_statistic: median
+        percentile_band: [16, 84]
+      response_and_gains:
+        enabled: true
+      ray_sampling:
+        enabled: false
+        pixel_fraction: [0.25, 0.25]
+
+lambda:
+  image: 1.0
+  regularization: 0.0
+  absorption: 0.0
+  calibration: 0.0
+  # L1 sparsity prior on the cool hydrogen column in units of 1e19 cm^-2.
+  cool_absorber: 1.0e-4

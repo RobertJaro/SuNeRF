@@ -2,7 +2,7 @@
 conda create -n "sunerf" python=3.10.0
 conda activate sunerf
 # install required packages
-cd $HOME/projects/sunerf
+cd /glade/u/home/rjarolim/projects/sunerf
 pip install -r requirements.txt
 # download data
 mkdir /glade/work/rjarolim/data/sunerf/psi_data/

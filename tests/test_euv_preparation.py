@@ -7,7 +7,7 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.table import QTable
 from sunpy.coordinates import frames
-from sunpy.map import Map, make_fitswcs_header
+from sunpy.map import Map, all_coordinates_from_map, make_fitswcs_header
 
 from sunerf.data.euv.prepare import (
     GeometryConfig,
@@ -16,6 +16,7 @@ from sunerf.data.euv.prepare import (
     apply_common_geometry,
     prepare_aia_map,
     prepare_eui_map,
+    _exposure_seconds,
     prepare_euv_files,
     prepare_euvi_map,
 )
@@ -120,6 +121,52 @@ def test_eui_rejects_non_l2_and_never_exposure_normalizes():
         'validated_EUI_L2',
         'geometry_only_in_SuNeRF',
     ]
+
+
+def test_eui_accepts_solar_orbiter_xposure_and_header_calibration_id():
+    """SOAR level-2 products carry XPOSURE and CAL_ID, never EXPTIME."""
+    calibrated = _euv_map([[4.0]], level='L2', calibration_id='cal-v9')
+    del calibrated.meta['exptime']
+    calibrated.meta['xposure'] = 10.0
+
+    prepared, _, provenance = prepare_eui_map(
+        calibrated,
+        sensitivity_convention='static_assumed',
+        geometry=GeometryConfig(north_up=False),
+    )
+    # Exposure is validated but never divided out for EUI.
+    assert prepared.data.item() == 4.0
+    assert provenance['calibration_id'] == 'cal-v9'
+
+    # Reprojection to a fresh WCS must not strip the exposure keyword, which
+    # the prepared-product reader requires.
+    reprojected = _euv_map(np.ones((64, 64), dtype=np.float32), level='L2')
+    del reprojected.meta['exptime']
+    reprojected.meta['xposure'] = 10.0
+    prepared, _, _ = prepare_eui_map(
+        reprojected,
+        sensitivity_convention='static_assumed',
+        geometry=GeometryConfig(shape=(32, 32), hpc_bounds_arcsec=(-1560, -1560, 1560, 1560)),
+    )
+    assert float(prepared.meta['xposure']) == 10.0
+
+
+def test_exposure_keyword_precedence_and_errors():
+    both = _euv_map([[4.0]], level='L2')
+    both.meta['exptime'] = 2.0
+    both.meta['xposure'] = 99.0
+    assert _exposure_seconds(both) == 2.0
+
+    neither = _euv_map([[4.0]], level='L2')
+    del neither.meta['exptime']
+    with pytest.raises(ValueError, match='EXPTIME/XPOSURE'):
+        _exposure_seconds(neither)
+
+    non_positive = _euv_map([[4.0]], level='L2')
+    del non_positive.meta['exptime']
+    non_positive.meta['xposure'] = -1.0
+    with pytest.raises(ValueError, match='XPOSURE must be positive'):
+        _exposure_seconds(non_positive)
 
 
 def test_euvi_requires_external_calibration_attestation_and_spacecraft_match():
@@ -276,7 +323,8 @@ def test_aia_level1_without_bunit_is_interpreted_as_detector_dn(tmp_path, monkey
 
 
 def test_worker_budget_is_bounded():
-    assert _bounded_workers(1000, 1000) == 8
+    assert _bounded_workers(32, 1000) == 32
+    assert _bounded_workers(32, 5) == 5
     assert _bounded_workers(0, 5) == 1
 
 
@@ -318,3 +366,131 @@ def test_exact_hpc_grid_is_independent_of_input_pixel_rounding():
         first_grid.Ty[[0, -1], 0].to_value(u.arcsec), [-4.0, 4.0], atol=1e-6
     )
 
+
+
+def _observer_map(distance_au, *, shape=(64, 64), scale_arcsec=40.0):
+    """A disk-centered image whose detector covers +-1.28 solar radii."""
+    obstime = datetime(2024, 1, 2, 3, 4, 5)
+    observer = SkyCoord(
+        0 * u.deg, 0 * u.deg, distance_au * u.AU,
+        frame=frames.HeliographicStonyhurst, obstime=obstime,
+    )
+    reference = SkyCoord(
+        0 * u.arcsec, 0 * u.arcsec, frame=frames.Helioprojective,
+        observer=observer, obstime=obstime,
+    )
+    header = make_fitswcs_header(
+        shape, reference, scale=np.array([scale_arcsec, scale_arcsec]) * u.arcsec / u.pix
+    )
+    header['instrume'] = 'EUI'
+    header['telescop'] = 'Solar Orbiter'
+    header['wavelnth'] = 174
+    header['waveunit'] = 'angstrom'
+    header['bunit'] = 'DN / s'
+    header['exptime'] = 2.0
+    return Map(np.ones(shape, dtype=np.float32), header)
+
+
+def _field_of_view_rsun(prepared):
+    y, x = np.indices(prepared.data.shape)
+    grid = prepared.pixel_to_world(x * u.pix, y * u.pix)
+    return (
+        (grid.Tx[0, -1] - grid.Tx[0, 0]).to_value(u.arcsec)
+        / prepared.rsun_obs.to_value(u.arcsec)
+    )
+
+
+def test_solar_radii_field_of_view_is_identical_for_every_observer():
+    geometry = GeometryConfig(shape=(32, 32), max_radius_rsun=1.5, north_up=False)
+
+    near, _ = apply_common_geometry(_observer_map(0.5), geometry=geometry)
+    far, _ = apply_common_geometry(_observer_map(1.0), geometry=geometry)
+
+    # The angular scale differs with distance; the solar-radii extent does not.
+    # The residual is the gnomonic projection's nonlinearity over the field.
+    assert near.rsun_obs > 1.9 * far.rsun_obs
+    assert _field_of_view_rsun(near) == pytest.approx(3.0, rel=1e-3)
+    assert _field_of_view_rsun(far) == pytest.approx(3.0, rel=1e-3)
+    assert _field_of_view_rsun(near) == pytest.approx(_field_of_view_rsun(far), rel=1e-3)
+    assert near.data.shape == far.data.shape == (32, 32)
+
+
+def test_pixels_beyond_the_detector_and_the_radius_are_nan():
+    # The detector reaches 1.28 R_sun, the requested view 1.5 R_sun.
+    prepared, valid_mask = apply_common_geometry(
+        _observer_map(1.0), geometry=GeometryConfig(shape=(64, 64), max_radius_rsun=1.5,
+                                                    north_up=False)
+    )
+    coordinates = all_coordinates_from_map(prepared)
+    radius = np.hypot(coordinates.Tx, coordinates.Ty) / prepared.rsun_obs
+
+    outside_view = np.asarray(radius.to_value(u.one)) > 1.5
+    assert outside_view.any()
+    assert np.all(np.isnan(prepared.data[outside_view]))
+    assert not valid_mask[outside_view].any()
+    # The detector edge is padded with NaN instead of being silently clipped.
+    assert np.isnan(prepared.data).any()
+    assert np.all(np.isnan(prepared.data) == ~valid_mask)
+    assert valid_mask[prepared.data.shape[0] // 2, prepared.data.shape[1] // 2]
+
+
+def _write_eui_source(path, *, level='L2'):
+    _euv_map(np.ones((4, 4), dtype=np.float32), level=level).save(path, overwrite=True)
+    return path
+
+
+def test_unusable_inputs_are_skipped_and_the_rest_are_prepared(tmp_path, capsys):
+    good = _write_eui_source(tmp_path / 'good.fits')
+    # An EUI level-1 product is rejected by the adapter: a data defect.
+    bad = _write_eui_source(tmp_path / 'bad.fits', level='L1')
+
+    results = prepare_euv_files(
+        [good, bad],
+        tmp_path / 'prepared',
+        adapter='eui',
+        calibration_id='cal-v1',
+        sensitivity_convention='reference_epoch',
+        geometry=GeometryConfig(north_up=False),
+        workers=1,
+    )
+
+    assert [result.output_path.name for result in results] == ['good.prepared.fits']
+    # Progress and diagnostics share stderr so a redirected log stays ordered.
+    report = capsys.readouterr().err
+    assert 'Skipped bad.fits' in report
+    assert 'Skipped 1 of 2 unusable input(s).' in report
+
+
+def test_preparation_fails_when_no_input_can_be_prepared(tmp_path):
+    sources = [
+        _write_eui_source(tmp_path / 'first.fits', level='L1'),
+        _write_eui_source(tmp_path / 'second.fits', level='L1'),
+    ]
+
+    with pytest.raises(ValueError, match='None of the 2 EUV inputs'):
+        prepare_euv_files(
+            sources,
+            tmp_path / 'prepared',
+            adapter='eui',
+            calibration_id='cal-v1',
+            sensitivity_convention='reference_epoch',
+            geometry=GeometryConfig(north_up=False),
+            workers=1,
+        )
+
+
+def test_existing_products_are_skipped_without_overwrite(tmp_path, capsys):
+    source = _write_eui_source(tmp_path / 'good.fits')
+    arguments = dict(
+        adapter='eui',
+        calibration_id='cal-v1',
+        sensitivity_convention='reference_epoch',
+        geometry=GeometryConfig(north_up=False),
+        workers=1,
+    )
+    prepare_euv_files([source], tmp_path / 'prepared', **arguments)
+
+    results = prepare_euv_files([source], tmp_path / 'prepared', **arguments)
+
+    assert results == []
+    assert 'already prepared' in capsys.readouterr().err

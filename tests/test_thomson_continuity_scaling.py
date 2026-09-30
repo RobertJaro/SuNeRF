@@ -1,12 +1,14 @@
+import pytest
 import torch
 from astropy import units as u
 
 from sunerf.model.thomson import ThomsonSuNeRFModule
 
 
-def test_scaled_continuity_residual_is_the_relative_violation_at_every_radius():
-    Rs_per_ds, seconds_per_dt, v_kms, exponent = 100.0, 86400.0, 300.0, 3.0
+def test_scaled_continuity_residual_uses_fixed_characteristic_scales():
+    Rs_per_ds, seconds_per_dt, v_kms, L_rsun, exponent = 100.0, 86400.0, 300.0, 10.0, 3.0
     v0 = (v_kms * u.km / u.s).to_value(u.R_sun / u.s) / Rs_per_ds * seconds_per_dt
+    L = L_rsun / Rs_per_ds
 
     # Constant radial wind with log rho = -exponent * log r. Mass conservation
     # requires exponent 2; the residual is (2 - exponent) * v0 / r.
@@ -24,9 +26,14 @@ def test_scaled_continuity_residual_is_the_relative_violation_at_every_radius():
     _, terms = ThomsonSuNeRFModule.compute_log_continuity_loss(v, jacobian(log_rho), jacobian(v))
 
     class _Module:
-        continuity_reference_velocity = v0
+        continuity_time_scale = L / v0
         scale_continuity_residual = ThomsonSuNeRFModule.scale_continuity_residual
 
     torch.testing.assert_close(terms['residual'], (2 - exponent) * v0 / radius, rtol=1e-4, atol=1e-4)
-    scaled = _Module().scale_continuity_residual(terms['residual'], points)
-    torch.testing.assert_close(scaled, torch.full((3,), 2 - exponent), rtol=1e-4, atol=1e-4)
+    # The scale is a constant time L / v0: the relative violation at the
+    # reference radius L is (2 - exponent) and it grows as L / r inward, so the
+    # same absolute residual error weighs equally at every radius.
+    scaled = _Module().scale_continuity_residual(terms['residual'])
+    torch.testing.assert_close(scaled, (2 - exponent) * L / radius, rtol=1e-4, atol=1e-4)
+    assert scaled[radius == L].item() == pytest.approx(2 - exponent, rel=1e-4)
+

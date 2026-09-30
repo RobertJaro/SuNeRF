@@ -15,6 +15,13 @@ Instruments whose ``scaling.divisor`` is a path are estimated from their trainin
 datasets (validation-only instruments from their validation datasets) and written
 to that path. An existing table is reused unless
 ``--overwrite`` is given, so repeated or resumed runs keep the same constants.
+
+The constants only set the loss scale, so a representative sample suffices: by
+default 200 evenly spaced prepared files per dataset are opened, nothing else is
+scanned, and each file contributes to its own channel. The result is printed as a
+table entry that can be pasted into the packaged defaults
+(``sunerf/resources/calibration/image_scaling.yaml``, referenced as
+``divisor: "builtin:image_scaling"``).
 """
 
 import argparse
@@ -22,17 +29,20 @@ import copy
 import multiprocessing
 import os
 from collections.abc import Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import numpy as np
 import yaml
 from tqdm import tqdm
 
 from sunerf.configuration import canonical_channel_id
+from sunerf.resources import is_builtin, resolve_artifact_path
+from astropy.io import fits
+
 from sunerf.data.euv.observation import (
-    get_prepared_euv_adapter,
-    load_prepared_map,
-    match_prepared_channels,
+    _channel_number,
+    _fits_valid_mask,
+    _header_channel,
     normalize_image_scaling,
     observation_scaling_statistics,
     reduce_scaling_statistics,
@@ -41,7 +51,12 @@ from sunerf.data.euv.observation import (
 SCALING_TABLE_SCHEMA = 'sunerf.image_scaling_table.v1'
 
 
+DEFAULT_MAX_FILES = 200
+
+
 def _table_path(path):
+    if is_builtin(path):
+        return str(resolve_artifact_path(path))
     return os.path.abspath(os.path.expandvars(os.path.expanduser(str(path))))
 
 
@@ -64,6 +79,8 @@ def load_scaling_table(path):
 
 
 def write_scaling_table(path, instruments):
+    if is_builtin(path):
+        raise ValueError(f'{path!r} is a packaged table; edit it in sunerf/resources instead.')
     path = _table_path(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     table = {
@@ -113,111 +130,77 @@ def resolve_instrument_scaling(instruments_config):
     return instruments_config
 
 
-def _observation_statistics(payload):
-    paths, channel_ids, instrument_type, instrument_key, tolerance, strict, percentile = payload
-    maps = [load_prepared_map(path) for path in paths]
-    observation = get_prepared_euv_adapter(instrument_type).prepare(
-        maps,
-        channel_ids,
-        instrument_id=instrument_key,
-        source_paths=paths,
-        alignment_tolerance_arcsec=tolerance,
-        strict_metadata=strict,
-    )
-    return observation_scaling_statistics(
-        np.moveaxis(observation.image, 0, -1),
-        np.moveaxis(observation.valid_mask, 0, -1),
-        percentile,
-    )
+def _file_statistics(payload):
+    """Percentile of one prepared file, placed at its channel index; NaN elsewhere."""
+    path, channel_numbers, percentile = payload
+    with fits.open(path, memmap=False) as hdul:
+        header = hdul[0].header
+        image = np.asarray(hdul[0].data, dtype=np.float64)
+    row = np.full(len(channel_numbers), np.nan, dtype=np.float64)
+    channel = _header_channel(header)
+    if channel not in channel_numbers:
+        return row
+    valid_mask = _fits_valid_mask(path, image.shape, required=False)
+    row[channel_numbers.index(channel)] = observation_scaling_statistics(
+        image[..., None], valid_mask[..., None], percentile
+    )[0]
+    return row
 
 
-def _dataset_payloads(dataset, holdout, percentile, max_observations):
+def _dataset_payloads(dataset, channel_numbers, percentile, max_files):
     # Imported lazily: resolving a table must not pull in the training stack.
-    from sunerf.data.loader.multi_instrument import (
-        _dataset_files, _discover_prepared_files, _observation_split_indices,
-    )
-    instrument_type = dataset['type']
+    from sunerf.data.loader.multi_instrument import _dataset_files
+
     wavelengths = dataset.get('wavelengths', dataset.get('channels'))
-    files = _dataset_files(dataset['data_path'], wavelengths, instrument_type=instrument_type)
-    file_dict, date_dict = _discover_prepared_files(files, wavelengths)
-    channel_ids = tuple(file_dict)
-    matched_files, _, reference_channel = match_prepared_channels(
-        file_dict,
-        date_dict,
-        tolerance=timedelta(minutes=float(dataset.get('match_tolerance_minutes', 2))),
-        channel_order=channel_ids,
-    )
-    # Held-out validation observations never contribute to the constants.
-    selection, _ = _observation_split_indices(
-        len(matched_files[reference_channel]), test=False,
-        holdout=dataset.get('holdout', holdout),
-    )
-    if max_observations is not None and len(selection) > max_observations:
-        positions = np.unique(
-            np.linspace(0, len(selection) - 1, int(max_observations), dtype=np.int64)
+    if sorted(_channel_number(value) for value in wavelengths) != sorted(channel_numbers):
+        raise ValueError(
+            f"Dataset {dataset.get('key')!r} channels {list(wavelengths)} do not match "
+            f'response channels {list(channel_numbers)}.'
         )
-        selection = selection[positions]
-    payloads = [
-        (
-            tuple(str(matched_files[channel][index]) for channel in channel_ids),
-            channel_ids,
-            instrument_type,
-            dataset['instrument_key'],
-            dataset.get('alignment_tolerance_arcsec', 0.25),
-            dataset.get('strict_metadata', False),
-            percentile,
-        )
-        for index in selection
-    ]
-    return channel_ids, payloads
+    files = _dataset_files(dataset['data_path'], wavelengths, instrument_type=dataset['type'])
+    # Only the sampled files are ever opened: no header scan, no channel
+    # matching. Prepared files sort by name, which interleaves the channels.
+    if max_files is not None and len(files) > max_files:
+        positions = np.unique(np.linspace(0, len(files) - 1, int(max_files), dtype=np.int64))
+        files = [files[index] for index in positions]
+    return len(files), [(path, tuple(channel_numbers), percentile) for path in files]
 
 
 def estimate_instrument_scaling(
-        datasets, channels, *, holdout=None, percentile=99.5, max_observations=None,
-        workers=None,
+        datasets, channels, *, percentile=99.5, max_files=DEFAULT_MAX_FILES, workers=None,
 ):
-    """Pool the per-observation statistics of all given datasets of one instrument."""
+    """Pool the per-file statistics of a sample of all given datasets of one instrument."""
+    channels = [str(channel) for channel in channels]
+    channel_numbers = [_channel_number(channel) for channel in channels]
     payloads = []
     for dataset in datasets:
-        channel_ids, dataset_payloads = _dataset_payloads(
-            dataset, holdout, percentile, max_observations
-        )
-        if [canonical_channel_id(value) for value in channel_ids] != [
-            canonical_channel_id(value) for value in channels
-        ]:
-            raise ValueError(
-                f"Dataset {dataset.get('key')!r} channel order {channel_ids} does not "
-                f'match response channels {list(channels)}.'
-            )
+        _, dataset_payloads = _dataset_payloads(dataset, channel_numbers, percentile, max_files)
         payloads.extend(dataset_payloads)
     if not payloads:
-        raise ValueError('No observations available to estimate image scaling.')
+        raise ValueError('No prepared files available to estimate image scaling.')
 
     available = os.cpu_count() or 1
     workers = min(len(payloads), available if workers is None else max(int(workers), 1))
     description = f"Image scaling {datasets[0]['instrument_key']}"
     if workers <= 1:
-        statistics = [_observation_statistics(p) for p in tqdm(payloads, desc=description)]
+        statistics = [_file_statistics(p) for p in tqdm(payloads, desc=description)]
     else:
         with multiprocessing.Pool(workers) as pool:
             statistics = list(tqdm(
-                pool.imap(_observation_statistics, payloads, chunksize=4),
+                pool.imap(_file_statistics, payloads, chunksize=4),
                 total=len(payloads), desc=description,
             ))
-    _, metadata = reduce_scaling_statistics(
-        np.stack(statistics), [str(channel) for channel in channels], percentile=percentile,
-    )
+    _, metadata = reduce_scaling_statistics(np.stack(statistics), channels, percentile=percentile)
     metadata['source'] = {
         'datasets': [str(dataset.get('key', dataset['type'])) for dataset in datasets],
         'data_paths': [dataset['data_path'] for dataset in datasets],
-        'holdout': copy.deepcopy(holdout),
-        'observation_count': len(payloads),
+        'file_count': len(payloads),
     }
     return metadata
 
 
 def estimate_config_scaling(
-        config, *, datasets=None, percentile=99.5, max_observations=None, workers=None,
+        config, *, datasets=None, percentile=99.5, max_files=DEFAULT_MAX_FILES, workers=None,
         overwrite=False,
 ):
     """Estimate and write every table referenced by ``instruments[].scaling.divisor``."""
@@ -234,6 +217,9 @@ def estimate_config_scaling(
     written = []
     for path, instruments in requested.items():
         entries = {}
+        if any(is_builtin(i['scaling']['divisor']) for i in instruments):
+            print(f'Packaged image-scaling table {path} is used as is.')
+            continue
         if os.path.isfile(path) and not overwrite:
             entries = dict(load_scaling_table(path)['instruments'])
         missing = [i for i in instruments if i['key'] not in entries]
@@ -253,7 +239,7 @@ def estimate_config_scaling(
                 # Validation-only instrument: nothing is trained on it, so its
                 # own observations may set the (purely diagnostic) loss scale.
                 instrument_datasets = [
-                    {**dataset, 'holdout': None} for dataset in data['valid_datasets']
+                    dataset for dataset in data['valid_datasets']
                     if dataset['instrument_key'] == instrument['key']
                 ]
             if not instrument_datasets:
@@ -264,20 +250,19 @@ def estimate_config_scaling(
             entries[instrument['key']] = estimate_instrument_scaling(
                 instrument_datasets,
                 instrument['temperature_response']['channels'],
-                holdout=data.get('holdout'),
                 percentile=percentile,
-                max_observations=max_observations,
+                max_files=max_files,
                 workers=workers,
             )
-            print(
-                f"{instrument['key']}: "
-                + ', '.join(
-                    f'{channel}={value:.6g}' for channel, value in zip(
-                        entries[instrument['key']]['channel_ids'],
-                        entries[instrument['key']]['divisor'],
-                    )
-                )
-            )
+            entry = entries[instrument['key']]
+            print(f"{instrument['key']} ({entry['source']['file_count']} files):")
+            print(yaml.safe_dump(
+                {instrument['key']: {
+                    'channel_ids': [str(c) for c in entry['channel_ids']],
+                    'divisor': [round(float(v), 4) for v in entry['divisor']],
+                }},
+                sort_keys=False, default_flow_style=None, indent=2,
+            ).rstrip())
         written.append(write_scaling_table(path, entries))
         print(f'Wrote image-scaling table {written[-1]}')
     return written
@@ -296,8 +281,9 @@ def main(argv=None):
     )
     parser.add_argument('--percentile', type=float, default=99.5)
     parser.add_argument(
-        '--max-observations', type=int, default=None,
-        help='evenly subsample each dataset to at most this many observations',
+        '--max-files', type=int, default=DEFAULT_MAX_FILES,
+        help='evenly subsample each dataset to at most this many prepared files '
+             f'(default {DEFAULT_MAX_FILES}; 0 opens every file)',
     )
     parser.add_argument('--workers', type=int, default=None)
     parser.add_argument('--overwrite', action='store_true')
@@ -308,7 +294,7 @@ def main(argv=None):
         config,
         datasets=None if args.datasets is None else set(args.datasets),
         percentile=args.percentile,
-        max_observations=args.max_observations,
+        max_files=args.max_files or None,
         workers=args.workers,
         overwrite=args.overwrite,
     )

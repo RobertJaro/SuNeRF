@@ -42,7 +42,26 @@ _DIAGNOSTIC_FIELDS = {
         "cool",
         "fraction",
     ),
+    "cool_hydrogen_column": (
+        "cool_hydrogen_column_cm2",
+        "Cool H column [cm$^{-2}$]",
+        "bone",
+        "log",
+    ),
 }
+
+
+def _available_diagnostics(quantities, outputs, renderer):
+    """Drop diagnostics whose physics is not part of the model."""
+    available = []
+    for quantity in quantities:
+        field = _DIAGNOSTIC_FIELDS[quantity][0]
+        if quantity == "absorption_fraction" and not getattr(renderer, "absorption", False):
+            continue
+        if field not in outputs:
+            continue
+        available.append(quantity)
+    return available
 
 
 def _append_colorbar(fig, ax, image):
@@ -251,9 +270,11 @@ class EUVTomographyCallback(BaseCallback):
         figure.tight_layout()
         return figure
 
-    def _plot_plasma_diagnostics(self, outputs):
+    def _plot_plasma_diagnostics(self, outputs, renderer):
         settings = self.products["plasma_diagnostics"]
-        quantities = settings["quantities"]
+        quantities = _available_diagnostics(settings["quantities"], outputs, renderer)
+        if not quantities:
+            return None
         valid_mask = outputs["valid_mask"].astype(bool)
         image_mask = np.any(valid_mask, axis=-1) if valid_mask.ndim == 3 else valid_mask
         figure, axes = plt.subplots(
@@ -419,9 +440,9 @@ class EUVTomographyCallback(BaseCallback):
                 "channel_comparison", self._plot_channel_comparison(outputs)
             )
         if self.products["plasma_diagnostics"]["enabled"]:
-            self._log_figure(
-                "plasma_diagnostics", self._plot_plasma_diagnostics(outputs)
-            )
+            figure = self._plot_plasma_diagnostics(outputs, renderer)
+            if figure is not None:
+                self._log_figure("plasma_diagnostics", figure)
         if self.products["thermal_distribution"]["enabled"]:
             self._log_figure(
                 "thermal_distribution",

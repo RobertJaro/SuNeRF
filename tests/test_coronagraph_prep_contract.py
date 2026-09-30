@@ -7,9 +7,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 from astropy import units as u
+from astropy.coordinates import SkyCoord
+from sunpy.coordinates import frames, get_earth
+from sunpy.map import Map, all_coordinates_from_map
+from sunpy.map.header_helper import make_fitswcs_header
 
 from sunerf.data.coronagraph import prep_punch_pam, prep_stereo_cor
 from sunerf.data.coronagraph.prep_ccor import CCORPrep
+from sunerf.data.coronagraph import prep_common
 from sunerf.data.coronagraph.prep_common import (
     MapPreprocessor,
     _hpc_circle_mask,
@@ -27,6 +32,7 @@ from sunerf.data.coronagraph.prep_stereo_cor import (
     StereoCorPrep,
     invalid_pixel_fraction,
 )
+from sunerf.data.ray_sampling import hpc_angular_separation, hpc_impact_parameter
 
 
 PREP_CLASSES = (
@@ -228,6 +234,114 @@ def test_object_mask_uses_circular_hpc_radius():
     assert mask[2, 2]
     assert mask[2, 3]
     assert not mask[2, 4]
+
+
+def _synthetic_coronagraph_map(shape=(256, 256), scale=60.0):
+    observer = get_earth("2012-06-01T00:00:00")
+    data = np.ones(shape)
+    reference = SkyCoord(
+        0 * u.arcsec,
+        0 * u.arcsec,
+        obstime=observer.obstime,
+        observer=observer,
+        frame="helioprojective",
+    )
+    header = make_fitswcs_header(
+        data,
+        reference,
+        scale=[scale, scale] * u.arcsec / u.pix,
+        instrument="TEST",
+    )
+    return Map(data, header)
+
+
+def test_outer_edge_crops_frame_without_dropping_valid_pixels():
+    source_map = _synthetic_coronagraph_map()
+    occ_max = 4000 * u.arcsec
+    coordinates = all_coordinates_from_map(source_map).transform_to(
+        frames.Helioprojective
+    )
+    angular_radius = hpc_angular_separation(coordinates.Tx, coordinates.Ty)
+    expected_valid = np.count_nonzero(angular_radius < occ_max)
+
+    result = MapPreprocessor(
+        occ_max=occ_max,
+        remove_solar_system_objects=False,
+    ).prepare_map(source_map)
+
+    # The frame shrinks to the box enclosing the outer edge, ...
+    assert result.data.shape[0] < source_map.data.shape[0]
+    assert result.data.shape[1] < source_map.data.shape[1]
+    # ... keeps every pixel inside it, ...
+    assert np.count_nonzero(np.isfinite(result.data)) == expected_valid
+    # ... and stays centered on the Sun.
+    center = result.wcs.world_to_pixel(
+        SkyCoord(0 * u.arcsec, 0 * u.arcsec, frame=result.coordinate_frame)
+    )
+    np.testing.assert_allclose(center, np.array(result.data.shape[::-1]) / 2 - 0.5)
+
+
+def test_frame_smaller_than_outer_edge_is_left_untouched():
+    source_map = _synthetic_coronagraph_map()
+
+    result = MapPreprocessor(
+        occ_max=10 * u.deg,
+        remove_solar_system_objects=False,
+    ).prepare_map(source_map)
+
+    assert result.data.shape == source_map.data.shape
+
+
+def test_frame_is_cropped_to_max_radius_before_resizing():
+    source_map = _synthetic_coronagraph_map()
+    max_radius = 6 * u.solRad
+
+    result = MapPreprocessor(
+        max_radius=max_radius,
+        resize=[64, 64],
+        remove_solar_system_objects=False,
+    ).prepare_map(source_map)
+
+    assert result.data.shape == (64, 64)
+    # The resampled frame spans the cropped field, not the original one: the
+    # impact parameter at the edge is the requested maximum radius.
+    edge = result.wcs.pixel_to_world(result.data.shape[1] / 2 - 0.5, -0.5)
+    edge_radius = hpc_impact_parameter(edge.Tx, edge.Ty, result.dsun)
+    np.testing.assert_allclose(
+        edge_radius.to_value(u.solRad),
+        max_radius.to_value(u.solRad),
+        rtol=2e-2,
+    )
+
+
+def test_masking_precedes_cropping_and_resizing():
+    source_map = _synthetic_coronagraph_map()
+
+    order = []
+    steps = {"prep_coronagraph_map": None, "crop_to_field_limit": None}
+    for name in steps:
+        original = getattr(prep_common, name)
+
+        def traced(*args, _name=name, _original=original, **kwargs):
+            order.append(_name)
+            return _original(*args, **kwargs)
+
+        steps[name] = (original, traced)
+        setattr(prep_common, name, traced)
+
+    try:
+        preprocessor = MapPreprocessor(
+            occ_max=4000 * u.arcsec,
+            resize=[32, 32],
+            remove_solar_system_objects=False,
+        )
+        result = preprocessor.prepare_map(source_map)
+    finally:
+        for name, (original, _traced) in steps.items():
+            setattr(prep_common, name, original)
+
+    assert order == ["prep_coronagraph_map", "crop_to_field_limit"]
+    assert result.data.shape == (32, 32)
 
 
 def test_time_selection_applies_range_before_cadence():

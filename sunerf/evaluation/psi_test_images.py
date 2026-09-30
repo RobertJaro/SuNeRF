@@ -209,21 +209,23 @@ def main() -> None:
             learned = loader.load_correction_masks(
                 clean_maps["tb"], instrument_key=view, apply_valid_mask=True
             )
-            truth = {
-                "tB_add": np.load(args.truth_dir / view / "tb_additive.npy"),
-                "pB_add": np.load(args.truth_dir / view / "pb_additive.npy"),
-                "calibration_gain": np.load(
-                    args.truth_dir / view / "tb_multiplier.npy"
-                ),
-            }
-            learned_arrays = {
-                "tB_add": learned["tB_add"].data * loader.msb_norm,
-                "pB_add": learned["pB_add"].data * loader.msb_norm,
-                "calibration_gain": learned["calibration_gain"].data,
+            # Injected truth array and brightness scale per learnable term. The
+            # radial gain is shared between channels, so a learned
+            # ``calibration_gain`` is compared with the tB multiplier.
+            truth_files = {
+                "tB_add": ("tb_additive.npy", loader.msb_norm),
+                "pB_add": ("pb_additive.npy", loader.msb_norm),
+                "tB_mul": ("tb_multiplier.npy", 1.0),
+                "pB_mul": ("pb_multiplier.npy", 1.0),
+                "calibration_gain": ("tb_multiplier.npy", 1.0),
             }
             metrics["views"][view]["correction_terms"] = {
-                term: comparison_metrics(truth[term], learned_arrays[term])
-                for term in truth
+                term: comparison_metrics(
+                    np.load(args.truth_dir / view / truth_file),
+                    learned[term].data * scale,
+                )
+                for term, (truth_file, scale) in truth_files.items()
+                if term in learned
             }
 
     output_paths = []

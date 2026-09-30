@@ -78,3 +78,33 @@ def test_installed_resources_match_their_manifest_when_present():
         assert abundance["sha256"] == bundle.provenance["abundance"]["model"]["sha256"]
         assert abundance["sha256"] == manifest["abundance"]["sha256"]
     assert np.all(bundle.effective_cross_section_cm2 >= 0)
+
+
+def test_packaged_aia_correction_table_matches_the_declared_source():
+    if not (resources.resource_root() / resources.MANIFEST_NAME).is_file():
+        pytest.skip("packaged resources have not been built in this checkout")
+    from sunerf.response.providers.aia import AIA_CORRECTION_SOURCE
+
+    path = resolve_artifact_path("builtin:aia_correction_table")
+
+    assert path.name == AIA_CORRECTION_SOURCE.filename
+    assert resources.sha256_file(path) == AIA_CORRECTION_SOURCE.sha256
+    assert path.stat().st_size == AIA_CORRECTION_SOURCE.size_bytes
+    assert path.parent.name == "calibration"
+
+
+def test_correction_source_resolution_rejects_missing_paths(tmp_path):
+    pytest.importorskip("aiapy")
+    from sunerf.data.euv.prepare_aia_calibration_tables import (
+        PACKAGED_CORRECTION_SOURCE,
+        resolve_correction_source,
+    )
+
+    assert resolve_correction_source("ssw") == "SSW"
+    assert resolve_correction_source(PACKAGED_CORRECTION_SOURCE).is_file()
+    local = tmp_path / "aia_V10_response_table.txt"
+    local.write_text("DATE\n")
+    assert resolve_correction_source(str(local)) == local
+    # aiapy would otherwise pass a missing path to astropy as table content.
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        resolve_correction_source(str(tmp_path / "missing.txt"))

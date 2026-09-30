@@ -170,7 +170,7 @@ def test_data_overview_includes_radial_scaling_masks(monkeypatch):
         scaling_masks=scaling_masks,
     )
 
-    overview = logged[0]["Overview.L4"]
+    overview = logged[0]["overview/L4"]
     titles = {axis.get_title() for axis in overview.axes}
     assert "tB radial scaling mask" in titles
     assert "pB radial scaling mask" in titles
@@ -199,7 +199,7 @@ def test_data_overview_plots_all_euv_channels_with_their_colormaps(monkeypatch):
         channel_labels=["171", "195", "304"],
     )
 
-    overview = logged[0]["Overview.EUVI-B-L5"]
+    overview = logged[0]["overview/EUVI-B-L5"]
     image_axes = [axis for axis in overview.axes if axis.images]
     assert [axis.get_title() for axis in image_axes] == ["171", "195", "304"]
     assert [axis.images[0].get_cmap().name for axis in image_axes] == cmaps

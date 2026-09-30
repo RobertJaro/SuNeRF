@@ -297,3 +297,29 @@ def test_cool_absorber_adds_fixed_wavelength_dependent_opacity(tmp_path):
         )
     with pytest.raises(ValueError, match="define exactly"):
         PhotoionizationOpacity(path, "aia", ["94"], cool_ion_fractions={"H_I": 0.5})
+
+
+def test_throughput_identity_selects_bundle_rows_regardless_of_configured_key(tmp_path):
+    bundle = AbsorptionBundle(
+        species=ABSORPTION_SPECIES,
+        log_temperature=np.asarray([4.0, 6.0]),
+        ion_fraction=np.ones((3, 2)) * 0.1,
+        electron_per_hydrogen=np.ones(2),
+        abundance_per_hydrogen=np.asarray([1.0, 0.1, 0.1]),
+        instrument_keys=("eui_fsi",),
+        channels=("174",),
+        effective_cross_section_cm2=np.ones((1, 3)) * 1e-18,
+        provenance={
+            "provider": "unit-test",
+            "throughputs": [{"instrument_key": "eui_fsi", "content_sha256": "abc"}],
+        },
+    )
+    path = tmp_path / "bundle.npz"
+    bundle.save(path)
+    # The configured instrument key ("EUI") does not match the packaged name.
+    with pytest.raises(KeyError, match="no row"):
+        PhotoionizationOpacity(path, "EUI", ["174"])
+    provider = PhotoionizationOpacity(path, "EUI", ["174"], throughput_sha256="abc")
+    assert provider.instrument_key == "EUI"
+    with pytest.raises(KeyError, match="no instrument folded"):
+        PhotoionizationOpacity(path, "EUI", ["174"], throughput_sha256="other")

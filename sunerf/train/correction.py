@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from torch import nn
 
@@ -8,8 +9,18 @@ from sunerf.model.model import SirenNet, SirenModel
 class CorrectionModule(nn.Module):
 
     def __init__(self, corrections=None, additive_scale=1e-4,
-                 tB_additive_scale=None, pB_additive_scale=None, **kwargs):
+                 tB_additive_scale=None, pB_additive_scale=None,
+                 additive_parametrization='linear', **kwargs):
         super().__init__()
+        # Additive image-plane terms (tB_add, pB_add) map the network output to
+        # brightness either linearly, add = scale * raw (one output channel), or
+        # as add = scale * a * exp(b) (two channels). The exponential form is
+        # linear in the asinh loss space and covers the dynamic range of a
+        # coronagraph image from O(1) outputs; the sign is carried by a, so it
+        # never has to pass through the flat region of the exponential.
+        if additive_parametrization not in ('linear', 'exp'):
+            raise ValueError("additive_parametrization must be 'linear' or 'exp'.")
+        self.additive_parametrization = additive_parametrization
         self.corrections = ['f_corona'] if corrections is None else corrections # use default corrections if none provided
         self.tB_additive_scale = float(
             additive_scale if tB_additive_scale is None else tB_additive_scale
@@ -33,8 +44,16 @@ class CorrectionModule(nn.Module):
         radial_corrections = [c for c in self.corrections if c in possible_radial_corrections]
         temporal_corrections = [c for c in self.corrections if c in possible_temporal_corrections]
 
+        # additive terms take two output channels in the exponential form
+        self.img_channels = {
+            c: (2 if c in ('tB_add', 'pB_add') and self.additive_parametrization == 'exp' else 1)
+            for c in img_corrections
+        }
         if len(img_corrections) > 0:
-            self.img_correction_module = SirenModel(in_dim=2, out_dim=len(img_corrections), dim=64, n_layers=4, w0_init=30)
+            # w0=1 resolves only the smooth component of the image plane;
+            # w0=30 (standard SIREN) would recover pixel-scale structure.
+            self.img_correction_module = SirenModel(in_dim=2, out_dim=sum(self.img_channels.values()), dim=64,
+                                                    n_layers=4, w0=1., w0_init=30)
         else:
             self.img_correction_module = None
         if len(hpc_corrections) > 0:
@@ -56,6 +75,12 @@ class CorrectionModule(nn.Module):
         self.hpc_corrections = hpc_corrections
         self.radial_corrections = radial_corrections
         self.temporal_corrections = temporal_corrections
+
+    def _additive(self, raw, scale):
+        """Map the raw network output (1 or 2 channels) to a signed additive brightness."""
+        if self.additive_parametrization == 'exp':
+            return scale * raw[..., 0:1] * torch.exp(raw[..., 1:2])
+        return raw * scale
 
     def forward(self, image, img_coords, hpc_coords, time):
         tB = image[..., 0:1]
@@ -101,17 +126,17 @@ class CorrectionModule(nn.Module):
 
             i = 0
             if 'tB_add' in self.img_corrections:
-                raw = img_corrections[..., i:i+1]
-                tB_add = raw * self.tB_additive_scale
+                n = self.img_channels['tB_add']
+                tB_add = self._additive(img_corrections[..., i:i + n], self.tB_additive_scale)
                 tB = tB + tB_add
                 corrections['tB_add'] = tB_add
-                i += 1
+                i += n
             if 'pB_add' in self.img_corrections:
-                raw = img_corrections[..., i:i+1]
-                pB_add = raw * self.pB_additive_scale
+                n = self.img_channels['pB_add']
+                pB_add = self._additive(img_corrections[..., i:i + n], self.pB_additive_scale)
                 pB = pB + pB_add
                 corrections['pB_add'] = pB_add
-                i += 1
+                i += n
             if 'tB_straylight' in self.img_corrections:
                 tB_straylight = torch.exp(img_corrections[..., i:i+1] - 6.0)
                 tB = tB + tB_straylight
@@ -241,3 +266,108 @@ class StarBackgroundModule(nn.Module):
 
         correction = torch.cat([tB_add, pB_add], dim=-1)
         return correction
+
+
+def _rodrigues_rotate(vectors, axis, angle):
+    """Rotate ``vectors`` about the unit ``axis`` by ``angle`` (right-handed).
+
+    ``vectors`` and ``axis`` broadcast over leading dimensions with a trailing
+    dimension of 3; ``angle`` broadcasts with a trailing dimension of 1.
+    """
+    cos = torch.cos(angle)
+    sin = torch.sin(angle)
+    axis_dot = (axis * vectors).sum(dim=-1, keepdim=True)
+    return (
+        vectors * cos
+        + torch.cross(axis, vectors, dim=-1) * sin
+        + axis * axis_dot * (1.0 - cos)
+    )
+
+
+class PointingAlignmentModule(nn.Module):
+    """Learnable per-instrument pointing correction: image roll plus a shift.
+
+    The correction acts on the ray directions in the world frame and leaves the
+    observer positions untouched. Each ray's camera frame is rebuilt from its
+    origin exactly like ``pose_spherical``: the boresight points at the Sun
+    center, the image ``y`` axis is the projection of solar north (``+z``) and
+    ``x`` completes the right-handed frame. The roll rotates the directions
+    about the boresight; the shift is a helioprojective pointing offset
+    (a rotation of the boresight about the image ``y`` and ``x`` axes), which
+    for a distant observer is a rigid translation of the image.
+
+    All three quantities are constant per instrument, so they describe a
+    systematic registration error shared by all observations (and apply to
+    held-out observations of the same instrument). They are bounded by tanh,
+    with ``roll_limit_deg`` and ``shift_limit_arcsec`` as hard limits, and start
+    at zero (an exact identity).
+    """
+
+    def __init__(self, roll_limit_deg=1.0, shift_limit_arcsec=30.0, trainable=True, **kwargs):
+        super().__init__()
+        unknown = sorted(kwargs)
+        if unknown:
+            raise ValueError(f"alignment contains unsupported fields: {unknown}")
+        roll_limit_deg = float(roll_limit_deg)
+        shift_limit_arcsec = float(shift_limit_arcsec)
+        if not (roll_limit_deg > 0 and shift_limit_arcsec > 0):
+            raise ValueError("alignment roll_limit_deg and shift_limit_arcsec must be positive.")
+        self.roll_limit_deg = roll_limit_deg
+        self.shift_limit_arcsec = shift_limit_arcsec
+        self.register_buffer('roll_limit_rad', torch.tensor(np.deg2rad(roll_limit_deg), dtype=torch.float32))
+        self.register_buffer('shift_limit_rad',
+                             torch.tensor(np.deg2rad(shift_limit_arcsec / 3600.0), dtype=torch.float32))
+        # Unbounded raw parameters; the effective values are limit * tanh(raw).
+        self.raw_roll = nn.Parameter(torch.zeros(1, dtype=torch.float32))
+        self.raw_shift = nn.Parameter(torch.zeros(2, dtype=torch.float32))
+        self.requires_grad_(bool(trainable))
+
+    @property
+    def roll_rad(self):
+        return self.roll_limit_rad * torch.tanh(self.raw_roll)
+
+    @property
+    def shift_rad(self):
+        return self.shift_limit_rad * torch.tanh(self.raw_shift)
+
+    @property
+    def roll_deg(self):
+        return torch.rad2deg(self.roll_rad).reshape(())
+
+    @property
+    def shift_arcsec(self):
+        return torch.rad2deg(self.shift_rad) * 3600.0
+
+    @staticmethod
+    def camera_axes(rays_o):
+        """Per-ray (right, up, forward) unit axes matching ``pose_spherical``."""
+        forward = -rays_o / (torch.linalg.norm(rays_o, dim=-1, keepdim=True) + 1e-8)
+        up0 = torch.zeros_like(forward)
+        up0[..., 2] = 1.0
+        # Same pole guard as pose_spherical: fall back to +y near the poles.
+        polar = (forward[..., 2:3].abs() > 0.999)
+        up0_polar = torch.zeros_like(forward)
+        up0_polar[..., 1] = 1.0
+        up0 = torch.where(polar, up0_polar, up0)
+        right = torch.cross(forward, up0, dim=-1)
+        right = right / (torch.linalg.norm(right, dim=-1, keepdim=True) + 1e-8)
+        up = torch.cross(right, forward, dim=-1)
+        return right, up, forward
+
+    def forward(self, rays):
+        rays_o = rays[..., 0, :]
+        rays_d = rays[..., 1, :]
+        right, up, forward = self.camera_axes(rays_o)
+
+        roll = self.roll_rad.to(rays_d.dtype)
+        shift = self.shift_rad.to(rays_d.dtype)
+        # Roll about the camera z axis (-forward), so a positive roll turns the
+        # directions counterclockwise in the (x, y) image plane, then tilt the
+        # pointing: a positive x shift rotates the directions about the image y
+        # axis, a positive y shift about the image x axis, both with the sign
+        # of an increasing helioprojective (Tx, Ty) of the pixel.
+        aligned = _rodrigues_rotate(rays_d, -forward, roll)
+        aligned = _rodrigues_rotate(aligned, up, -shift[0:1])
+        aligned = _rodrigues_rotate(aligned, right, shift[1:2])
+        aligned = aligned / (torch.linalg.norm(aligned, dim=-1, keepdim=True) + 1e-8)
+        return torch.stack([rays_o, aligned], dim=-2)

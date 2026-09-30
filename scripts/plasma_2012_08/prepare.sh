@@ -5,7 +5,7 @@ CALIBRATED_ROOT="/glade/work/rjarolim/data/sunerf/2012_08/calibrated"
 PREPARED_ROOT="/glade/work/rjarolim/data/sunerf/2012_08_prepared_v2"
 AIA_CALIBRATION_ROOT="data/response_calibration/instruments/aia"
 AIA_CORRECTION_TABLE="${AIA_CALIBRATION_ROOT}/aia_correction.ecsv"
-AIA_POINTING_TABLE="${AIA_CALIBRATION_ROOT}/aia_pointing.ecsv"
+AIA_POINTING_TABLE="${AIA_CALIBRATION_ROOT}/aia_pointing_2012_08.ecsv"
 SSW_ROOT="/glade/u/home/rjarolim/ssw"
 
 mkdir -p "${CALIBRATED_ROOT}/euvi_a" "${CALIBRATED_ROOT}/euvi_b"
@@ -31,7 +31,7 @@ python -m sunerf.data.euv.prepare aia \
   --pointing-table "${AIA_POINTING_TABLE}" \
   --workers 16 \
   --shape 512 512 \
-  --hpc-bounds -1560 -1560 1560 1560 \
+  --max-radius-rsun 1.63 \
   --overwrite
 
 python -m sunerf.data.euv.prepare euvi \
@@ -42,7 +42,7 @@ python -m sunerf.data.euv.prepare euvi \
   --sensitivity-convention static_assumed \
   --workers 16 \
   --shape 512 512 \
-  --hpc-bounds -1560 -1560 1560 1560 \
+  --max-radius-rsun 1.63 \
   --overwrite
 
 python -m sunerf.data.euv.prepare euvi \
@@ -53,7 +53,7 @@ python -m sunerf.data.euv.prepare euvi \
   --sensitivity-convention static_assumed \
   --workers 16 \
   --shape 512 512 \
-  --hpc-bounds -1560 -1560 1560 1560 \
+  --max-radius-rsun 1.63 \
   --overwrite
 
 echo "Prepared FITS files under ${PREPARED_ROOT}"

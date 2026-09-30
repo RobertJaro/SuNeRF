@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 
 import astropy.units as u
 import numpy as np
@@ -16,6 +17,8 @@ from sunerf.data.download.core import (
     nearest_indices,
     parse_cadence,
     request_from_args,
+    search_with_retry,
+    split_request,
     unique_indices,
 )
 
@@ -24,7 +27,9 @@ DEFAULT_CHANNELS = (171, 195, 284)
 DEFAULT_SOURCES = ("STEREO_A", "STEREO_B")
 
 
-def _vso_records(response):
+def _vso_search(*query):
+    """Search VSO and reject empty responses so transient failures are retried."""
+    response = Fido.search(*query)
     try:
         records = response["vso"]
     except (KeyError, IndexError) as error:
@@ -50,18 +55,19 @@ def select_channel_sets(request, *, source, channels, cadence):
     ]
     if cadence is not None:
         anchor_query.append(a.Sample(cadence.total_seconds() * u.s))
-    anchors = _vso_records(Fido.search(*anchor_query))
+    anchors = search_with_retry(_vso_search, *anchor_query)
     anchor_times = _times(anchors)
 
     selected = []
     for channel in channels:
-        records = _vso_records(Fido.search(
+        records = search_with_retry(
+            _vso_search,
             time,
             a.Instrument.secchi,
             a.Detector.euvi,
             a.Source(source),
             a.Wavelength(channel * u.AA),
-        ))
+        )
         indices = unique_indices(nearest_indices(anchor_times, _times(records)))
         selected.append(records[indices])
     return tuple(selected)
@@ -73,19 +79,24 @@ def download(
     channels=DEFAULT_CHANNELS,
     sources=DEFAULT_SOURCES,
     cadence=None,
+    chunk=dt.timedelta(days=7),
 ):
+    """Download channel sets; the range is queried in ``chunk`` pieces because the
+    non-anchor channels are searched unsampled (nearest-time matching needs every
+    record) and VSO responses grow with the range."""
     if not channels:
         raise ValueError("channels must not be empty")
     results = []
-    for source in sources:
-        selected = select_channel_sets(
-            request, source=source, channels=tuple(channels), cadence=cadence
-        )
-        results.append(fetch_fido(
-            *selected,
-            request=request,
-            description=f"EUVI download for {source}",
-        ))
+    for part in split_request(request, chunk):
+        for source in sources:
+            selected = select_channel_sets(
+                part, source=source, channels=tuple(channels), cadence=cadence
+            )
+            results.append(fetch_fido(
+                *selected,
+                request=part,
+                description=f"EUVI download for {source} {part.start:%Y-%m-%d}..{part.end:%Y-%m-%d}",
+            ))
     return combine_results(results)
 
 
@@ -95,6 +106,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cadence", type=parse_cadence, default=parse_cadence("1h"))
     parser.add_argument("--channels", type=int, nargs="+", default=list(DEFAULT_CHANNELS))
     parser.add_argument("--sources", nargs="+", default=list(DEFAULT_SOURCES))
+    parser.add_argument(
+        "--chunk",
+        type=parse_cadence,
+        default=parse_cadence("7d"),
+        help="Length of each archive query (e.g. 7d); 'all' queries the whole range at once.",
+    )
     return parser
 
 
@@ -105,6 +122,7 @@ def main(argv=None) -> int:
         channels=args.channels,
         sources=args.sources,
         cadence=args.cadence,
+        chunk=args.chunk,
     )
     return 0
 

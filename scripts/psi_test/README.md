@@ -20,17 +20,26 @@ degrades the three training views over that same field:
 - The polar P1 view (80 degrees latitude, 2--30 solar radii) stays clear and held out.
 
 The two-viewpoint configs train on L5_wide, L5, and L4; the three-viewpoint
-configs add L1. L5_wide, L5, L4, and L1 use radial gain profiles of 1.3--0.7
-with `p=3`, 0.8--1.4 with `p=2`, 1.5--1.1 with `p=2`, and 0.6--1.2 with `p=1`,
-respectively. The degradation reference frame is `0074`, i.e. cube 50 after the
-24 pre-event frames.
+configs add L1. `render_clean.sh` prepends 80 pre-event frames (20 days at 6 h) of
+the corotating first cube, so frame `N` renders cube `N - 80` and the
+degradation reference frame `0130` is cube 50.
 
-The synthetic forward model is
+The synthetic forward model mimics real coronagraph preparation: a detector
+background is added, photon-like noise is drawn, and the per-pixel minimum of
+the noisy series is subtracted as a daily-min correction would do.
 
 ```text
-degraded[channel, view] = (clean[channel, view] + additive[channel, view])
-                          * multiplier[channel, view]
+raw[t]      = (clean[t] + mask) * multiplier + noise[t]
+degraded[t] = raw[t] - min_t raw[t]
 ```
+
+With a time-constant mask the minimum holds the mask plus the quiet-corona
+floor, so the mask cancels and the images are over-subtracted by that floor.
+The noise biases the minimum low and leaves a positive residual. The truth
+directory stores the mask, the subtracted background, and `additive`, the
+time-constant residual `mask - background / multiplier` that the learned
+`tB_add`/`pB_add` fields should recover. `--keep-background` skips the
+subtraction and `--noise-fraction 0` the noise.
 
 The rendered views already hold their FOV, so `prepare_data.sh` passes no FOV
 limits to `degrade_psi`.
@@ -48,17 +57,26 @@ the same degradation command to operate on any target folder.
 After mapping, each observational detector mask is robustly normalized to
 `[0, 1]` using its 1st and 99th percentiles. `--mask-fraction 0.1` creates only
 a positive additive background capped at 10% of the reference-frame p99
-brightness. The multiplicative term is independent of the observations and is
-an axisymmetric radial gain
-`g_inner + (g_outer - g_inner) * ((r - r_inner) / (r_outer - r_inner))**p`.
-`r_inner` and `r_outer` default to the radial extent of the valid pixels of the
-reference frame. `--inner-rsun` and `--outer-rsun` are optional: when given, they
-anchor the gain instead and pixels outside them become `NaN` after both effects
-are applied.
+brightness. `prepare_data.sh` writes two degraded sets. `degraded` applies no
+gain. `degraded_gain` multiplies each view by an observation-independent gain:
+the product of a scalar radiometric calibration (`--calibration`), an
+axisymmetric radial vignetting profile
+`g_inner + (g_outer - g_inner) * ((r - r_inner) / (r_outer - r_inner))**p`, and
+a second-order azimuthal modulation `1 + a * cos(2 * position_angle)`
+(`--azimuthal-gain a`), with per-view values: calibration 0.85/1.10/0.95/1.15,
+radial profiles 1.3--0.7 with `p=3`, 0.8--1.4 with `p=2`, 1.5--1.1 with `p=2`,
+0.6--1.2 with `p=1`, and azimuthal amplitudes 0.05/-0.05/0.08/-0.08 for
+L5_wide/L5/L4/L1. `r_inner` and `r_outer` default to the radial extent of the
+valid pixels of the reference frame. `--inner-rsun` and `--outer-rsun` are
+optional: when given, they anchor the gain instead and pixels outside them
+become `NaN` after both effects are applied. The truth directories
+(`degradation_truth`, `degradation_truth_gain`) store the full multiplier per
+channel.
 
-The learned degraded-data observation model uses `tB_add`, `pB_add`, and the
-shared axisymmetric `calibration_gain`; it no longer learns image-coordinate
-`tB_mul` or `pB_mul` fields for this experiment.
+The learned observation model of the `psi_degraded_*` configs uses
+image-coordinate `tB_add` and `pB_add` fields (tB only for the CCOR-like L5
+view). The `psi_degraded_gain_*` configs add `tB_mul` and `pB_mul` fields for
+the injected gain, trained by `train_gain_2view.sh` and `train_gain_3view.sh`.
 
 Install the HDF4 reader once, prepare all data in the CPU job, and then submit
 the single training script:
@@ -71,8 +89,9 @@ bash scripts/psi_test/setup_density_reader.sh
 qsub scripts/psi_test/train.sh
 ```
 
-`train.sh` is the only training entry point. In addition to the clean and
-two-view comparisons, it runs `config/cme/psi_degraded_3view.yaml`, which trains
+`train.sh` runs the clean and degraded fits; `train_gain_2view.sh` and
+`train_gain_3view.sh` run the degraded_gain fits. In addition to the clean and
+two-view comparisons, it runs `../../config/cme/psi/psi_degraded_3view.yaml`, which trains
 on degraded L5_wide/L5/L4/L1 and keeps the clear polar P1 image for held-out validation.
 The fits retain the repository default of 200 epochs and are
 checkpoint-resumable. Resubmit the script if a fit reaches its 12-hour walltime.

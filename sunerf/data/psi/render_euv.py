@@ -389,6 +389,9 @@ def render_observer(
             hierarchical_sampling_config={
                 "type": "hierarchical", "n_samples": n_hierarchical_samples, "perturb": False,
             },
+            # Snapshots are instantaneous; the retardation is applied to the
+            # detector timestamp below instead of to the sample times.
+            light_travel_time=False,
         ).to(device).eval()
         snapshot_time = time
         if light_travel_time:

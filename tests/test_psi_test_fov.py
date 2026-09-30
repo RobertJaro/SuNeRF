@@ -8,6 +8,7 @@ from sunerf.data.psi.degrade_psi import (  # noqa: E402
     fill_nearest_finite,
     degradation_config,
     degrade_sequence,
+    azimuthal_gain_mask,
     radial_gain_mask,
     resample_detector_mask,
 )
@@ -161,6 +162,25 @@ def test_radial_gain_uses_configured_endpoints_and_power(
     )
 
 
+def test_azimuthal_gain_is_second_order_about_the_sun_centre():
+    gain = azimuthal_gain_mask((21, 21), center=(10.0, 10.0), amplitude=0.1)
+
+    assert gain[10, 20] == pytest.approx(1.1)   # +x axis: angle 0
+    assert gain[20, 10] == pytest.approx(0.9)   # +y axis: angle 90 deg
+    assert gain[10, 0] == pytest.approx(1.1)    # -x axis: angle 180 deg
+    assert gain[15, 15] == pytest.approx(1.0)   # diagonal: angle 45 deg
+    rows, columns = np.indices((21, 21))
+    ring = np.isclose(np.hypot(rows - 10, columns - 10), 8, atol=0.5)
+    assert np.mean(gain[ring]) == pytest.approx(1.0, abs=0.02)
+
+
+def test_degradation_config_rejects_invalid_gain_values():
+    with pytest.raises(ValueError, match="calibration"):
+        degradation_config(synthetic="STEREO_A_COR2", calibration=0.0)
+    with pytest.raises(ValueError, match="azimuthal_gain"):
+        degradation_config(synthetic="STEREO_A_COR2", azimuthal_gain=1.0)
+
+
 def test_fill_nearest_finite_completes_source_occulter_gap():
     source = np.array(
         [[1.0, 1.0, 2.0], [1.0, np.nan, 2.0], [3.0, 3.0, 4.0]],
@@ -196,6 +216,10 @@ def test_degradation_preserves_image_grid_and_only_masks_fov(tmp_path):
         inner_rsun=0.005,
         outer_rsun=0.025,
         mask_fraction=0.1,
+        noise_fraction=0.0,
+        background_subtraction=False,
+        calibration=0.9,
+        azimuthal_gain=0.1,
         inner_gain=1.5,
         outer_gain=1.1,
         gain_power=2,
@@ -231,6 +255,64 @@ def test_degradation_preserves_image_grid_and_only_masks_fov(tmp_path):
         )
         np.testing.assert_array_equal(np.isfinite(output_map.data), valid)
         np.testing.assert_allclose(output_map.data[valid], expected[valid], rtol=1e-6)
+
+
+def _write_series(input_dir, frames):
+    for index, clean in enumerate(frames, start=1):
+        for product in ("tb", "pb"):
+            path = input_dir / product / f"L4_{product}{index:03d}.fts"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _test_map(clean).save(path)
+
+
+def test_background_subtraction_removes_the_mask_and_the_series_minimum(tmp_path):
+    from sunerf.data.psi.degrade_psi import degrade_sequence, degradation_config
+
+    input_dir, output_dir, truth_dir = (tmp_path / name for name in ("input", "output", "truth"))
+    base = np.arange(25, dtype=np.float32).reshape(5, 5) + 1
+    frames = [base + k * np.eye(5, dtype=np.float32) for k in range(3)]
+    _write_series(input_dir, frames)
+
+    config = degradation_config(synthetic="STEREO_A_COR2", mask_fraction=0.5, noise_fraction=0.0)
+    degrade_sequence(input_dir, output_dir, truth_dir, config,
+                     {"tb": _test_map(), "pb": _test_map()}, truth_frame="001", overwrite=True)
+
+    valid = np.load(truth_dir / "valid_mask.npy").astype(bool)
+    mask = np.load(truth_dir / "tb_mask.npy")
+    background = np.load(truth_dir / "tb_background.npy")
+    additive = np.load(truth_dir / "tb_additive.npy")
+    assert np.nanmax(mask) > 0
+    # Constant mask: the minimum holds the mask plus the quiet floor, so the
+    # mask cancels and the residual is the over-subtracted floor.
+    np.testing.assert_allclose(background[valid], (frames[0] + mask)[valid], rtol=1e-6)
+    np.testing.assert_allclose(additive[valid], -frames[0][valid], rtol=1e-6)
+    for k in range(3):
+        degraded = sunpy_map.Map(output_dir / "tb" / f"L4_tb{k + 1:03d}.fts")
+        assert degraded.meta["bkgsub"] is True
+        np.testing.assert_allclose(degraded.data[valid], (frames[k] - frames[0])[valid], atol=1e-5)
+
+
+def test_noise_biases_the_minimum_background_low_and_is_reproducible(tmp_path):
+    from sunerf.data.psi.degrade_psi import degrade_sequence, degradation_config
+
+    input_dir, truth_dir = tmp_path / "input", tmp_path / "truth"
+    base = np.full((5, 5), 10.0, dtype=np.float32)
+    _write_series(input_dir, [base] * 6)
+    config = degradation_config(synthetic="STEREO_A_COR2", mask_fraction=0.1, noise_fraction=0.1)
+
+    outputs = []
+    for run in ("a", "b"):
+        output_dir = tmp_path / f"output_{run}"
+        degrade_sequence(input_dir, output_dir, truth_dir, config,
+                         {"tb": _test_map(), "pb": _test_map()}, truth_frame="001", overwrite=True)
+        outputs.append(sunpy_map.Map(output_dir / "tb" / "L4_tb003.fts").data)
+
+    valid = np.load(truth_dir / "valid_mask.npy").astype(bool)
+    np.testing.assert_array_equal(outputs[0][valid], outputs[1][valid])
+    # Identical frames: without noise the subtraction would give exactly zero;
+    # the minimum of noisy frames sits below the mean, so a positive bias remains.
+    assert np.nanmean(outputs[0][valid]) > 0
+    assert np.nanstd(outputs[0][valid]) > 0
 
 
 def test_degradation_preview_includes_images_and_degradation_masks(tmp_path):
@@ -270,7 +352,8 @@ def test_degradation_without_fov_limits_keeps_the_field_of_view_of_the_data(tmp_
         path.parent.mkdir(parents=True, exist_ok=True)
         _test_map(clean).save(path)
 
-    config = degradation_config(synthetic="STEREO_A_COR2", inner_gain=1.5, outer_gain=1.1, gain_power=2)
+    config = degradation_config(synthetic="STEREO_A_COR2", noise_fraction=0.0,
+                                background_subtraction=False, inner_gain=1.5, outer_gain=1.1, gain_power=2)
     assert config["inner_rsun"] is None and config["outer_rsun"] is None
     degrade_sequence(input_dir, output_dir, truth_dir, config,
                      {"tb": _test_map(), "pb": _test_map()}, truth_frame="050", overwrite=True)

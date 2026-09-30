@@ -11,15 +11,20 @@
 cd /glade/u/home/rjarolim/projects/SuNeRF
 
 ################################################################################
-# Train the clean two-view baseline
+# Clean views (no degradation)
 ################################################################################
-python -m sunerf.run_thomson --config "config/cme/psi_clean_2view.yaml"
-python -m sunerf.run_thomson --config "config/cme/psi_clean_3view.yaml"
-
-python -m sunerf.run_thomson --config "config/cme/psi_degraded_2view.yaml"
-python -m sunerf.run_thomson --config "config/cme/psi_degraded_3view.yaml"
+#python -m sunerf.run_thomson --config "config/cme/psi/psi_clean_2view.yaml"
+#python -m sunerf.run_thomson --config "config/cme/psi/psi_clean_3view.yaml"
 
 ################################################################################
-# Train the degraded two-view reconstruction
+# Degraded views: additive mask, noise, background subtraction (no gain)
 ################################################################################
-#python -m sunerf.run_thomson --config "config/cme/psi_degraded_2view.yaml"
+#python -m sunerf.run_thomson --config "config/cme/psi/psi_degraded_2view.yaml"
+#python -m sunerf.run_thomson --config "config/cme/psi/psi_degraded_3view.yaml"
+
+################################################################################
+# Degraded views with a per-view multiplicative gain (tB_mul/pB_mul fields);
+# see also train_gain_2view.sh and train_gain_3view.sh
+################################################################################
+#python -m sunerf.run_thomson --config "config/cme/psi/psi_degraded_gain_2view.yaml"
+python -m sunerf.run_thomson --config "config/cme/psi/psi_degraded_gain_3view.yaml"

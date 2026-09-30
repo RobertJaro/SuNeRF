@@ -4,7 +4,7 @@ set -euo pipefail
 ################################################################################
 # Configuration
 ################################################################################
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="/glade/u/home/rjarolim/projects/SuNeRF/scripts/cme_2026_04"
 
 ################################################################################
 # Download and prepare all instruments

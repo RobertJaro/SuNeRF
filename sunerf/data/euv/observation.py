@@ -35,7 +35,25 @@ def load_prepared_map(path: str | Path):
         header = hdul[0].header.copy()
     if data.ndim != 2:
         raise ValueError(f'Prepared EUV primary HDU must be a 2D image: {path}.')
+    _ensure_pc_matrix(header)
     return Map(data, header)
+
+
+def _ensure_pc_matrix(header: fits.Header) -> None:
+    """Write PC keys from CROTA2 so sunpy never takes its CROTA branch.
+
+    sunpy's EUIMap declares ``_rotation_matrix_from_crota`` as a property while
+    ``GenericMap.rotation_matrix`` calls it, which fails on any prepared EUI
+    file that carries only CROTA2 (sunpy 6 through 8).
+    """
+    if any(key in header for key in ('PC1_1', 'PC1_2', 'PC2_1', 'PC2_2', 'CD1_1', 'CD2_2')):
+        return
+    angle = np.deg2rad(float(header.get('CROTA2', header.get('CROTA', 0.0)) or 0.0))
+    ratio = float(header.get('CDELT2', 1.0)) / float(header.get('CDELT1', 1.0))
+    header['PC1_1'] = float(np.cos(angle))
+    header['PC1_2'] = float(-ratio * np.sin(angle))
+    header['PC2_1'] = float(np.sin(angle) / ratio)
+    header['PC2_2'] = float(np.cos(angle))
 
 
 def _utc_naive(value: Any) -> datetime:

@@ -21,6 +21,7 @@ from sunerf.model.util import jacobian
 from sunerf.rendering.base_tracing import BasicRenderingModule
 from sunerf.rendering.plasma import PlasmaRadiativeTransfer, init_absorption_model
 from sunerf.resources import normalize_artifact_reference, resolve_artifact_path
+from sunerf.train.correction import PointingAlignmentModule
 from sunerf.train.runtime import atomic_torch_save
 from sunerf.train.scaling import ImageAsinhScaling, ImageLinearScaling, ImageLogScaling
 
@@ -156,33 +157,40 @@ def _normalize_instrument_response_paths(instruments_config):
     return normalized
 
 
-def _validate_instrument_calibration_gauge(instruments_config):
-    """Enforce one identifiable common-gain gauge for direct module users."""
+def _validate_instrument_calibration_gauge(instruments_config, supervised_instrument_keys=None):
+    """Enforce the gain gauge on training instruments, excluding held-out views."""
     responses = {
         instrument['key']: instrument.get('temperature_response', {})
         for instrument in instruments_config
     }
+    if isinstance(supervised_instrument_keys, str):
+        raise TypeError('supervised_instrument_keys must be a sequence of instrument keys')
+    supervised = set(responses) if supervised_instrument_keys is None else set(supervised_instrument_keys)
+    if not supervised or supervised - set(responses):
+        raise ValueError('supervised_instrument_keys must name a nonempty subset of configured instruments')
     learnable = {
-        key for key, response in responses.items()
-        if response.get('learnable', False)
+        key for key in supervised if responses[key].get('learnable', False)
     }
     references = {
         key for key, response in responses.items()
         if response.get('global_reference', False)
     }
+    if references - supervised:
+        raise ValueError('global_reference must name a supervised instrument')
     if references - learnable:
         raise ValueError('global_reference requires learnable: true')
-    if learnable and learnable != set(responses):
-        fixed = sorted(set(responses) - learnable)
+    if learnable and learnable != supervised:
+        fixed = sorted(supervised - learnable)
         raise ValueError(
             'Learnable cross-instrument calibration requires learnable: true for '
-            f'every configured instrument; fixed anchors: {fixed}'
+            f'every supervised instrument; fixed anchors: {fixed}'
         )
     if learnable and len(references) != 1:
         raise ValueError(
             'Learnable response calibration requires exactly one global_reference; '
             f'found {sorted(references)}'
         )
+    return tuple(sorted(supervised))
 
 
 def _normalize_absorption_artifact_path(absorption_config):
@@ -226,14 +234,36 @@ def _validate_absorption_response_abundance(renderer, absorption_model, instrume
         )
 
 
+def _validate_instrument_alignment_gauge(instruments_config, supervised_instrument_keys):
+    """Alignment is trained, so it is only valid on supervised instruments.
+
+    Every supervised view may be aligned: the observer positions are fixed and
+    the sampling shell is centered on the Sun, which hold the frame.
+    """
+    aligned = {
+        instrument['key'] for instrument in instruments_config if instrument.get('alignment', False)
+    }
+    supervised = set(supervised_instrument_keys)
+    held_out = sorted(aligned - supervised)
+    if held_out:
+        raise ValueError(
+            'alignment is only trained on supervised instruments; held-out views '
+            f'cannot learn a pointing correction: {held_out}'
+        )
+    return tuple(sorted(aligned))
+
+
 class PlasmaSuNeRFModule(BaseSuNeRFModule):
     def __init__(self, Rs_per_ds, seconds_per_dt, instruments_config,
                  lambda_config=None, sampling_config=None, hierarchical_sampling_config=None, absorption_config=None,
                  model_config=None, shuffle_config=None,
-                 regularization_density_scale_cm3=None, light_travel_time=False,
-                 cool_column_scale_cm2=1.0e19, **kwargs):
+                 regularization_density_scale_cm3=None, light_travel_time=True,
+                 cool_column_scale_cm2=1.0e19, supervised_instrument_keys=None, **kwargs):
         instruments_config = _normalize_instrument_response_paths(instruments_config)
-        _validate_instrument_calibration_gauge(instruments_config)
+        supervised_instrument_keys = _validate_instrument_calibration_gauge(
+            instruments_config, supervised_instrument_keys
+        )
+        _validate_instrument_alignment_gauge(instruments_config, supervised_instrument_keys)
         raw_instruments_config = copy.deepcopy(instruments_config)
         raw_lambda_config = copy.deepcopy(lambda_config)
         raw_sampling_config = copy.deepcopy(sampling_config)
@@ -257,6 +287,7 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
 
         rendering_modules = {}
         scaling_modules = {}
+        alignment_modules = {}
         instrument_metadata = {}
         instrument_loss_weights = {}
         channel_loss_weights = {}
@@ -267,7 +298,15 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
             if instrument_type != 'plasma':
                 raise ValueError(f"Unknown instrument type: {instrument_type}")
 
+            alignment_config = instrument.pop('alignment', False)
+            if alignment_config:
+                alignment_config = {} if isinstance(alignment_config, bool) else dict(alignment_config)
+                alignment_modules[instrument_key] = PointingAlignmentModule(**alignment_config)
+
             response_config = copy.deepcopy(instrument.pop('temperature_response'))
+            if instrument_key not in supervised_instrument_keys:
+                # Held-out views must not acquire gains through calibration priors.
+                response_config['learnable'] = False
             channels = list(response_config.get('channels', ()))
             if not channels:
                 raise ValueError(
@@ -285,6 +324,7 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
                     absorption_config,
                     instrument_key=instrument_key,
                     channels=channels,
+                    response_artifact=response_path,
                 )
                 if absorption_type == 'photoionization'
                 else shared_absorption_model
@@ -333,6 +373,12 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
                     if key in response_config
                 },
             }
+            if instrument_key in alignment_modules:
+                alignment_module = alignment_modules[instrument_key]
+                instrument_metadata[instrument_key]['alignment'] = {
+                    'roll_limit_deg': alignment_module.roll_limit_deg,
+                    'shift_limit_arcsec': alignment_module.shift_limit_arcsec,
+                }
             instrument_metadata[instrument_key]['response'].update({
                 'path': normalize_artifact_reference(response_path),
                 'sha256': _sha256_file(response_path),
@@ -469,6 +515,7 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
         # channel-specific and is owned by each instrument renderer.
         self.absorption_model = shared_absorption_model
         self.image_scaling = nn.ModuleDict(scaling_modules)
+        self.alignment_modules = nn.ModuleDict(alignment_modules)
         self.instrument_metadata = instrument_metadata
         self.instrument_loss_weights = instrument_loss_weights
         self.channel_loss_weights = channel_loss_weights
@@ -476,6 +523,7 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
             'Rs_per_ds': float(Rs_per_ds),
             'seconds_per_dt': float(seconds_per_dt),
             'instruments_config': raw_instruments_config,
+            'supervised_instrument_keys': list(supervised_instrument_keys),
             'lambda_config': raw_lambda_config,
             'sampling_config': raw_sampling_config,
             'hierarchical_sampling_config': raw_hierarchical_sampling_config,
@@ -544,9 +592,18 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
             mask = mask & ray_valid
         return mask
 
+    def _apply_alignment(self, image_batch):
+        """Return the batch with the instrument's learned pointing correction applied to its rays."""
+        instrument_key = image_batch['instrument']
+        if instrument_key not in self.alignment_modules:
+            return image_batch
+        aligned = dict(image_batch)
+        aligned['rays'] = self.alignment_modules[instrument_key](image_batch['rays'])
+        return aligned
+
     def training_step(self, batch, batch_idx):
         instrument_batch = {
-            key: value for key, value in batch.items()
+            key: self._apply_alignment(value) for key, value in batch.items()
             if key != 'random' and value is not None
         }
         if not instrument_batch:
@@ -639,15 +696,15 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
         )
         psnr = -10. * torch.log10(image_loss.clamp_min(torch.finfo(image_loss.dtype).tiny))
 
-        self.log('loss', loss, sync_dist=True)
+        self.log('train/loss', loss, sync_dist=True)
         self.log_dict({
-            'train.image': image_loss,
-            'train.psnr': psnr,
-            'train.regularization': regularization,
-            'train.absorption_regularization': absorption_regularization,
-            'train.calibration_regularization': calibration_regularization,
-            'train.cool_column_regularization': cool_column_regularization,
-            'train.regularization_density_scale_cm3': self.regularization_density_scale_cm3,
+            'train/image': image_loss,
+            'train/psnr': psnr,
+            'train/regularization': regularization,
+            'train/absorption_regularization': absorption_regularization,
+            'train/calibration_regularization': calibration_regularization,
+            'train/cool_column_regularization': cool_column_regularization,
+            'train/regularization_density_scale_cm3': self.regularization_density_scale_cm3,
         }, sync_dist=True)
         return loss
 
@@ -706,6 +763,7 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
 
         ds_key = valid_ds_id
         instrument_key = batch['instrument']
+        batch = self._apply_alignment(batch)
         # BasicRenderingModule owns the train-only shuffler gate and accepts this
         # explicit override so validation is deterministic.
         rendering_out = self.rendering(
@@ -726,7 +784,7 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
         # their mask is retained and they never enter the loss above.
         target_for_callback = torch.where(valid_mask, target_image, torch.zeros_like(target_image))
         pred_for_callback = torch.where(valid_mask, pred_image, torch.zeros_like(pred_image))
-        return {
+        outputs = {
             'target_image': target_for_callback,
             'pred_image': pred_for_callback,
             'valid_mask': valid_mask,
@@ -745,6 +803,10 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
             'z_vals_hierarchical': rendering_out['z_vals'],
             'distance': model_out[ds_key]['distance'],
         }
+        # Present only when the separate cool absorber is modeled.
+        if 'cool_hydrogen_column_cm2' in model_out[ds_key]:
+            outputs['cool_hydrogen_column_cm2'] = model_out[ds_key]['cool_hydrogen_column_cm2']
+        return outputs
 
     def _instrument_scaling_metrics(self):
         metrics = {}
@@ -762,6 +824,11 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
                 metrics[f'common_instrument_scaling.{instrument_key}'] = (
                     common_gain.detach().reshape(())
                 )
+        for instrument_key, alignment in self.alignment_modules.items():
+            shift = alignment.shift_arcsec.detach()
+            metrics[f'alignment.{instrument_key}.roll_deg'] = alignment.roll_deg.detach()
+            metrics[f'alignment.{instrument_key}.shift_x_arcsec'] = shift[0]
+            metrics[f'alignment.{instrument_key}.shift_y_arcsec'] = shift[1]
         return metrics
 
     def on_train_batch_end(self, *args, **kwargs):

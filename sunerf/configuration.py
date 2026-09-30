@@ -48,6 +48,7 @@ _EUV_CALLBACK_DEFAULTS = {
                 "emission_measure",
                 "emission_height",
                 "absorption_fraction",
+                "cool_hydrogen_column",
             ],
         },
         "thermal_distribution": {
@@ -235,23 +236,15 @@ def _validate_response(instrument, path):
             f"{path}.temperature_response.gain_limit_dex",
         )
         _positive_number(
-            response.get(
-                "gain_prior_sigma_dex",
-                float(response.get("gain_limit_dex", 0.3)) / 2,
-            ),
-            f"{path}.temperature_response.gain_prior_sigma_dex",
-        )
-        _positive_number(
-            response.get("common_gain_limit_dex", 1.0),
+            response.get("common_gain_limit_dex", 0.3),
             f"{path}.temperature_response.common_gain_limit_dex",
         )
-        _positive_number(
-            response.get(
-                "common_gain_prior_sigma_dex",
-                float(response.get("common_gain_limit_dex", 1.0)) / 2,
-            ),
-            f"{path}.temperature_response.common_gain_prior_sigma_dex",
-        )
+        for removed in ("gain_prior_sigma_dex", "common_gain_prior_sigma_dex"):
+            if removed in response:
+                raise PlasmaConfigError(
+                    f"{path}.temperature_response.{removed} is unsupported; the "
+                    "calibration penalty is normalized by the gain limits"
+                )
     return canonical
 
 
@@ -313,6 +306,34 @@ def _validate_instrument_scaling(instrument, channels, path):
             "`python -m sunerf.data.euv.estimate_scaling`; use 1.0 for no rescaling"
         )
     _validate_image_divisor(scaling["divisor"], channels, f"{path}.scaling.divisor")
+
+
+ALIGNMENT_FIELDS = {"roll_limit_deg", "shift_limit_arcsec", "trainable"}
+
+
+def _validate_instrument_alignment(instrument, path):
+    """A learnable pointing correction (roll + shift) of one instrument.
+
+    ``alignment: true`` enables it with the default limits; a mapping may set
+    the tanh limits and ``trainable``.
+    """
+    alignment = instrument.get("alignment", False)
+    if alignment is False or alignment is None:
+        return False
+    if alignment is True:
+        return True
+    alignment = _require_mapping(alignment, f"{path}.alignment")
+    unknown = set(alignment).difference(ALIGNMENT_FIELDS)
+    if unknown:
+        raise PlasmaConfigError(
+            f"{path}.alignment contains unsupported fields: {sorted(unknown)}"
+        )
+    for field in ("roll_limit_deg", "shift_limit_arcsec"):
+        if field in alignment:
+            _positive_number(alignment[field], f"{path}.alignment.{field}")
+    if "trainable" in alignment:
+        _boolean(alignment["trainable"], f"{path}.alignment.trainable")
+    return True
 
 
 def _validate_dataset_group(entries, path, instruments):
@@ -810,6 +831,7 @@ def _validate_euv_callbacks(config, valid_datasets, channel_orders):
             "emission_measure",
             "emission_height",
             "absorption_fraction",
+            "cool_hydrogen_column",
         },
     )
 
@@ -905,6 +927,7 @@ def validate_plasma_config(config):
     if not instrument_keys:
         raise PlasmaConfigError("instruments must not be empty")
     channel_orders = {}
+    aligned_instruments = set()
     for index, (key, instrument) in enumerate(zip(instrument_keys, instruments)):
         instrument_type = str(instrument.get("type", "")).lower()
         if instrument_type != "plasma":
@@ -916,6 +939,8 @@ def validate_plasma_config(config):
         _validate_instrument_scaling(
             instrument, channel_orders[key], f"instruments[{index}]"
         )
+        if _validate_instrument_alignment(instrument, f"instruments[{index}]"):
+            aligned_instruments.add(key)
 
     responses_by_instrument = {
         instrument["key"]: instrument["temperature_response"]
@@ -986,6 +1011,13 @@ def validate_plasma_config(config):
             "learnable response calibration requires exactly one supervised "
             "instruments[].temperature_response.global_reference=true; "
             f"found {sorted(configured_references)}"
+        )
+    # The pointing correction is trained, so a held-out view never learns it.
+    held_out_aligned = aligned_instruments - supervised_instruments
+    if held_out_aligned:
+        raise PlasmaConfigError(
+            "instruments[].alignment is only trained on instruments present in "
+            f"data.train_datasets; held-out views: {sorted(held_out_aligned)}"
         )
     if "holdout" not in data:
         raise PlasmaConfigError(

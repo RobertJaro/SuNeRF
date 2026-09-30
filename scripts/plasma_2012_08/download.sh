@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-: "${DRMS_EMAIL:?Set DRMS_EMAIL to the JSOC-registered address used for AIA export}"
+DRMS_EMAIL="robert.jarolim@uni-graz.at"
 
 RAW_ROOT="/glade/work/rjarolim/data/sunerf/2012_08/raw"
 AIA_CALIBRATION_ROOT="data/response_calibration/instruments/aia"
-AIA_CORRECTION_SOURCE="${AIA_CALIBRATION_ROOT}/aia_V10_20201119_190000_response_table.txt"
 AIA_CORRECTION_TABLE="${AIA_CALIBRATION_ROOT}/aia_correction.ecsv"
-AIA_POINTING_TABLE="${AIA_CALIBRATION_ROOT}/aia_pointing.ecsv"
+AIA_POINTING_TABLE="${AIA_CALIBRATION_ROOT}/aia_pointing_2012_08.ecsv"
 
 mkdir -p "${RAW_ROOT}/aia" "${RAW_ROOT}/euvi_a" "${RAW_ROOT}/euvi_b" "${AIA_CALIBRATION_ROOT}"
 
@@ -13,7 +12,6 @@ mkdir -p "${RAW_ROOT}/aia" "${RAW_ROOT}/euvi_a" "${RAW_ROOT}/euvi_b" "${AIA_CALI
 # AIA degradation and master-pointing tables used during preparation
 ################################################################################
 python -m sunerf.data.euv.prepare_aia_calibration_tables \
-  "${AIA_CORRECTION_SOURCE}" \
   "${AIA_CORRECTION_TABLE}" \
   "${AIA_POINTING_TABLE}" \
   "2012-08-01T00:00:00" \

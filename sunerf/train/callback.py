@@ -138,7 +138,7 @@ class TestImageCallback(BaseCallback):
         val_ssim = structural_similarity(target_image[..., 0], prediction_image[..., 0], data_range=1)
         val_psnr = -10. * np.log10(val_loss)
 
-        wandb.log({'validation.loss': val_loss, 'validation.ssim': val_ssim, 'validation.psnr': val_psnr})
+        wandb.log({'validation/loss': val_loss, 'validation/ssim': val_ssim, 'validation/psnr': val_psnr})
 
     def plot_samples(self, prediction_image, coarse_image, height_map, absorption_map, target_image, z_vals_stratified,
                      z_vals_hierach, distance, cmap):
@@ -253,9 +253,9 @@ class PlasmaImageCallback(BaseCallback):
         val_ssim = float(np.mean(val_ssim)) if val_ssim else np.nan
         val_psnr = -10. * np.log10(val_loss) if np.isfinite(val_loss) and val_loss > 0 else np.inf
 
-        wandb.log({f'validation.loss.{self.ds_key}': val_loss,
-                   f'validation.ssim.{self.ds_key}': val_ssim,
-                   f'validation.psnr.{self.ds_key}': val_psnr})
+        wandb.log({f'validation/loss.{self.ds_key}': val_loss,
+                   f'validation/ssim.{self.ds_key}': val_ssim,
+                   f'validation/psnr.{self.ds_key}': val_psnr})
 
     def plot_integrated_quantities(self, height_map, mean_T, total_ne, absorption, z_vals_stratified,
                                    z_vals_hierach, distance, ):
@@ -393,9 +393,9 @@ class ThomsonImageCallback(BaseCallback):
         val_ssim = np.mean(val_ssim)
         val_psnr = -10. * np.log10(val_loss)
 
-        wandb.log({f'validation.loss.{self.ds_key}': val_loss,
-                   f'validation.ssim.{self.ds_key}': val_ssim,
-                   f'validation.psnr.{self.ds_key}': val_psnr})
+        wandb.log({f'validation/loss.{self.ds_key}': val_loss,
+                   f'validation/ssim.{self.ds_key}': val_ssim,
+                   f'validation/psnr.{self.ds_key}': val_psnr})
 
 
 class CorrectionImageCallback(BaseCallback):
@@ -502,7 +502,18 @@ class CorrectionImageCallback(BaseCallback):
                 cmap = "Reds"
 
             # ------------------------------------------------
-            # 3) Multiplicative corrections -> log scale centered at 1
+            # 3) tB/pB multiplicative corrections -> linear scale centered at 1
+            # ------------------------------------------------
+            elif k.endswith("_mul"):
+                finite_values = img2d[np.isfinite(img2d)]
+                max_dev = float(np.max(np.abs(finite_values - 1.0))) if finite_values.size else 0.0
+                if not np.isfinite(max_dev) or max_dev <= 0.0:
+                    max_dev = 1e-8
+                norm = Normalize(vmin=1.0 - max_dev, vmax=1.0 + max_dev)
+                cmap = "RdBu_r"
+
+            # ------------------------------------------------
+            # 3b) Other multiplicative corrections -> log scale centered at 1
             # ------------------------------------------------
             elif k in self.multiplicative_fields:
                 positive_values = img2d[np.isfinite(img2d) & (img2d > 0.0)]
@@ -714,7 +725,7 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
             for c, (label, channel_cmap, norm) in enumerate(zip(channel_labels, channel_cmaps, channel_norms)):
                 ax = plt.subplot(1, n_columns, 2 + c)
                 _imshow_linear(ax, img[..., c], label, norm, plot_cmap=channel_cmap)
-            wandb.log({f'Overview.{ds_key}': wandb.Image(fig)})
+            wandb.log({f'overview/{ds_key}': wandb.Image(fig)})
             plt.close(fig)
             continue
 
@@ -733,7 +744,7 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
                 ax = plt.subplot(1, n_columns, scale_start + 1)
                 _imshow_log(ax, scale_img[..., 1], "pB radial scaling mask", scale_pb_norm, plot_cmap='viridis')
 
-        wandb.log({f'Overview.{ds_key}': wandb.Image(fig)})
+        wandb.log({f'overview/{ds_key}': wandb.Image(fig)})
         plt.close(fig)
 
 
@@ -780,7 +791,7 @@ class CubeCallback(BaseCallback):
         flat_rho_pred = rho_pred.flatten()
 
         corr_coeff = np.corrcoef(flat_rho_true, flat_rho_pred)[0, 1]
-        wandb.log({f'valid.corr_coeff': corr_coeff})
+        wandb.log({f'validation/corr_coeff': corr_coeff})
 
         model = LinearRegression(fit_intercept=False)
         model.fit(flat_rho_pred.reshape(-1, 1), flat_rho_true)
@@ -788,7 +799,7 @@ class CubeCallback(BaseCallback):
         flat_rho_pred = model.predict(flat_rho_pred.reshape(-1, 1))
 
         mae = np.mean(np.abs(flat_rho_true - flat_rho_pred))
-        wandb.log({f'valid.mae': mae})
+        wandb.log({f'validation/mae': mae})
 
         # 2D Histogram of the true and predicted densities
 
