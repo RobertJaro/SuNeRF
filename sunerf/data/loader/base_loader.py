@@ -23,7 +23,7 @@ class BaseDataModule(LightningDataModule):
     def __init__(self, training_datasets, validation_datasets,
                  Rs_per_ds, seconds_per_dt, ref_date,
                  module_config,
-                 num_workers=None, **kwargs):
+                 num_workers=4, **kwargs):
         super().__init__()
         self.training_datasets = training_datasets
         self.validation_datasets = validation_datasets
@@ -35,7 +35,7 @@ class BaseDataModule(LightningDataModule):
 
         self.config = module_config
         self.validation_dataset_mapping = {i: name for i, name in enumerate(self.validation_datasets.keys())}
-        self.num_workers = num_workers if num_workers is not None else (os.cpu_count() or 0)
+        self.num_workers = int(num_workers)
 
     def clear(self):
         """Remove only the mmap files explicitly owned by this data module."""
@@ -51,23 +51,9 @@ class BaseDataModule(LightningDataModule):
                 dataset.clear()
                 cleared.add(id(dataset))
 
-    @staticmethod
-    def _mmap_worker_capacity(dataset):
-        base_dataset = dataset
-        while hasattr(base_dataset, 'dataset'):
-            base_dataset = base_dataset.dataset
-
-        if not isinstance(base_dataset, TensorsDataset) or len(dataset) <= 1:
-            return 0
-        return len(dataset)
-
-    def _loader_kwargs(self, dataset, *, training, worker_limit=None):
-        # Generated random-coordinate datasets do all their work in one vectorized
-        # call. Spawning workers for them adds processes without adding parallelism.
-        requested_workers = self.num_workers if worker_limit is None else worker_limit
-        requested_workers = max(int(requested_workers or 0), 0)
-        workers = min(requested_workers, self._mmap_worker_capacity(dataset))
-
+    def _loader_kwargs(self, dataset, *, training):
+        """Every loader uses ``num_workers`` workers."""
+        workers = self.num_workers
         kwargs = {
             'batch_size': None,
             'num_workers': workers,
@@ -87,46 +73,8 @@ class BaseDataModule(LightningDataModule):
             kwargs.update(persistent_workers=training, prefetch_factor=2)
         return kwargs
 
-    def _training_worker_allocations(self):
-        """Distribute the configured per-rank worker budget across train loaders.
-
-        ``CombinedLoader`` keeps every training loader active at once. Treating
-        ``num_workers`` as a per-loader value therefore multiplies the process
-        count by both the number of data sets and the number of DDP ranks. A
-        balanced budget retains prefetching for the largest mmap data sets while
-        keeping the total at or below the configured value on each rank.
-        """
-        allocations = {name: 0 for name in self.training_datasets}
-        remaining = max(int(self.num_workers or 0), 0)
-        candidates = [
-            (name, self._mmap_worker_capacity(dataset), order)
-            for order, (name, dataset) in enumerate(self.training_datasets.items())
-            if self._mmap_worker_capacity(dataset) > 0
-        ]
-        candidates.sort(key=lambda item: (-item[1], item[2]))
-
-        while remaining > 0 and candidates:
-            made_progress = False
-            for name, capacity, _ in candidates:
-                if allocations[name] >= capacity:
-                    continue
-                allocations[name] += 1
-                remaining -= 1
-                made_progress = True
-                if remaining == 0:
-                    break
-            if not made_progress:
-                break
-        return allocations
-
     def train_dataloader(self):
-        worker_allocations = self._training_worker_allocations()
-        loaders = {name: DataLoader(
-            ds,
-            **self._loader_kwargs(
-                ds, training=True, worker_limit=worker_allocations[name]
-            ),
-        )
+        loaders = {name: DataLoader(ds, **self._loader_kwargs(ds, training=True))
                    for name, ds in self.training_datasets.items()}
         return CombinedLoader(loaders, 'max_size_cycle')
 

@@ -1,5 +1,7 @@
 import os
 import pickle
+
+import pytest
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -8,7 +10,7 @@ import torch
 from torch.utils.data import Dataset
 from torch.utils.data import DistributedSampler, RandomSampler, SequentialSampler
 
-from sunerf.data.dataset import TensorsDataset
+from sunerf.data.dataset import ObservationCacheWriter, TensorsDataset, shuffled_valid_rows
 from sunerf.data.loader.base_loader import BaseDataModule
 from sunerf.data.loader.thomson_instrument import _load_map_stack, _pool_size
 from sunerf.run_thomson import (
@@ -179,7 +181,7 @@ class _GeneratedDataset(Dataset):
         return {'value': torch.tensor([index])}
 
 
-def test_loader_workers_are_bounded_and_generated_data_stays_in_process(tmp_path):
+def test_every_loader_uses_num_workers(tmp_path):
     mmap_dataset = TensorsDataset(
         {'value': np.arange(9, dtype=np.float32)[:, None]},
         tmp_path,
@@ -196,41 +198,13 @@ def test_loader_workers_are_bounded_and_generated_data_stays_in_process(tmp_path
         num_workers=4,
     )
 
-    mmap_kwargs = module._loader_kwargs(mmap_dataset, training=True)
-    generated_kwargs = module._loader_kwargs(_GeneratedDataset(), training=True)
-    assert mmap_kwargs['num_workers'] == len(mmap_dataset) == 3
-    assert mmap_kwargs['prefetch_factor'] == 2
-    assert generated_kwargs['num_workers'] == 0
-    assert 'prefetch_factor' not in generated_kwargs
+    for dataset in (mmap_dataset, _GeneratedDataset()):
+        for training in (True, False):
+            kwargs = module._loader_kwargs(dataset, training=training)
+            assert kwargs['num_workers'] == 4
+            assert kwargs['prefetch_factor'] == 2
+            assert kwargs['persistent_workers'] == training
     mmap_dataset.clear()
-
-
-def test_training_workers_are_a_per_rank_budget_not_a_per_loader_multiplier(tmp_path):
-    datasets = {}
-    for index in range(5):
-        datasets[f'mmap_{index}'] = TensorsDataset(
-            {'value': np.arange(12, dtype=np.float32)[:, None]},
-            tmp_path,
-            batch_size=2,
-            filter_nans=False,
-        )
-    datasets['generated'] = _GeneratedDataset()
-    module = BaseDataModule(
-        datasets,
-        {},
-        Rs_per_ds=1,
-        seconds_per_dt=1,
-        ref_date=None,
-        module_config={},
-        num_workers=4,
-    )
-
-    allocations = module._training_worker_allocations()
-
-    assert sum(allocations.values()) == 4
-    assert allocations['generated'] == 0
-    assert sorted(allocations[name] for name in datasets if name != 'generated') == [0, 1, 1, 1, 1]
-    module.clear()
 
 
 def test_clear_reaches_wrapped_mmap_dataset(tmp_path):
@@ -287,7 +261,7 @@ def test_cache_fingerprint_tracks_sources_but_not_worker_count(tmp_path):
     with_more_workers, _ = build_data_cache_fingerprint({**config, 'num_workers': 16})
     assert first == with_more_workers
     assert records[0]['path'] == str(source)
-    assert len(records[0]['sha256']) == 64
+    assert set(records[0]) == {'path', 'size', 'mtime_ns'}
 
     source.write_bytes(b'a different size')
     changed, _ = build_data_cache_fingerprint(config)
@@ -300,18 +274,20 @@ def test_cache_fingerprint_tracks_sources_but_not_worker_count(tmp_path):
     assert changed_config != changed
 
 
-def test_cache_fingerprint_tracks_prepared_fits_by_content(tmp_path):
+def test_cache_fingerprint_tracks_prepared_fits_by_stat_without_reading(tmp_path):
     prepared = tmp_path / 'prepared.fits'
     prepared.write_bytes(b'first-content')
     config = {'train_datasets': [{'data_path': str(prepared)}]}
 
-    first, records = build_data_cache_fingerprint(config)
+    with patch('builtins.open', side_effect=AssertionError('fingerprint must not read files')):
+        first, records = build_data_cache_fingerprint(config)
+    assert {record['path'] for record in records} == {str(prepared)}
+
+    # A rewritten file with a newer modification time changes the fingerprint.
     original_stat = prepared.stat()
     prepared.write_bytes(b'other-content')
-    os.utime(prepared, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    os.utime(prepared, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns + 10 ** 9))
     second, _ = build_data_cache_fingerprint(config)
-
-    assert {record['path'] for record in records} == {str(prepared)}
     assert second != first
 
 
@@ -353,3 +329,128 @@ def test_reload_token_is_stable_in_inherited_environment(monkeypatch):
 
     assert first == second
     assert cache_reload_token(False) is None
+
+
+def _observation(index, rows=6, invalid=()):
+    value = np.full((rows, 1), float(index), dtype=np.float32)
+    pixel = np.arange(rows, dtype=np.float32)[:, None]
+    for row in invalid:
+        value[row] = np.nan
+    return {'value': value, 'pixel': pixel}
+
+
+def _add(writer, observation, seed, filter_rows=True):
+    writer.add(observation, shuffled_valid_rows(
+        observation, filter_rows=filter_rows, rng=np.random.default_rng(seed),
+    ))
+
+
+def test_stratified_cache_interleaves_every_observation_in_each_batch(tmp_path):
+    n_observations, rows = 4, 6
+    writer = ObservationCacheWriter(tmp_path, n_observations, ds_name='obs', shuffle_seed=3)
+    for index in range(n_observations):
+        _add(writer, _observation(index, rows), seed=index)
+    paths, n_rows = writer.finalize(
+        constant_tensors={'time': np.arange(n_observations, dtype=np.float32)[:, None] * 10}
+    )
+
+    assert n_rows == n_observations * rows
+    assert sorted(path.name for path in tmp_path.iterdir()) == sorted(
+        os.path.basename(path) for path in paths.values()
+    )
+    value = np.load(paths['value'])[:, 0]
+    pixel = np.load(paths['pixel'])[:, 0]
+    time = np.load(paths['time'])[:, 0]
+    # Every group of n_observations consecutive rows holds each observation once.
+    groups = value.reshape(rows, n_observations)
+    assert all(sorted(group) == list(range(n_observations)) for group in groups)
+    np.testing.assert_array_equal(time, value * 10)
+    # The observation order is shuffled once, then shared by every slot.
+    assert not np.array_equal(groups[0], np.arange(n_observations))
+    assert all(np.array_equal(group, groups[0]) for group in groups)
+    # Each observation visits each of its pixels exactly once, in shuffled order.
+    for index in range(n_observations):
+        own = pixel[value == index]
+        assert sorted(own) == list(range(rows))
+    assert any(not np.array_equal(pixel[value == i], np.arange(rows)) for i in range(n_observations))
+
+
+def test_stratified_cache_drops_padding_of_short_observations(tmp_path):
+    writer = ObservationCacheWriter(tmp_path, 3, shuffle_seed=0, block_rows=4)
+    _add(writer, _observation(0, rows=6), seed=0)
+    _add(writer, _observation(1, rows=6, invalid=(1, 4)), seed=1)
+    _add(writer, {'value': np.full((6, 1), np.nan, dtype=np.float32),
+                  'pixel': np.arange(6, dtype=np.float32)[:, None]}, seed=2)
+    paths, n_rows = writer.finalize(constant_tensors={'time': np.array([[5.0], [7.0], [9.0]])})
+
+    value = np.load(paths['value'])[:, 0]
+    pixel = np.load(paths['pixel'])[:, 0]
+    time = np.load(paths['time'])[:, 0]
+    # The all-invalid observation is dropped; the short one keeps only its
+    # valid rows, so the tail of the cache holds the long observation alone.
+    assert n_rows == 6 + 4
+    assert np.isfinite(value).all()
+    assert sorted(pixel[value == 1]) == [0, 2, 3, 5]
+    assert sorted(pixel[value == 0]) == list(range(6))
+    np.testing.assert_array_equal(time, np.where(value == 0, 5.0, 7.0))
+    assert sorted(value[:8].reshape(4, 2).tolist()) == [[0, 1], [0, 1], [0, 1], [0, 1]] or \
+        sorted(value[:8].reshape(4, 2).tolist()) == [[1, 0], [1, 0], [1, 0], [1, 0]]
+    np.testing.assert_array_equal(value[8:], [0, 0])
+
+
+def test_sequential_cache_keeps_observation_order_and_drops_invalid_rows(tmp_path):
+    writer = ObservationCacheWriter(tmp_path, 2, shuffle=False)
+    for index, invalid in ((0, (1,)), (1, ())):
+        observation = _observation(index, rows=3, invalid=invalid)
+        writer.add(observation, shuffled_valid_rows(observation))
+    paths, n_rows = writer.finalize(constant_tensors={'time': np.array([[5.0], [7.0]])})
+    assert n_rows == 5
+    np.testing.assert_array_equal(np.load(paths['value'])[:, 0], [0, 0, 1, 1, 1])
+    np.testing.assert_array_equal(np.load(paths['pixel'])[:, 0], [0, 2, 0, 1, 2])
+    np.testing.assert_array_equal(np.load(paths['time'])[:, 0], [5, 5, 7, 7, 7])
+
+
+def test_unfiltered_cache_keeps_every_row_in_order(tmp_path):
+    writer = ObservationCacheWriter(tmp_path, 2, shuffle=False)
+    writer.add(_observation(0, rows=3, invalid=(1,)))
+    writer.add(_observation(1, rows=3))
+    paths, n_rows = writer.finalize(constant_tensors={'time': np.array([[5.0], [7.0]])})
+    assert n_rows == 6
+    value = np.load(paths['value'])[:, 0]
+    assert np.isnan(value[1]) and value[3] == 1
+    np.testing.assert_array_equal(np.load(paths['time'])[:, 0], [5, 5, 5, 7, 7, 7])
+
+
+def test_cache_writer_removes_every_file_on_failure(tmp_path):
+    writer = ObservationCacheWriter(tmp_path, 2, shuffle_seed=0)
+    _add(writer, _observation(0), seed=0)
+    with pytest.raises(ValueError, match='announced'):
+        writer.finalize()
+    assert not list(tmp_path.iterdir())
+
+    writer = ObservationCacheWriter(tmp_path, 2, shuffle_seed=0)
+    _add(writer, _observation(0), seed=0)
+    with pytest.raises(ValueError, match='same keys'):
+        writer.add({'value': np.zeros((6, 2))})
+    assert not list(tmp_path.iterdir())
+
+
+def test_block_size_does_not_change_the_cache(tmp_path):
+    rng = np.random.default_rng(1)
+    observations = []
+    for index in range(5):
+        value = rng.normal(size=(40, 3)).astype(np.float32)
+        value[rng.integers(0, 40, size=index * 3)] = np.nan
+        observations.append({'value': value, 'index': np.full((40, 1), index, np.float32)})
+    caches = []
+    for block_rows in (7, 10 ** 6):
+        directory = tmp_path / str(block_rows)
+        writer = ObservationCacheWriter(directory, 5, shuffle_seed=9, block_rows=block_rows)
+        for index, observation in enumerate(observations):
+            _add(writer, observation, seed=index)
+        paths, n_rows = writer.finalize(constant_tensors={'time': np.arange(5.0)[:, None]})
+        assert n_rows == sum(int(np.isfinite(o['value']).all(axis=1).sum()) for o in observations)
+        caches.append({key: np.load(path) for key, path in paths.items()})
+    for key in caches[0]:
+        np.testing.assert_array_equal(caches[0][key], caches[1][key])
+    assert np.isfinite(caches[0]['value']).all()

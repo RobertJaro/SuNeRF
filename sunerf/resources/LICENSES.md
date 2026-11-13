@@ -9,6 +9,8 @@
 - SDO/AIA effective areas: AIA team / SolarSoft calibration (Boerner et al. 2012).
 - STEREO/SECCHI EUVI effective areas: SECCHI team calibration files.
 - Solar Orbiter/EUI FSI spectral calibration: EUI consortium public release.
+- SDO/AIA V10 degradation table (`calibration/`): SolarSoft
+  `aia_V10_20201119_190000_response_table.txt`, redistributed unchanged.
 
 All derived tables in this directory are produced by `sunerf-resources build`;
 `manifest.json` records their hashes and builder provenance.

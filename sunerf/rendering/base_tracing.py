@@ -1,3 +1,4 @@
+import logging
 import math
 import warnings
 
@@ -8,6 +9,8 @@ from astropy import units as u
 
 from sunerf.train.sampling import SphericalSampler, HierarchicalSampler, StratifiedSampler
 from sunerf.train.util import TimeShuffler, NormalTimeShuffler
+
+logger = logging.getLogger(__name__)
 
 
 def _maybe_shuffle_times(batch, shuffler, *, module_training, shuffle):
@@ -290,7 +293,7 @@ class BasicRenderingModule(nn.Module):
             shuffle_config, seconds_per_dt=self.seconds_per_dt
         )
 
-        print('Shuffle config:', self.shuffler)
+        logger.debug('Shuffle config: %s', self.shuffler)
 
         self.model = model
 

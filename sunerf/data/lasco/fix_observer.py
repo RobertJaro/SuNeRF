@@ -15,7 +15,7 @@ from multiprocessing import Pool
 
 import astropy.units as u
 import sunpy.map
-from sunpy.coordinates.ephemeris import get_horizons_coord
+from sunerf.data.horizons import get_horizons_coord
 
 
 def parse_args():

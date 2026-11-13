@@ -56,7 +56,7 @@ data:
   seconds_per_dt: 2356585.92
   batch_size: 4096
   validation_batch_size: 4096
-  num_workers: 16
+  num_workers: 4
 
 callbacks:
   # image callbacks

@@ -36,12 +36,12 @@
       81
     ]
   },
-  "created_utc": "2026-09-20T02:49:32.323896+00:00",
+  "created_utc": "2026-11-10T20:06:14.101406+00:00",
   "files": {
     "absorption/h_he_photoionization.npz": {
-      "bundle_id": "sha256:091bf588897ca04331e55ca154bb85af683fb2bd05e20552576ec40711e90868",
-      "bytes": 7311,
-      "sha256": "b908190816a82580c319dd831fcfa3f6dfcc2decf9ce1a965f5273d28febada9"
+      "bundle_id": "sha256:e5871b12ac12d9c5b90fea79a2e97782e86e325a47b0f9a4dde67276f06d8b22",
+      "bytes": 7403,
+      "sha256": "6661468bdbca3c68de04e00d2a7f73b9c0116be77ff781432cf826cd8e96fdc0"
     },
     "abundance/sun_coronal_2021_chianti.abund": {
       "bytes": 1582,
@@ -64,9 +64,9 @@
       "sha256": "89136fe1db806efca9360c578e53b421714cf928366c249c71bbb7806b3cbdc9"
     },
     "response/aia.sunerf.npz": {
-      "bytes": 39553,
-      "response_id": "sha256:595be362cd506b111ca0116bfec28f186360b72d72170fce52c80518464e48ab",
-      "sha256": "5b1742b759208ad7581c9eb6da8e960f05f17dcf76baa1450038a8314849ab77"
+      "bytes": 44702,
+      "response_id": "sha256:d86218cbcca3c000aaa9f7926a5ab05a662992407a06a5fc7037b95c71ecd538",
+      "sha256": "aedcd13b6ec33b36454a3ca11aebc0ea30be5a4cf0930aa7efb00b08fa143e6d"
     },
     "response/eui_fsi.sunerf.npz": {
       "bytes": 18719,
@@ -74,14 +74,14 @@
       "sha256": "a6a70a05c300f44b89ab0c11f86e39364913eee3f1af861ed9451c408e696eb8"
     },
     "response/euvi_a.sunerf.npz": {
-      "bytes": 22264,
-      "response_id": "sha256:a760c721399e82e21c6de515c7c0a6b5fd489ff4950e9976986dff97ca09978f",
-      "sha256": "7928e51e8f6eea8be435be507b29668a78025705e65ab796d8eec9e6911d4529"
+      "bytes": 27806,
+      "response_id": "sha256:c08f3f17070b97ee278b5fd6d8f1efa0999f99a85546620c1e2468811a5c2379",
+      "sha256": "650cad065ebc0b9a9840aaddeca20f7291e854c63c78474567bc668a42b797fc"
     },
     "response/euvi_b.sunerf.npz": {
-      "bytes": 22424,
-      "response_id": "sha256:c3d236ce7be9a4468ee53030a66482f9d6eb70528f8b78ccc7824c1a061f3050",
-      "sha256": "32dbec731d49ebf482562c32ad54e29b50bee0406288963888cdc180c67616db"
+      "bytes": 27948,
+      "response_id": "sha256:9bc9f362feeafb962a315203ee0fcc8a0bd6b6de2294c5c4512a8046f4ae1c9d",
+      "sha256": "a1d575870f42937c19697720ac8b93e84c1783b8b522dd49cd285f28e8cc2abb"
     },
     "spectral/chianti_coronal_2021.spectral.npz": {
       "bytes": 5517939,
@@ -89,20 +89,20 @@
       "sha256": "3fc3bb95767d0608ffd8008d672001526d1baf037628c6665481cc1d18ffd2d3"
     },
     "throughput/aia.throughput.npz": {
-      "bytes": 415383,
-      "sha256": "d9ed6a816f16309cd8738b78f3e4b18db2ad9eb660fd7d9414d01d62590331a0"
+      "bytes": 214015,
+      "sha256": "6ba1dec163914395db7a704b744f1534563d81596df29ee1f93c23f272f5ea91"
     },
     "throughput/eui_fsi.throughput.npz": {
       "bytes": 18639,
       "sha256": "b03c569d0f8a0937914f18173bd913610752239007522ea95445f8d83e303b97"
     },
     "throughput/euvi_a.throughput.npz": {
-      "bytes": 161090,
-      "sha256": "a6af34ce02aa7e7a79d22742747956614f143126943df1735d96377a595f0d0c"
+      "bytes": 247771,
+      "sha256": "f6ee7001efe769ef098bddf6d00247263eee64fd3f57aefde1039be0b12c4276"
     },
     "throughput/euvi_b.throughput.npz": {
-      "bytes": 203524,
-      "sha256": "94c11e6a42ecd00d432e10aa5269865303ee017c153a92dd48a0cab99df3025e"
+      "bytes": 292755,
+      "sha256": "0aae3c9be4697a9e20c59f9a7527ea509c1e3f870e6e4092d013ba7249e274af"
     }
   },
   "ionization_equilibrium": {

@@ -23,7 +23,51 @@ def _load_inertial_position(data):
     return inertial_coords, position, radius_rsun, r_hat
 
 
+def average_samples(data, average_seconds):
+    """Average an in-situ product in windows of ``average_seconds`` aligned with UTC (hourly: full hours).
+
+    Density and radial velocity are arithmetic means over the valid samples of the window, the
+    averaging of the hourly Solar Orbiter product.  Time and position are those of the sample
+    closest to the mean time of the window, so the position stays on the trajectory.
+    """
+    time_unix = data["time_unix"].astype(np.float64)
+    density = data["density_cm3"].astype(np.float64)
+    velocity = data["velocity_radial_kms"].astype(np.float64)
+    has_density = (data["has_density"] > 0.5 if "has_density" in data else np.isfinite(density)) & np.isfinite(density)
+    has_velocity = ((data["has_velocity"] > 0.5 if "has_velocity" in data else np.isfinite(velocity))
+                    & np.isfinite(velocity))
+
+    order = np.argsort(time_unix, kind="stable")
+    window, inverse = np.unique(np.floor(time_unix[order] / average_seconds).astype(np.int64), return_inverse=True)
+    n = len(window)
+
+    def window_mean(values, valid):
+        count = np.bincount(inverse[valid[order]], minlength=n)
+        total = np.bincount(inverse[valid[order]], weights=values[order][valid[order]], minlength=n)
+        return np.where(count > 0, total / np.maximum(count, 1), np.nan), count > 0
+
+    mean_density, any_density = window_mean(density, has_density)
+    mean_velocity, any_velocity = window_mean(velocity, has_velocity)
+    mean_time, _ = window_mean(time_unix, np.ones(time_unix.shape, dtype=bool))
+    sorted_time = time_unix[order]
+    right = np.clip(np.searchsorted(sorted_time, mean_time), 1, len(sorted_time) - 1)
+    nearest = np.where(mean_time - sorted_time[right - 1] <= sorted_time[right] - mean_time, right - 1, right)
+    nearest = order[nearest]
+    return {
+        "time_unix": time_unix[nearest],
+        INERTIAL_COORDS_KEY: data[INERTIAL_COORDS_KEY][nearest],
+        "density_cm3": mean_density.astype(np.float32),
+        "velocity_radial_kms": mean_velocity.astype(np.float32),
+        "has_density": any_density.astype(np.float32),
+        "has_velocity": any_velocity.astype(np.float32),
+        "density_source": data["density_source"][nearest],
+    }
+
+
 class InSituDataset(TensorsDataset):
+    # averaging window of the samples in seconds; None keeps the cadence of the product
+    average_seconds = None
+
     def __init__(
             self,
             data_path,
@@ -39,9 +83,14 @@ class InSituDataset(TensorsDataset):
             time_range=None,
             shuffle=True,
             filter_nans=True,
+            average_seconds="default",
             **kwargs):
         instrument_key = ds_key if instrument_key is None else instrument_key
         data = np.load(data_path)
+        if average_seconds == "default":
+            average_seconds = self.average_seconds
+        if average_seconds is not None:
+            data = average_samples(data, float(average_seconds))
 
         time_unix = data["time_unix"].astype(np.float64)
         time_mask = np.ones(time_unix.shape, dtype=bool)
@@ -166,7 +215,8 @@ class InSituDataset(TensorsDataset):
 
 
 class PSPDataset(InSituDataset):
-    pass
+    # hourly averages, as in the hourly Solar Orbiter product
+    average_seconds = 3600.0
 
 
 class SolarOrbiterDataset(InSituDataset):

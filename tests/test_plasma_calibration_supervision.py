@@ -74,3 +74,47 @@ def test_module_freezes_held_out_gains_and_preserves_scope_on_reconstruction(tmp
         assert not renderers['EUI'].common_instrument_scaling.requires_grad
         assert torch.count_nonzero(renderers['EUI'].instrument_scaling) == 0
         assert model.construction_spec['supervised_instrument_keys'] == ['AIA', 'EUVI-A']
+
+
+def test_learnable_gains_freeze_after_calibration_iterations(tmp_path):
+    path = tmp_path / 'response.npz'
+    ResponseArtifact(channels=('A94', 'A131'), log_temperature=np.array([5., 6.]),
+                     response=np.ones((2, 2)), response_unit='cm5 DN / (pix s)',
+                     emission_measure_convention='ne2', provenance={'provider': 'fixture'}).save(path)
+    config = instruments()
+    for instrument in config:
+        instrument['temperature_response'].update(artifact=str(path), channels=['A94', 'A131'])
+        instrument['scaling'] = {'type': 'linear', 'divisor': 1.}
+    module = PlasmaSuNeRFModule(
+        Rs_per_ds=1., seconds_per_dt=86400., instruments_config=config,
+        supervised_instrument_keys=['AIA', 'EUVI-A'], validation_dataset_mapping={},
+        model_config={'type': 'siren', 'dim': 4, 'n_layers': 2, 'density_offset_log10_cm3': 8.,
+                      'temperature_grid': {'log10_K_min': 5., 'log10_K_max': 6., 'step_dex': 1.}},
+        sampling_config={'type': 'spherical', 'min_distance': 1., 'max_distance': 1.5, 'n_samples': 2, 'perturb': False},
+        hierarchical_sampling_config={'type': 'hierarchical', 'n_samples': 2, 'perturb': False},
+        absorption_config={'type': None}, lambda_config={'regularization': 0.}, regularization_density_scale_cm3=1e8,
+        calibration_iterations=10,
+    )
+    restored = PlasmaSuNeRFModule(**module.construction_spec)
+    assert restored.calibration_iterations == 10
+
+    renderers = module.rendering.rendering_modules
+
+    def trainable():
+        return {
+            (key, name): getattr(renderers[key], name).requires_grad
+            for key in renderers
+            for name in ('instrument_scaling', 'common_instrument_scaling')
+        }
+
+    initial = trainable()
+    assert initial[('EUVI-A', 'common_instrument_scaling')]
+    assert initial[('AIA', 'instrument_scaling')]
+    module.set_calibration_step(9)
+    assert trainable() == initial
+    module.set_calibration_step(10)
+    assert not any(trainable().values())
+    # Going back (e.g. a restart from an early checkpoint) restores only the
+    # originally learnable gains.
+    module.set_calibration_step(0)
+    assert trainable() == initial

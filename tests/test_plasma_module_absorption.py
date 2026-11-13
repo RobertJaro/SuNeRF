@@ -182,8 +182,17 @@ def test_separate_cool_absorber_is_rendered_regularized_and_recorded(tmp_path):
     metadata = module.instrument_metadata["EUVI-A"]["absorption"]
     assert metadata["cool_ion_fractions"] == {"H_I": 0.7, "He_I": 0.7, "He_II": 0.3}
     assert len(metadata["cool_cross_section_per_hydrogen_cm2"]) == 2
-    assert module.construction_spec["cool_column_scale_cm2"] == 1.0e19
+    assert module.construction_spec["cool_column_scale_cm2"] == 1.0e18
     assert module.lambda_cool_absorber == 1.0e-4
+
+    # The prior is concave: the same total column costs more as a haze over
+    # every ray than concentrated on one, and thin columns cost ~N / N_s.
+    haze = torch.full((4,), 1.0e18)
+    compact = torch.tensor([4.0e18, 0.0, 0.0, 0.0])
+    assert (module.compute_cool_column_regularization(haze)
+            > 1.5 * module.compute_cool_column_regularization(compact))
+    thin = torch.full((4,), 1.0e15)
+    assert module.compute_cool_column_regularization(thin).item() == pytest.approx(1.0e-3, rel=1e-3)
 
     # A dense cool layer on the observer side dims the corona behind it without
     # changing the emitting plasma, and the far-side rays are refined there.

@@ -44,7 +44,9 @@ def _header_flag_is_true(value):
 
 
 def _validate_ccor_quality(ext_header, primary_header, file_path):
-    quality_keys = ("ISVIABLE", "ISNORMAL", "DCMPRS_Q", "IMGBLK_Q", "BORSGT_Q", "EARFOV_Q")
+    # ISVIABLE and BORSGT_Q (Earth limb within 20 deg of the boresight) are not required: they drop
+    # several hours per day around the equinox although the Earth is outside the field of view
+    quality_keys = ("ISNORMAL", "DCMPRS_Q", "IMGBLK_Q", "EARFOV_Q")
     failed = []
     for key in quality_keys:
         value = ext_header.get(key, primary_header.get(key))
@@ -54,6 +56,15 @@ def _validate_ccor_quality(ext_header, primary_header, file_path):
         print(f"Skipping invalid CCOR file {file_path}: " + ", ".join(failed))
         return False
     return True
+
+
+def _load_ccor_header(file_path):
+    """Image header (extension 1) with the unit 'degrees' of some files replaced by 'deg', which astropy parses."""
+    header = fits.getheader(file_path, 1)
+    for key in header:
+        if key.startswith("CUNIT") and str(header[key]).strip().lower() == "degrees":
+            header[key] = "deg"
+    return header
 
 
 def _rotate_ccor_map(s_map, primary_header):
@@ -81,7 +92,7 @@ def _load_ccor_map(file_path):
     try:
         data = fits.getdata(file_path, 1)
         mask = fits.getdata(file_path, 2)
-        header = fits.getheader(file_path, 1)
+        header = _load_ccor_header(file_path)
         primary_header = fits.getheader(file_path, 0)
 
         if not _validate_ccor_quality(header, primary_header, file_path):

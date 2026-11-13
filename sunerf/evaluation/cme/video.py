@@ -6,15 +6,32 @@ import pandas as pd
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 from matplotlib import pyplot as plt
-from matplotlib.colors import LogNorm
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import ListedColormap, LogNorm, Normalize
 from matplotlib import patheffects
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-from sunpy.coordinates import frames, get_horizons_coord
+from matplotlib.patches import Circle
+from sunpy.coordinates import frames
+from sunerf.data.horizons import get_horizons_coord
 from sunpy.coordinates.ephemeris import get_body_heliographic_stonyhurst
 from sunpy.visualization.colormaps import cm
 from tqdm import tqdm
 
 from sunerf.evaluation.loader import ThomsonSuNeRFLoader
+
+# --observer keywords: JPL Horizons targets
+OBSERVERS = {'earth': '399', 'stereo_a': 'STEREO-A', 'psp': 'Parker Solar Probe', 'solo': 'Solar Orbiter'}
+# distance panel: symmetric color range [R_sun], opacity from the log column density between these
+# percentiles of the frame
+DISTANCE_LIMIT = 30.0
+DISTANCE_ALPHA_PERCENTILES = (5.0, 99.5)
+# PUNCH colormap of the angle out of the plane of sky (punchbowl punch_tau)
+PUNCH_TAU = ListedColormap(np.loadtxt(os.path.join(os.path.dirname(__file__), 'punch_tau.csv'), delimiter=',')
+                           / 255.0, name='punch_tau')
+# image panels: title and colormap
+PANELS = {'tB': ('Total Brightness [MSB]', cm.soholasco2), 'pB': ('Polarized Brightness [MSB]', cm.soholasco2),
+          'density': (r'$n_e$ [cm$^{-3}$]', 'RdPu'),
+          'distance': (r'$x$ distance from plane of sky [R$_\odot$]', PUNCH_TAU),
+          'observer': ('Observer', None)}
 
 
 def parse_time(value):
@@ -46,10 +63,22 @@ def build_parser():
     parser.add_argument('--steps', type=int, action='append', default=None,
                         help='Frames per waypoint; first entry should normally be 1, later entries interpolate from the previous waypoint to the new target')
     parser.add_argument('--distance_au', type=float, default=1.0, help='Observer distance in AU')
+    parser.add_argument('--observer', type=str, choices=sorted(OBSERVERS) + ['none'], action='append', default=None,
+                        help='Real observer per waypoint: its ephemeris position (JPL Horizons) at the time of '
+                             'every frame replaces --lat, --lon and --distance_au of the waypoint; the frames '
+                             'between two different observers move from one to the other. none keeps the '
+                             'manual position of the waypoint (HCI).')
     parser.add_argument('--resolution', type=int, default=256, help='Square output resolution in pixels')
     parser.add_argument('--dpi', type=int, default=300, help='Saved frame DPI')
     parser.add_argument('--overwrite', action='store_true', help='Re-render frames even if output files already exist')
-    parser.add_argument('--no_observer', action='store_true', help='Do not plot the observer geometry panel')
+    parser.add_argument('--panels', nargs='+', choices=sorted(PANELS),
+                        default=['tB', 'pB', 'density', 'distance', 'observer'],
+                        help='Panels of every frame, in this order')
+    parser.add_argument('--brightness_range', type=float, nargs=2, metavar=('MIN', 'MAX'), default=None,
+                        help='Fixed range of the tB and pB color scale [MSB]; default: 1st and 99.9th percentile '
+                             'of the first frame')
+    parser.add_argument('--density_range', type=float, nargs=2, metavar=('MIN', 'MAX'), default=None,
+                        help='Fixed range of the density color scale [cm^-3]; default: percentiles of the first frame')
     return parser
 
 
@@ -63,14 +92,17 @@ def resolve_time_range(loader, time_range):
 
 
 def resolve_waypoints(args, default_start_time, default_end_time):
-    lons = args.lon if args.lon is not None else [-90.0, 270.0]
-    lats = args.lat if args.lat is not None else [0.0, 0.0]
+    # single defaults expand to every waypoint; the old default sweep was -90 to 270 deg in longitude
+    lons = args.lon if args.lon is not None else ([-90.0, 270.0] if args.observer is None else [0.0])
+    lats = args.lat if args.lat is not None else [0.0]
     times = args.time if args.time is not None else [default_start_time, default_end_time]
     steps_list = args.steps if args.steps is not None else [1, 80]
-    radius_mins = args.radius_min if args.radius_min is not None else [2.5, 2.5]
-    radius_maxs = args.radius_max if args.radius_max is not None else [15.0, 15.0]
+    radius_mins = args.radius_min if args.radius_min is not None else [2.5]
+    radius_maxs = args.radius_max if args.radius_max is not None else [15.0]
+    observers = [None if o == 'none' else o for o in args.observer] if args.observer is not None else [None]
 
-    n_waypoints = max(len(lons), len(lats), len(times), len(steps_list), len(radius_mins), len(radius_maxs))
+    n_waypoints = max(len(lons), len(lats), len(times), len(steps_list), len(radius_mins), len(radius_maxs),
+                      len(observers))
 
     def expand(values, name):
         if len(values) == 1:
@@ -85,10 +117,11 @@ def resolve_waypoints(args, default_start_time, default_end_time):
     steps_list = expand(steps_list, '--steps')
     radius_mins = expand(radius_mins, '--radius_min')
     radius_maxs = expand(radius_maxs, '--radius_max')
+    observers = expand(observers, '--observer')
 
     waypoints = []
-    for lon, lat, time, steps, radius_min, radius_max in zip(
-        lons, lats, times, steps_list, radius_mins, radius_maxs
+    for lon, lat, time, steps, radius_min, radius_max, observer in zip(
+        lons, lats, times, steps_list, radius_mins, radius_maxs, observers
     ):
         if steps < 1:
             raise ValueError('--steps values must be at least 1')
@@ -99,6 +132,7 @@ def resolve_waypoints(args, default_start_time, default_end_time):
             'steps': steps,
             'radius_min': radius_min,
             'radius_max': radius_max,
+            'observer': observer,
         })
     if len(waypoints) < 1:
         raise ValueError('At least one waypoint is required')
@@ -107,6 +141,8 @@ def resolve_waypoints(args, default_start_time, default_end_time):
 
 
 def build_points(args, waypoints):
+    """Frames: (distance, lat, lon, time, radius_min, radius_max, (observer of the segment start, observer of
+    its end, fraction along the segment)); the observers are None for a manual position."""
     points = []
     first = waypoints[0]
     points.append((
@@ -116,9 +152,11 @@ def build_points(args, waypoints):
         first['time'],
         first['radius_min'] * u.R_sun,
         first['radius_max'] * u.R_sun,
+        (first['observer'], first['observer'], 1.0),
     ))
 
     for previous, current in zip(waypoints[:-1], waypoints[1:]):
+        fractions = np.linspace(0.0, 1.0, current['steps'])
         segment_points = list(zip(
             np.full(current['steps'], args.distance_au) * u.AU,
             np.linspace(previous['lat'], current['lat'], current['steps']) * u.deg,
@@ -126,6 +164,7 @@ def build_points(args, waypoints):
             pd.date_range(start=previous['time'], end=current['time'], periods=current['steps']).to_pydatetime(),
             np.linspace(previous['radius_min'], current['radius_min'], current['steps']) * u.R_sun,
             np.linspace(previous['radius_max'], current['radius_max'], current['steps']) * u.R_sun,
+            [(previous['observer'], current['observer'], f) for f in fractions],
         ))
         if segment_points:
             segment_points = segment_points[1:]
@@ -218,6 +257,20 @@ def get_earth_position(obstime, lon_frame):
     return earth.lat.to(u.deg), earth.lon.to(u.deg), earth.radius.to(u.AU)
 
 
+def ephemeris_positions(observer, times):
+    """HCI latitude, longitude [deg] and distance [R_sun] of a real observer at ``times`` (one Horizons query)."""
+    coords = get_horizons_coord(OBSERVERS[observer], times)
+    hci = [coords[i].transform_to(frames.HeliocentricInertial(obstime=times[i])) for i in range(len(times))]
+    return np.array([[c.lat.to_value(u.deg), c.lon.to_value(u.deg), c.distance.to_value(u.R_sun)] for c in hci])
+
+
+def blend_positions(start, end, fraction):
+    """Position between two observers: linear in latitude and distance, shortest arc in longitude."""
+    delta_lon = (end[1] - start[1] + 180.0) % 360.0 - 180.0
+    return np.array([start[0] + fraction * (end[0] - start[0]), start[1] + fraction * delta_lon,
+                     start[2] + fraction * (end[2] - start[2])])
+
+
 def get_input_observer_coord(lat, lon, distance, obstime, lon_frame):
     if lon_frame == 'hci':
         return SkyCoord(
@@ -236,6 +289,21 @@ def get_input_observer_coord(lat, lon, distance, obstime, lon_frame):
         obstime=obstime,
         observer='self',
     )
+
+
+def log_density_alpha(density):
+    """Opacity from the logarithm of the column density, 0 to 1 between two percentiles of the frame."""
+    valid = np.isfinite(density) & (density > 0)
+    log_density = np.full(density.shape, np.nan)
+    log_density[valid] = np.log10(density[valid])
+    low, high = np.nanpercentile(log_density, DISTANCE_ALPHA_PERCENTILES)
+    return np.clip(np.nan_to_num((log_density - low) / (high - low), nan=0.0), 0.0, 1.0)
+
+
+def frame_range(data, percentiles=(1.0, 99.9)):
+    """Percentiles of the finite positive values of an image."""
+    values = data[np.isfinite(data) & (data > 0)]
+    return tuple(np.percentile(values, percentiles))
 
 
 def format_position(label, coord):
@@ -260,14 +328,33 @@ def main():
     points = build_points(args, waypoints)
 
     resolution = (args.resolution, args.resolution) * u.pix
+    # one color scale for the whole video: given ranges, or the percentiles of the first frame
+    brightness_norm = LogNorm(*args.brightness_range) if args.brightness_range is not None else None
+    density_norm = LogNorm(*args.density_range) if args.density_range is not None else None
+    distance_norm = Normalize(vmin=-DISTANCE_LIMIT, vmax=DISTANCE_LIMIT)
+    # ephemeris positions of every real observer at all frame times (one query per observer)
+    observers = {o for point in points for o in point[6][:2] if o is not None}
+    if observers:
+        args.lon_frame = 'hci'
+    ephemeris = {o: ephemeris_positions(o, [point[3] for point in points]) for o in observers}
 
-    for i, (distance, lat, lon_value, time, occ_min, occ_max) in tqdm(enumerate(points), total=len(points)):
+    for i, (distance, lat, lon_value, time, occ_min, occ_max, segment) in tqdm(enumerate(points), total=len(points)):
         frame_path = os.path.join(args.out_path, f'cme_frame{i:03d}.jpg')
         if os.path.exists(frame_path) and not args.overwrite:
             print(f'Skipping existing frame: {frame_path}')
             continue
 
-        input_obs_coord = get_input_observer_coord(lat, lon_value, distance, time, args.lon_frame)
+        start_observer, end_observer, fraction = segment
+        if start_observer is None and end_observer is None:
+            input_obs_coord = get_input_observer_coord(lat, lon_value, distance, time, args.lon_frame)
+        else:
+            manual = np.array([lat.to_value(u.deg), lon_value.to_value(u.deg), distance.to_value(u.R_sun)])
+            start = manual if start_observer is None else ephemeris[start_observer][i]
+            end = manual if end_observer is None else ephemeris[end_observer][i]
+            position = end if start_observer == end_observer else blend_positions(start, end, fraction)
+            distance = position[2] * u.R_sun
+            input_obs_coord = get_input_observer_coord(position[0] * u.deg, position[1] * u.deg, distance, time,
+                                                       'hci')
 
         if args.lon_frame == 'hci':
             hci_obs_coord = input_obs_coord
@@ -291,62 +378,73 @@ def main():
             progress=False,
         )
 
-        pB_map = model_out['pB_map']
-        density_map = model_out['density_map']
+        maps = {'tB': model_out['tB_map'], 'pB': model_out['pB_map'], 'density': model_out['density_map'],
+                'distance': model_out['plane_of_sky_offset_map']}  # MSB, cm^-3, R_sun
+        pB_map = maps['pB']
 
-        # re-initialize the colormap normalizers for each frame to adjust scaling for changing observer distance
-        brightness_norm = LogNorm()
-        density_norm = LogNorm()
+        if brightness_norm is None:
+            brightness_norm = LogNorm(*frame_range(pB_map.data))
+        if density_norm is None:
+            density_norm = LogNorm(*frame_range(maps['density'].data))
 
-        n_cols = 2 if args.no_observer else 3
-        fig = plt.figure(figsize=(4 * n_cols, 4))
-        axs = [
-            fig.add_subplot(1, n_cols, 1, projection=pB_map),
-            fig.add_subplot(1, n_cols, 2, projection=pB_map),
-        ]
+        n_cols = len(args.panels)
+        fig = plt.figure(figsize=(3.4 * n_cols, 4.6), constrained_layout=True)
+        fig.get_layout_engine().set(w_pad=0.02, h_pad=0.02, wspace=0.03, hspace=0.0)
 
         observer_position = (
             plot_obs_coord.lat.to(u.deg),
             plot_obs_coord.lon.to(u.deg),
             plot_distance,
         )
-        if args.no_observer:
-            print(
-                f'[{time.isoformat(sep=" ", timespec="minutes")}] {args.lon_frame.upper()} | '
-                f'{format_position("Observer", observer_position)}'
-            )
-        else:
-            observer_ax = fig.add_subplot(1, n_cols, 3, projection='3d')
-            earth_position = get_earth_position(time, args.lon_frame)
-            stereo_a_position = get_stereo_a_position(time, args.lon_frame)
-            print(
-                f'[{time.isoformat(sep=" ", timespec="minutes")}] {args.lon_frame.upper()} | '
-                f'{format_position("Observer", observer_position)} | '
-                f'{format_position("Earth", earth_position)} | '
-                f'{format_position("STEREO-A", stereo_a_position)}'
-            )
-            plot_observer_geometry(observer_ax, plot_obs_coord.lat, plot_obs_coord.lon, plot_distance, time,
-                                   earth_position=earth_position, stereo_a_position=stereo_a_position)
+        print(
+            f'[{time.isoformat(sep=" ", timespec="minutes")}] {args.lon_frame.upper()} | '
+            f'{format_position("Observer", observer_position)}'
+        )
+        # image plane in projected solar radii: tangent-plane pixel offsets times the observer distance
+        rsun_per_pixel = [float(scale.to_value(u.rad / u.pix)) * float(pB_map.dsun.to_value(u.R_sun))
+                          for scale in pB_map.scale]
+        center = [float(pB_map.reference_pixel.x.to_value(u.pix)), float(pB_map.reference_pixel.y.to_value(u.pix))]
+        ny, nx = pB_map.data.shape
+        extent = [(-0.5 - center[0]) * rsun_per_pixel[0], (nx - 0.5 - center[0]) * rsun_per_pixel[0],
+                  (-0.5 - center[1]) * rsun_per_pixel[1], (ny - 0.5 - center[1]) * rsun_per_pixel[1]]
 
-        ax = axs[0]
-        im = ax.imshow(pB_map.data, cmap=cm.soholasco2, norm=brightness_norm, origin='lower')
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes('right', size='5%', pad=0.05, axes_class=plt.Axes)
-        fig.colorbar(im, cax=cax)
-        ax.set_title('Polarized Brightness [MSB]')
-        pB_map.draw_grid(ax, color='blue')
-        ax.coords[0].set_axislabel(' ')
-        ax.coords[1].set_axislabel(' ')
-
-        ax = axs[1]
-        im = ax.imshow(density_map.data, cmap='RdPu', origin='lower', norm=density_norm)
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes('right', size='5%', pad=0.05, axes_class=plt.Axes)
-        fig.colorbar(im, cax=cax)
-        ax.set_title(r'$n_e$ [cm$^{-3}$]')
-        pB_map.draw_grid(ax, color='blue')
-        ax.coords[0].set_axislabel(' ')
-        ax.coords[1].set_axislabel(' ')
+        first_image_ax = None
+        for column, panel in enumerate(args.panels):
+            if panel == 'observer':
+                observer_ax = fig.add_subplot(1, n_cols, column + 1, projection='3d')
+                earth_position = get_earth_position(time, args.lon_frame)
+                stereo_a_position = get_stereo_a_position(time, args.lon_frame)
+                plot_observer_geometry(observer_ax, plot_obs_coord.lat, plot_obs_coord.lon, plot_distance, time,
+                                       earth_position=earth_position, stereo_a_position=stereo_a_position)
+                continue
+            title, cmap = PANELS[panel]
+            # the image panels share the axes; y tick labels and label only on the first one
+            ax = fig.add_subplot(1, n_cols, column + 1, sharex=first_image_ax, sharey=first_image_ax)
+            # NaN (outside the field) is transparent on the white background
+            colormap = plt.get_cmap(cmap).copy()
+            colormap.set_bad((0.0, 0.0, 0.0, 0.0))
+            if panel == 'distance':
+                # opacity from the log column density
+                norm = distance_norm
+                rgba = colormap(norm(np.nan_to_num(maps[panel].data, nan=0.0)))
+                rgba[..., 3] = log_density_alpha(maps['density'].data)
+                ax.imshow(rgba, origin='lower', extent=extent)
+                im = ScalarMappable(norm=norm, cmap=colormap)
+            else:
+                norm = density_norm if panel == 'density' else brightness_norm
+                im = ax.imshow(maps[panel].data, cmap=colormap, origin='lower', extent=extent, norm=norm)
+            ax.set_facecolor('white')
+            ax.add_patch(Circle((0.0, 0.0), 1.0, color='orange', linewidth=0, zorder=5))
+            ax.set_aspect('equal')
+            # the colorbar sits above the panel and its label is the panel title
+            colorbar = fig.colorbar(im, ax=ax, location='top', aspect=30, pad=0.02)
+            colorbar.set_label(title)
+            ax.set_xlabel(r'HPC-x [R$_\odot$]')
+            if first_image_ax is None:
+                first_image_ax = ax
+                ax.set_ylabel(r'HPC-y [R$_\odot$]')
+            else:
+                ax.tick_params(labelleft=False)
 
         fig.suptitle(
             f'Lat. ({args.lon_frame.upper()}): {plot_obs_coord.lat.to_value(u.deg):.1f} deg, '
@@ -355,7 +453,6 @@ def main():
             fontsize=16,
         )
 
-        fig.tight_layout()
         fig.savefig(frame_path, dpi=args.dpi)
         plt.close('all')
 

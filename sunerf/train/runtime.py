@@ -74,16 +74,14 @@ def _configured_source_files(value, key=""):
     return [os.path.abspath(path) for path in matches if os.path.isfile(path)]
 
 
-def _file_sha256(path):
-    digest = hashlib.sha256()
-    with open(path, 'rb') as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def build_data_cache_fingerprint(data_config, *, format_version=DATA_CACHE_FORMAT_VERSION):
-    """Fingerprint cache semantics and exact content of every transitive input."""
+    """Fingerprint cache semantics and the identity of every transitive input.
+
+    Inputs are recorded by path, size and modification time. The fingerprint
+    is computed on every launch of every rank, and the configured globs can
+    match thousands of prepared files on a network file system, so it must not
+    read file contents: one ``stat`` per file is the whole cost.
+    """
     source_files = set(_configured_source_files(data_config))
     source_records = []
     for path in sorted(source_files):
@@ -93,7 +91,6 @@ def build_data_cache_fingerprint(data_config, *, format_version=DATA_CACHE_FORMA
                 "path": path,
                 "size": stat.st_size,
                 "mtime_ns": stat.st_mtime_ns,
-                "sha256": _file_sha256(path),
             }
         )
     payload = {

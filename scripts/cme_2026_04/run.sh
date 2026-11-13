@@ -3,7 +3,7 @@
 #PBS -N SuNeRF
 #PBS -A P22100000
 #PBS -q main
-#PBS -l select=1:ncpus=16:ngpus=4:mem=128gb
+#PBS -l select=1:ncpus=64:ngpus=4:mem=128gb
 #PBS -l walltime=12:00:00
 
 ################################################################################

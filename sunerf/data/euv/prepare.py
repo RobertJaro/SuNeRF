@@ -16,6 +16,17 @@ The three supported adapters have deliberately different calibration contracts:
 All adapters then use the same crop, reprojection, resampling, radial masking,
 and FITS writer. Detector values are never clipped or normalized and invalid
 pixels remain NaN with a matching ``VALID_MASK`` FITS extension.
+
+Saturation is applied by the reconstruction, not here: ``run_plasma`` masks
+every pixel whose peak detector DN reaches ``instruments[].saturation_dn``.
+Preparation records what that needs. ``PEAK_DN`` is an image extension on the
+prepared grid holding, for every pixel, the highest detector DN of the native
+pixels that can affect it: ``BLEED_PIXELS`` along the readout columns and one
+across them for bleed and blooming, widened by the interpolation support. The
+frame's native peak DN and the number of pixels on its plateau are stamped as
+``PEAKDN`` and ``PEAKNPX``. Detector DN follow one convention (``PEAKCONV``):
+AIA level-1 DN as they are, SECCHI_PREP rates on the 14-bit scale of their
+saturation value ``DSATVAL``, and EUI level-2 rates times the exposure.
 """
 
 from __future__ import annotations
@@ -40,6 +51,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 from astropy import units as u
+from scipy import ndimage
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.table import QTable
@@ -166,7 +178,19 @@ def _validated_sensitivity_convention(value, *, context):
     return value
 
 
+def _is_rate_unit(unit) -> bool:
+    """True when the unit carries a negative power of seconds (an exposure-normalized rate)."""
+    return any(base == u.s and power < 0 for base, power in zip(unit.bases, unit.powers))
+
+
 def _measurement_unit(s_map) -> str:
+    """Unit of an externally calibrated input (EUVI, EUI).
+
+    The temperature responses are per second, and these adapters never divide
+    by the exposure time themselves, so the input must already be a rate: a
+    product calibrated without exposure normalization is rejected here instead
+    of at training time.
+    """
     value = s_map.meta.get('bunit')
     if value is None or not str(value).strip():
         raise ValueError('The calibrated input must declare a non-empty BUNIT.')
@@ -177,11 +201,16 @@ def _measurement_unit(s_map) -> str:
     if re.sub(r'[^a-z0-9]+', '', value.lower()) == 'photonflux':
         return 'ph / s'
     try:
-        u.Unit(value)
+        parsed = u.Unit(value)
     except (TypeError, ValueError) as error:
         raise ValueError(
             f'The calibrated input BUNIT {value!r} is not an Astropy-compatible unit.'
         ) from error
+    if not _is_rate_unit(parsed):
+        raise ValueError(
+            f'The calibrated input BUNIT {value!r} is not exposure-normalized (no 1/s); '
+            'the prepared EUV products must be rates.'
+        )
     return value
 
 
@@ -211,7 +240,7 @@ def _aia_rate_unit(input_unit: str) -> str:
         parsed = u.Unit(input_unit)
     except (TypeError, ValueError) as error:
         raise ValueError(f'AIA BUNIT {input_unit!r} cannot be parsed by Astropy.') from error
-    if any(base == u.s and power < 0 for base, power in zip(parsed.bases, parsed.powers)):
+    if _is_rate_unit(parsed):
         raise ValueError(
             f'AIA level-1 BUNIT {input_unit!r} is already rate-normalized; '
             'refusing to divide by EXPTIME twice.'
@@ -279,6 +308,93 @@ def _exposure_seconds(s_map) -> float:
     return seconds
 
 
+# Peak detector DN for the saturation mask of the reconstruction. Full scale of
+# the 14-bit AIA and SECCHI cameras; SECCHI_PREP products carry their saturation
+# value DSATVAL in their own calibrated units, which corresponds to it.
+DETECTOR_FULL_SCALE_DN = 16383.0
+# Fraction of DSATVAL that a SECCHI_PREP product with DATASAT > 0 must reach;
+# a header consistency check.
+DSATVAL_CHECK_FRACTION = 0.9
+# Native pixels along the readout columns (array axis 0: image y in AIA
+# level-1 and SECCHI images) reached by the charge bleeding from a saturated
+# pixel; one pixel is added across them for blooming.
+BLEED_PIXELS = 4
+# Native pixels of the interpolation support of registration and reprojection
+# (cubic: two), so that a prepared value interpolated from a saturated sample is
+# covered too.
+INTERPOLATION_PIXELS = 2
+PEAK_DN_EXTENSION = 'PEAK_DN'
+# Pixels within this fraction of the frame's peak form its plateau (PEAKNPX).
+PLATEAU_TOLERANCE = 1.0e-3
+
+
+def peak_dn_layer(dn) -> np.ndarray:
+    """Highest detector DN within every native pixel's bleed and interpolation reach.
+
+    ``dn`` is on the native detector grid. A pixel of the result is at or above
+    a saturation level exactly when a pixel of its neighbourhood (rows
+    ``+-(BLEED_PIXELS + INTERPOLATION_PIXELS)`` along the readout columns,
+    columns ``+-(1 + INTERPOLATION_PIXELS)``) is, so thresholding the
+    reprojected layer reproduces a column-bleed mask built on the native grid.
+    """
+    values = np.where(np.isfinite(dn), np.asarray(dn, dtype=np.float32), -np.inf)
+    size = (2 * (BLEED_PIXELS + INTERPOLATION_PIXELS) + 1, 2 * (1 + INTERPOLATION_PIXELS) + 1)
+    peak = ndimage.maximum_filter(values, size=size, mode='nearest')
+    return np.where(np.isfinite(peak), peak, np.nan).astype(np.float32)
+
+
+def _peak_provenance(dn, valid, conversion):
+    """Native peak DN of the frame, its plateau size, the DN convention and layer."""
+    if dn is None:
+        return {'peak_dn_conversion': 'unavailable', 'frame_peak_dn': None,
+                'frame_peak_pixels': None, 'peak_dn_layer': None}
+    dn = np.asarray(dn)
+    with np.errstate(invalid='ignore'):
+        values = dn[np.asarray(valid, dtype=bool) & np.isfinite(dn)]
+    peak = float(values.max()) if values.size else None
+    plateau = (int(np.count_nonzero(values >= peak * (1.0 - PLATEAU_TOLERANCE)))
+               if peak is not None and peak > 0 else 0)
+    return {'peak_dn_conversion': conversion, 'frame_peak_dn': peak,
+            'frame_peak_pixels': plateau, 'peak_dn_layer': peak_dn_layer(dn)}
+
+
+def _euvi_saturation_value(s_map):
+    """``DSATVAL`` of a SECCHI_PREP product checked against its data, or None.
+
+    SECCHI_PREP rescales the saturation value ``DSATVAL`` with the same
+    exposure, calibration and unit factors as the data. Without it the detector
+    DN of the product are unknown. A header whose data exceed DSATVAL far beyond
+    the flat-field spread, or whose saturated-pixel count ``DATASAT`` is positive
+    while no pixel comes close to DSATVAL, does not describe the data.
+    """
+    value = s_map.meta.get('dsatval')
+    try:
+        saturation = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(saturation) or saturation <= 0:
+        return None
+    data = np.asarray(s_map.data, dtype=np.float64)
+    finite = data[np.isfinite(data)]
+    maximum = float(finite.max()) if finite.size else float('nan')
+    if np.isfinite(maximum) and maximum > 1.5 * saturation:
+        raise ValueError(
+            f'EUVI data maximum {maximum:g} exceeds DSATVAL={saturation:g}; '
+            'DSATVAL is not in the units of the calibrated data.'
+        )
+    count = s_map.meta.get('datasat')
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        count = 0
+    if count > 0 and not (finite >= DSATVAL_CHECK_FRACTION * saturation).any():
+        raise ValueError(
+            f'EUVI header DATASAT={count} but no pixel reaches '
+            f'{DSATVAL_CHECK_FRACTION:g} * DSATVAL={DSATVAL_CHECK_FRACTION * saturation:g}.'
+        )
+    return saturation
+
+
 def _copy_map(s_map, data=None, meta=None):
     return Map(
         np.array(s_map.data if data is None else data, dtype=np.float64, copy=True),
@@ -321,6 +437,8 @@ _OBSERVATION_METADATA_KEYS = (
     'exptime',
     'instrume',
     'lvl_num',
+    # AIA's saturated-pixel count; the frame review flags flare frames with it.
+    'nsatpix',
     'obsrvtry',
     'quality',
     'telescop',
@@ -356,6 +474,18 @@ def apply_common_geometry(
     interpolation. Invalid detector samples and interpolation footprints are
     represented as NaN in the returned map rather than as artificial zeros.
     """
+    prepared, final_mask, _ = _apply_geometry(
+        s_map, valid_mask, geometry, already_north_up=already_north_up
+    )
+    return prepared, final_mask
+
+
+def _apply_geometry(s_map, valid_mask=None, geometry=None, *, already_north_up=False, layer=None):
+    """``apply_common_geometry`` that also carries a native ``layer`` image.
+
+    The layer follows the geometry like the mask (nearest neighbour) and is
+    returned on the prepared grid, NaN outside the valid pixels.
+    """
     geometry = geometry or GeometryConfig()
     data = np.asarray(s_map.data, dtype=np.float64)
     if valid_mask is None:
@@ -368,6 +498,7 @@ def apply_common_geometry(
     valid_mask &= np.isfinite(data)
     data_map = _copy_map(s_map, np.where(valid_mask, data, np.nan))
     mask_map = _copy_map(s_map, valid_mask.astype(np.float32))
+    layer_map = None if layer is None else _copy_map(s_map, np.nan_to_num(layer, nan=0.0))
 
     if geometry.north_up and not already_north_up:
         data_map = data_map.rotate(
@@ -377,6 +508,8 @@ def apply_common_geometry(
             clip=False,
         )
         mask_map = mask_map.rotate(recenter=True, missing=0, order=0, clip=False)
+        if layer_map is not None:
+            layer_map = layer_map.rotate(recenter=True, missing=0, order=0, clip=False)
 
     bounds = geometry.hpc_bounds_arcsec
     if bounds is None and geometry.max_radius_rsun is not None:
@@ -409,8 +542,14 @@ def apply_common_geometry(
         mask_map = mask_map.reproject_to(
             target_wcs, order='nearest-neighbor', **reproject_kwargs
         )
+        if layer_map is not None:
+            layer_map = layer_map.reproject_to(
+                target_wcs, order='nearest-neighbor', **reproject_kwargs
+            )
     elif bounds is not None and geometry.reproject_reference is None:
         # Without a target shape the crop stays on the native pixel grid.
+        if layer_map is not None:
+            _, layer_map = _submap_pair(data_map, layer_map, bounds)
         data_map, mask_map = _submap_pair(data_map, mask_map, bounds)
 
     if exact_hpc_grid:
@@ -422,11 +561,17 @@ def apply_common_geometry(
         mask_map = mask_map.reproject_to(
             reference.wcs, order='nearest-neighbor', **reproject_kwargs
         )
+        if layer_map is not None:
+            layer_map = layer_map.reproject_to(
+                reference.wcs, order='nearest-neighbor', **reproject_kwargs
+            )
     elif geometry.shape is not None:
         ny, nx = (int(value) for value in geometry.shape)
         dimensions = u.Quantity([nx, ny], u.pix)
         data_map = data_map.resample(dimensions, method='linear')
         mask_map = mask_map.resample(dimensions, method='nearest')
+        if layer_map is not None:
+            layer_map = layer_map.resample(dimensions, method='nearest')
 
     final_mask = np.asarray(mask_map.data) >= 0.5
     final_mask &= np.isfinite(data_map.data)
@@ -437,7 +582,10 @@ def apply_common_geometry(
     if not final_mask.any():
         raise ValueError('Geometry and masks removed every valid image pixel.')
     prepared = _copy_map(data_map, np.where(final_mask, data_map.data, np.nan))
-    return _restore_observation_metadata(s_map, prepared), final_mask
+    prepared_layer = None
+    if layer_map is not None:
+        prepared_layer = np.where(final_mask, np.asarray(layer_map.data), np.nan).astype(np.float32)
+    return _restore_observation_metadata(s_map, prepared), final_mask, prepared_layer
 
 
 def _load_aiapy_calibration():
@@ -554,7 +702,11 @@ def prepare_aia_map(
                 f'AIA image shape {raw_data.shape}.'
             )
         raw_mask &= supplied_mask
+    # Level-1 values are detector DN on the native CCD grid, the frame in
+    # which saturation and its column bleed are defined.
+    peak = _peak_provenance(raw_data, raw_mask, 'AIA level-1 DN')
     mask_map = _copy_map(s_map, raw_mask.astype(np.float32))
+    layer_map = _copy_map(s_map, np.nan_to_num(peak['peak_dn_layer'], nan=0.0))
 
     calibrated = update_pointing(
         _copy_map(s_map), pointing_table=pinned_inputs['pointing_table']
@@ -562,8 +714,12 @@ def prepare_aia_map(
     mask_map = update_pointing(
         mask_map, pointing_table=pinned_inputs['pointing_table']
     )
+    layer_map = update_pointing(
+        layer_map, pointing_table=pinned_inputs['pointing_table']
+    )
     calibrated = register(calibrated, missing=np.nan, order=3)
     mask_map = register(mask_map, missing=0, order=0)
+    layer_map = register(layer_map, missing=0, order=0)
     registered_mask = np.asarray(mask_map.data) >= 0.5
     if registered_mask.shape != calibrated.data.shape:
         raise ValueError('AIA registered data and mask shapes do not match.')
@@ -574,8 +730,9 @@ def prepare_aia_map(
     meta['bunit'] = output_unit
     meta['expnorm'] = True
     calibrated = _copy_map(calibrated, calibrated.data / exposure, meta)
-    prepared, final_mask = apply_common_geometry(
-        calibrated, registered_mask, geometry, already_north_up=True
+    prepared, final_mask, peak['peak_dn_layer'] = _apply_geometry(
+        calibrated, registered_mask, geometry, already_north_up=True,
+        layer=np.asarray(layer_map.data),
     )
     # Reprojection constructs a fresh WCS header and may discard non-WCS
     # metadata. Restore the calibrated measurement contract explicitly so the
@@ -594,6 +751,7 @@ def prepare_aia_map(
             'aiapy.correct_degradation',
             'divide_by_exposure_seconds',
         ],
+        **peak,
         'correction_table_path': str(correction_table_path.resolve()),
         'correction_table_sha256': pinned_inputs['correction_sha256'],
         'pointing_table_path': str(pointing_table_path.resolve()),
@@ -648,7 +806,11 @@ def prepare_euvi_map(
     geometry: GeometryConfig | None = None,
     valid_mask: np.ndarray | None = None,
 ):
-    """Validate an externally calibrated SECCHI/EUVI product; no radiometry."""
+    """Validate an externally calibrated SECCHI/EUVI product; no radiometry.
+
+    Its detector DN are the product values on the 14-bit scale of the header
+    saturation value DSATVAL; without DSATVAL no peak DN are recorded.
+    """
     product_level = _nonempty(product_level, 'product_level')
     sensitivity_convention = _validated_sensitivity_convention(
         sensitivity_convention, context='EUVI preparation'
@@ -672,12 +834,22 @@ def prepare_euvi_map(
     calibrated_meta = s_map.meta.copy()
     calibrated_meta['bunit'] = measurement_unit
     calibrated = _copy_map(s_map, meta=calibrated_meta)
-    prepared, final_mask = apply_common_geometry(calibrated, valid_mask, geometry)
+    saturation = _euvi_saturation_value(s_map)
+    data = np.asarray(s_map.data, dtype=np.float64)
+    peak = _peak_provenance(
+        None if saturation is None else data / saturation * DETECTOR_FULL_SCALE_DN,
+        np.ones(data.shape, dtype=bool) if valid_mask is None else valid_mask,
+        'SECCHI_PREP value / DSATVAL * 16383',
+    )
+    prepared, final_mask, peak['peak_dn_layer'] = _apply_geometry(
+        calibrated, valid_mask, geometry, layer=peak['peak_dn_layer']
+    )
     provenance = {
         'adapter': 'euvi',
         'spacecraft': spacecraft.upper(),
         'external_product_level': product_level,
         'calibration_steps': ['external_SECCHI_calibration', 'geometry_only_in_SuNeRF'],
+        **peak,
         'sensitivity_convention': sensitivity_convention,
         'measurement_semantics': 'per_native_pixel',
         **_geometry_radiometry_provenance(calibrated, prepared),
@@ -711,6 +883,9 @@ def prepare_eui_map(
     ``calibration_id`` defaults to the identifier the level-2 header carries
     (``CAL_ID``, else ``VERS_CAL``).  An explicit value is still cross-checked
     against the header.
+
+    Its detector DN are the level-2 rates times the exposure time (level-1 DN
+    of the combined high- and low-gain image).
     """
     if calibration_id is not None:
         calibration_id = _nonempty(calibration_id, 'calibration_id')
@@ -732,7 +907,7 @@ def prepare_eui_map(
     if not _is_level_two(level):
         raise ValueError(f'EUI input must be calibrated level 2, got {level!r}.')
     _measurement_unit(s_map)
-    _exposure_seconds(s_map)
+    exposure = _exposure_seconds(s_map)
     header_calibration_id = s_map.meta.get('cal_id') or s_map.meta.get('vers_cal')
     header_calibration_id = (
         str(header_calibration_id).strip() if header_calibration_id else ''
@@ -749,14 +924,22 @@ def prepare_eui_map(
             f'EUI calibration metadata {header_calibration_id!r} does not match '
             f'{calibration_id!r}.'
         )
-    prepared, final_mask = apply_common_geometry(
-        _copy_map(s_map), valid_mask, geometry
+    # Level-2 values are rates (enforced by _measurement_unit).
+    data = np.asarray(s_map.data, dtype=np.float64)
+    peak = _peak_provenance(
+        data * exposure,
+        np.ones(data.shape, dtype=bool) if valid_mask is None else valid_mask,
+        'EUI level-2 rate * XPOSURE',
+    )
+    prepared, final_mask, peak['peak_dn_layer'] = _apply_geometry(
+        _copy_map(s_map), valid_mask, geometry, layer=peak['peak_dn_layer']
     )
     provenance = {
         'adapter': 'eui',
         'calibration_id': calibration_id,
         'external_product_level': level,
         'calibration_steps': ['validated_EUI_L2', 'geometry_only_in_SuNeRF'],
+        **peak,
         'sensitivity_convention': sensitivity_convention,
         'measurement_semantics': 'per_native_pixel',
         **_geometry_radiometry_provenance(s_map, prepared),
@@ -775,6 +958,15 @@ def _stamp_metadata(s_map, source_path, provenance):
     meta['src_sha'] = source_sha256
     meta['srcfile'] = Path(source_path).name
     meta['maskext'] = 'VALID_MASK'
+    # Peak detector DN for the saturation mask of the reconstruction: the
+    # frame's native peak, its plateau size and the DN convention; PEAK_DN
+    # holds the per-pixel layer when the convention is known.
+    if provenance.get('peak_dn_layer') is not None:
+        meta['peakext'] = PEAK_DN_EXTENSION
+    meta['peakconv'] = provenance.get('peak_dn_conversion', 'unavailable')
+    if provenance.get('frame_peak_dn') is not None:
+        meta['peakdn'] = provenance['frame_peak_dn']
+        meta['peaknpx'] = provenance['frame_peak_pixels']
     meta['natpxsr'] = provenance['native_pixel_solid_angle_sr']
     meta['prepxsr'] = provenance['prepared_pixel_solid_angle_sr']
     meta['radsem'] = provenance['measurement_semantics']
@@ -789,7 +981,7 @@ def _stamp_metadata(s_map, source_path, provenance):
     return _copy_map(s_map, meta=meta), source_sha256
 
 
-def _atomic_write_fits(s_map, valid_mask, output_path, *, overwrite=False):
+def _atomic_write_fits(s_map, valid_mask, output_path, *, overwrite=False, peak_dn=None):
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists() and not overwrite:
@@ -812,6 +1004,14 @@ def _atomic_write_fits(s_map, valid_mask, output_path, *, overwrite=False):
             mask_hdu.header['MASKTRUE'] = 1
             mask_hdu.header['MASKFALS'] = 0
             hdul.append(mask_hdu)
+            if peak_dn is not None:
+                peak_hdu = fits.ImageHDU(np.asarray(peak_dn, dtype=np.float32), name=PEAK_DN_EXTENSION)
+                peak_hdu.header['BUNIT'] = 'DN'
+                peak_hdu.header['PEAKCONV'] = str(s_map.meta.get('peakconv', ''))
+                peak_hdu.header['COMMENT'] = (
+                    'Highest detector DN of the native pixels reaching this pixel '
+                    'by column bleed and interpolation; NaN where invalid.')
+                hdul.append(peak_hdu)
             hdul.flush(output_verify='exception')
         os.replace(temporary_path, output_path)
     finally:
@@ -839,8 +1039,9 @@ def _prepare_file(
         valid_mask=source_mask,
         **adapter_kwargs,
     )
+    peak_dn = provenance.get('peak_dn_layer')
     prepared, _ = _stamp_metadata(prepared, source_path, provenance)
-    _atomic_write_fits(prepared, valid_mask, output_path, overwrite=overwrite)
+    _atomic_write_fits(prepared, valid_mask, output_path, overwrite=overwrite, peak_dn=peak_dn)
     return PreparationResult(Path(output_path))
 
 

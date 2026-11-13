@@ -167,7 +167,7 @@ data:
   batch_size: 4096
   validation_batch_size: 4096
   preprocess_workers: 16  # concurrent FITS/map loading during cache preparation
-  num_workers: 4  # total concurrent training-loader workers per DDP rank
+  num_workers: 4
 
 callbacks:
   - type: 'thomson_image'

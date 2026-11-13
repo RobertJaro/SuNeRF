@@ -277,12 +277,27 @@ def fit_constant_acceleration(times_s, radius_rsun, reference_radius):
     return (speed + 2 * half_acceleration * roots[0]) * KM_PER_RSUN, acceleration
 
 
+def constant_acceleration_track(times_s, radius_rsun, min_points=5):
+    """Constant-acceleration fit of a height-time track (NaNs ignored): the fitted radius [R_sun] and
+    speed [km/s] within the tracked interval (NaN outside) and the acceleration [m/s^2]."""
+    mask = np.isfinite(radius_rsun)
+    radius_fit = np.full(len(times_s), np.nan)
+    speed_fit = np.full(len(times_s), np.nan)
+    if mask.sum() < min_points:
+        return radius_fit, speed_fit, np.nan
+    coefficients = np.polyfit(times_s[mask], radius_rsun[mask], 2)
+    inside = (times_s >= times_s[mask].min()) & (times_s <= times_s[mask].max())
+    radius_fit[inside] = np.polyval(coefficients, times_s[inside])
+    speed_fit[inside] = np.polyval(np.polyder(coefficients), times_s[inside]) * KM_PER_RSUN
+    return radius_fit, speed_fit, 2 * coefficients[0] * KM_PER_RSUN * 1e3
+
+
 def local_kinematics(times_s, radius_rsun, window_s, min_points=5):
     """Speed [km/s] and acceleration [m/s^2] from quadratic fits in a sliding time window.
 
     Every sample is fitted with the finite samples within ``window_s / 2`` on
-    both sides; samples without ``min_points`` or without neighbours on both
-    sides stay NaN.
+    both sides; samples without ``min_points`` or whose neighbours do not cover
+    most of the window on both sides (the ends of a track) stay NaN.
     """
     speed = np.full(len(times_s), np.nan)
     acceleration = np.full(len(times_s), np.nan)
@@ -290,7 +305,8 @@ def local_kinematics(times_s, radius_rsun, window_s, min_points=5):
     for index in np.flatnonzero(finite):
         dt = times_s - times_s[index]
         window = finite & (np.abs(dt) <= 0.5 * window_s)
-        if window.sum() < min_points or not (dt[window] < 0).any() or not (dt[window] > 0).any():
+        reach = 0.8 * 0.5 * window_s
+        if window.sum() < min_points or dt[window].min() > -reach or dt[window].max() < reach:
             continue
         half_acceleration, slope, _ = np.polyfit(dt[window], radius_rsun[window], 2)
         speed[index] = slope * KM_PER_RSUN

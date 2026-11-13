@@ -355,7 +355,10 @@ def render_observer(
     ).to(device).eval()
 
     out_path = Path(out_path)
-    ray_loader = MapDataLoader(Rs_per_ds=1.0, max_radius=max_radius)
+    # Pixels outside the inscribed circle of the field of view are NaN, as in the
+    # prepared observations (prepare --max-radius-rsun), and so are rays that
+    # would miss the rendered shell.
+    ray_loader = MapDataLoader(Rs_per_ds=1.0, max_radius=min(max_radius, 0.5 * fov_rsun))
     records = []
     progress = tqdm(
         total=len(pairs) * resolution * resolution, unit="ray", unit_scale=True,
@@ -515,7 +518,8 @@ def build_parser():
     parser.add_argument("--resolution", type=int, default=256)
     parser.add_argument(
         "--fov-rsun", type=float, default=3.1,
-        help="Full width of the field of view in solar radii (same for every observer).",
+        help="Full width of the field of view in solar radii (same for every observer); "
+             "pixels outside its inscribed circle are NaN.",
     )
     parser.add_argument("--min-radius", type=float, default=1.0)
     parser.add_argument("--max-radius", type=float, default=1.5)

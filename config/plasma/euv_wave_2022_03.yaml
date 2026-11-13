@@ -1,0 +1,250 @@
+schema_version: 2
+
+# EUV wave of the M4.0 flare of 2022-03-28 (AR 12975) from AIA, EUVI-A and EUI FSI 174.
+# Two tiers: 1 h background (focus +/- 7 days) and 1 min focus over 10:30-12:30 UT.
+base_path: "/glade/work/rjarolim/sunerf/euv_wave_2022_03_plasma_v07"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/euv_wave_2022_03_plasma_v03"
+
+instruments:
+  - type: "plasma"
+    key: "AIA"
+    scaling: {type: "log", divisor: "builtin:image_scaling"}
+    # Pixels whose PEAK_DN reaches this level are not supervised.
+    saturation_dn: 13000
+    temperature_response:
+      artifact: "builtin:aia"
+      channels: ["A94", "A131", "A171", "A193", "A211", "A335"]
+      learnable: true
+      global_reference: true
+      reference_channel: "A193"
+      gain_limit_dex: 0.15
+      common_gain_limit_dex: 0.3
+
+  - type: "plasma"
+    key: "EUVI-A"
+    scaling: {type: "log", divisor: "builtin:image_scaling"}
+    saturation_dn: 13000
+    temperature_response:
+      artifact: "builtin:euvi_a"
+      channels: ["171", "195", "284"]
+      learnable: true
+      reference_channel: "195"
+      gain_limit_dex: 0.15
+      common_gain_limit_dex: 0.3
+
+  # Near-quadrature view; 304 is excluded (no cool plasma in the model).
+  - type: "plasma"
+    key: "EUI"
+    scaling: {type: "log", divisor: "builtin:image_scaling"}
+    # Set once frame_review finds the FSI plateau in the data.
+    saturation_dn: null
+    temperature_response:
+      artifact: "builtin:eui_fsi"
+      channels: ["174"]
+      learnable: true
+      reference_channel: "174"
+      gain_limit_dex: 0.15
+      common_gain_limit_dex: 0.3
+
+data:
+  Rs_per_ds: 1.0
+  seconds_per_dt: 86400.0
+  batch_size: 512
+  validation_batch_size: 512
+  num_workers: 4
+  preparation_workers: 16
+  debug: false
+
+  train_datasets:
+    - type: "AIA"
+      key: "AIA"
+      instrument_key: "AIA"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/EUV_WAVE/data/prepared/aia/*.prepared.fits"
+      wavelengths: [94, 131, 171, 193, 211, 335]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+      cadence_minutes: 60
+
+    - type: "AIA"
+      key: "AIA-focus"
+      instrument_key: "AIA"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/EUV_WAVE/data/prepared/aia_focus/*.prepared.fits"
+      wavelengths: [94, 131, 171, 193, 211, 335]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+    - type: "EUVI"
+      key: "EUVI-A"
+      instrument_key: "EUVI-A"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/EUV_WAVE/data/prepared/euvi_a/*.prepared.fits"
+      wavelengths: [171, 195, 284]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+    - type: "EUVI"
+      key: "EUVI-A-focus"
+      instrument_key: "EUVI-A"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/EUV_WAVE/data/prepared/euvi_a_focus/*.prepared.fits"
+      wavelengths: [171, 195, 284]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+    - type: "EUI"
+      key: "EUI"
+      instrument_key: "EUI"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/EUV_WAVE/data/prepared/eui/*.prepared.fits"
+      wavelengths: [174]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+    - type: "EUI"
+      key: "EUI-focus"
+      instrument_key: "EUI"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/EUV_WAVE/data/prepared/eui_focus/*.prepared.fits"
+      wavelengths: [174]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+
+  valid_datasets:
+    # One frame per view at the event midpoint.
+    - type: "AIA"
+      key: "AIA-focus"
+      instrument_key: "AIA"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/EUV_WAVE/data/prepared/aia_focus/*.prepared.fits"
+      wavelengths: [94, 131, 171, 193, 211, 335]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+      time: "2022-03-28T11:20:00"
+
+    - type: "EUVI"
+      key: "EUVI-A-focus"
+      instrument_key: "EUVI-A"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/EUV_WAVE/data/prepared/euvi_a_focus/*.prepared.fits"
+      wavelengths: [171, 195, 284]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+      time: "2022-03-28T11:20:00"
+
+    - type: "EUI"
+      key: "EUI-focus"
+      instrument_key: "EUI"
+      data_path: "/glade/campaign/hao/radmhd/rjarolim/EUV_WAVE/data/prepared/eui_focus/*.prepared.fits"
+      wavelengths: [174]
+      strict_metadata: true
+      match_tolerance_minutes: 2
+      alignment_tolerance_arcsec: 0.25
+      time: "2022-03-28T11:20:00"
+
+model:
+  type: "mlp"
+  density_offset_log10_cm3: 8.0
+  # Hydrostatic baseline with the scale height of the local temperature.
+  density_profile: {type: "hydrostatic_thermal"}
+  # No taper (supervised_radius_rsun): output stays free out to the shell edge.
+  temperature_grid:
+    log10_K_min: 5.4
+    log10_K_max: 7.5
+    step_dex: 0.05
+  initial_log_T: 6.1
+  dim: 512
+  n_layers: 8
+  activation: "swish"
+  encoding: "positional_isotropic"
+  num_frequencies: [256, 80]
+  max_frequencies: [7.5, 7.5]
+
+module:
+  regularization_density_scale_cm3: 1.0e8
+  # EM prior is zero inside this range, full weight at the temperature_grid bounds.
+  regularization_log_T_range: [5.7, 7.0]
+  light_travel_time: true
+  lr_config:
+    start: 1.0e-3
+    end: 1.0e-4
+    iterations: 1000000
+
+sampling:
+  type: "spherical"
+  # Opaque sphere at the EUV limb instead of the photosphere.
+  min_distance: 1.007
+  # Must overshoot the 1.4 R_sun field of view of the prepared images.
+  max_distance: 1.7
+  # Raise to 96 if disk-center residuals come out systematically biased.
+  n_samples: 64
+  perturb: true
+
+hierarchical_sampling:
+  type: "hierarchical"
+  n_samples: 128
+  perturb: true
+
+absorption:
+  type: null
+
+# Gaussian time jitter: 7 days for 10k steps, then decaying linearly to 0.
+shuffle:
+  type: "normal_time"
+  start_seconds: 604800.0
+  end_seconds: 0.0
+  iterations: 10000
+  cold_iterations: 10000
+
+training:
+  epochs: 1000
+  log_every_n_steps: 2000
+  check_val_every_n_epoch: 1
+  meta_path: "last"
+
+logging:
+  project: "sunerf"
+  name: "2022-03-28 EUV wave: AIA + EUVI-A + EUI FSI 174, 1 min focus"
+
+callbacks:
+  euv_tomography:
+    enabled: true
+    every_n_validations: 1
+    figure_dpi: 150
+    datasets:
+      AIA-focus:
+        channels: [A94, A131, A171, A193, A211, A335]
+      EUVI-A-focus:
+        channels: [171, 195, 284]
+      EUI-focus:
+        channels: ["174"]
+    products:
+      channel_comparison:
+        enabled: true
+        rows: [observation, prediction, residual]
+        intensity_percentile: 99.5
+        residual_percentile: 99.0
+      plasma_diagnostics:
+        enabled: true
+        quantities:
+          - mean_log_temperature
+          - column_electron_density
+          - emission_measure
+          - emission_height
+          - absorption_fraction
+      thermal_distribution:
+        enabled: true
+        spatial_statistic: median
+        percentile_band: [16, 84]
+      response_and_gains:
+        enabled: true
+      ray_sampling:
+        enabled: false
+        pixel_fraction: [0.25, 0.25]
+
+lambda:
+  image: 1.0
+  regularization: 0.0
+  absorption: 0.0
+  calibration: 0.0

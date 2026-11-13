@@ -14,7 +14,14 @@ def _divisor_tensor(divisor):
 
 
 class ImageLogScaling(nn.Module):
-    def __init__(self, vmin=0, vmax=1, divisor=1.0):
+    """Natural log of the divisor-normalized image, mapped from [vmin, vmax] to [0, 1].
+
+    Pixels below ``exp(vmin)`` of the divisor (noise and negative detector
+    values) are floored there, so the default spans three decades below the
+    divisor and never produces the huge negative values of an unbounded log.
+    """
+
+    def __init__(self, vmin=np.log(1e-3), vmax=0.0, divisor=1.0):
         super().__init__()
         self.vmin = nn.Parameter(torch.tensor(vmin, dtype=torch.float32), requires_grad=False)
         self.vmax = nn.Parameter(torch.tensor(vmax, dtype=torch.float32), requires_grad=False)
@@ -23,7 +30,7 @@ class ImageLogScaling(nn.Module):
         self.register_buffer('divisor', _divisor_tensor(divisor), persistent=False)
 
     def forward(self, image):
-        image = torch.clamp(image / self.divisor, min=1e-8)
+        image = torch.clamp(image / self.divisor, min=torch.exp(self.vmin))
         image = (torch.log(image) - self.vmin) / (self.vmax - self.vmin)
         return image
 

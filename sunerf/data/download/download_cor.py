@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 
 import astropy.units as u
+from astropy.time import Time
 from sunpy.net import Fido, attrs as a
 
 from sunerf.data.download.core import (
@@ -13,10 +15,14 @@ from sunerf.data.download.core import (
     fetch_fido,
     parse_cadence,
     request_from_args,
+    split_request,
 )
 
+# VSO returns at most 4000 records per query; one day of COR2 is ~300.
+QUERY_CHUNK = dt.timedelta(days=1)
 
-def download(request: DownloadRequest, *, detector="COR2", source="STEREO_A", cadence=None):
+
+def search_chunk(request: DownloadRequest, *, detector, source, cadence):
     query = [
         a.Time(request.start, request.end),
         a.Source(source),
@@ -25,10 +31,25 @@ def download(request: DownloadRequest, *, detector="COR2", source="STEREO_A", ca
     ]
     if cadence is not None:
         query.append(a.Sample(cadence.total_seconds() * u.s))
-    result = Fido.search(*query)
-    if sum(len(block) for block in result) == 0:
+    tables = []
+    for table in Fido.search(*query):
+        # Records overlapping a chunk boundary are returned by both chunks.
+        start = Time(table["Start Time"])
+        table = table[(start >= Time(request.start)) & (start < Time(request.end))]
+        if len(table) > 0:
+            tables.append(table)
+    return tables
+
+
+def download(request: DownloadRequest, *, detector="COR2", source="STEREO_A", cadence=None):
+    tables = [
+        table
+        for chunk in split_request(request, QUERY_CHUNK)
+        for table in search_chunk(chunk, detector=detector, source=source, cadence=cadence)
+    ]
+    if not tables:
         raise RuntimeError(f"No {source}/{detector} records found")
-    return fetch_fido(result, request=request, description=f"{source}/{detector} download")
+    return fetch_fido(*tables, request=request, description=f"{source}/{detector} download")
 
 
 def build_parser() -> argparse.ArgumentParser:

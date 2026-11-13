@@ -180,13 +180,20 @@ class SphericalSampler(torch.nn.Module):
 
 
 class StratifiedSampler(torch.nn.Module):
+    """Uniform samples over a fixed path length along each ray.
+
+    Every ray is sampled over ``max_distance`` in front of and behind the point
+    at the observer's heliocentric distance along its own direction, so the
+    path length does not depend on the impact parameter. Rays that hit the
+    photosphere end there.
+    """
 
     def __init__(self, Rs_per_ds, max_distance=1.3, n_samples=64, perturb=True):
         super().__init__()
         if n_samples < 2:
             raise ValueError('n_samples must be at least 2.')
-        if max_distance <= 1:
-            raise ValueError('max_distance must be greater than one solar radius.')
+        if max_distance <= 0:
+            raise ValueError('max_distance must be positive.')
         self.perturb = perturb
 
         self.register_buffer('distance', torch.tensor(max_distance / Rs_per_ds, dtype=torch.float32))
@@ -195,13 +202,27 @@ class StratifiedSampler(torch.nn.Module):
         self.register_buffer('t_vals', torch.linspace(0.0, 1.0, n_samples, dtype=torch.float32)[None])
 
     def forward(self, rays_o: torch.Tensor, rays_d: torch.Tensor):
-        r"""
-        Sample from near to solar surface. If no points are on the solar surface this
-        """
+        rays_o, rays_d, ray_valid = _safe_ray_inputs(rays_o, rays_d)
+        a = rays_d.square().sum(dim=-1)
+        b = 2 * (rays_o * rays_d).sum(dim=-1)
+        direction_norm = a.sqrt().clamp_min(torch.finfo(a.dtype).eps)
 
-        rays_o, rays_d, dist_near, dist_far, ray_valid = _front_shell_intersection(
-            rays_o, rays_d, self.solar_R, self.distance
-        )
+        # fixed interval around the observer distance, in units of the ray parameter
+        observer_distance = torch.linalg.norm(rays_o, dim=-1)
+        dist_near = ((observer_distance - self.distance) / direction_norm).clamp_min(0)
+        dist_far = (observer_distance + self.distance) / direction_norm
+
+        # stop sampling at the solar surface
+        c = rays_o.square().sum(dim=-1) - self.solar_R.square()
+        discriminant = b.square() - 4 * a * c
+        dist_surface = (-b - _masked_sqrt(discriminant)) / (2 * a.clamp_min(torch.finfo(a.dtype).eps))
+        hits_surface = (discriminant >= 0) & (dist_surface > dist_near) & (dist_surface < dist_far)
+        dist_far = torch.where(hits_surface, dist_surface, dist_far)
+
+        ray_valid = ray_valid & (dist_far > dist_near)
+        dist_near = torch.where(ray_valid, dist_near, torch.zeros_like(dist_near))
+        dist_far = torch.where(ray_valid, dist_far, torch.zeros_like(dist_far))
+
         t_vals = self.t_vals.to(device=rays_o.device, dtype=rays_o.dtype)
         z_vals = dist_near[:, None] * (1. - t_vals) + dist_far[:, None] * t_vals
 

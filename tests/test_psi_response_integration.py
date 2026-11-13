@@ -35,6 +35,7 @@ def test_direct_psi_requires_source_conventions_and_preserves_artifact_order(tmp
     args = build_parser().parse_args(
         [
             "--temperature-response-artifact", str(path),
+            "--response-channels", "B", "A",
             "--data-path", str(tmp_path / "grid"),
             "--out-path", str(tmp_path / "out"),
             "--source-density-scale-cm3", "1e8",
@@ -43,6 +44,7 @@ def test_direct_psi_requires_source_conventions_and_preserves_artifact_order(tmp
             "--longitude-frame", "carrington",
         ]
     )
+    assert args.response_channels == ["B", "A"]
     artifact = _load_response_for_synthesis(path, None)
     config = _response_renderer_config(artifact, path, Rs_per_ds=0.25)
     metadata = _response_state_metadata(artifact, path)

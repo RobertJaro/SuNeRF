@@ -158,7 +158,7 @@ def main() -> None:
         raise ValueError(f"Degraded views are absent from --views: {sorted(unknown)}")
     # This file is produced locally by save_thomson_sunerf and contains pickled
     # PyTorch modules, including the learned detector-degradation corrections.
-    loader = ThomsonSuNeRFLoader(args.sunerf_path, trusted=True)
+    loader = ThomsonSuNeRFLoader(args.sunerf_path)
 
     results = {}
     metrics = {"frame": FRAME_TOKEN, "units": "mean solar brightness", "views": {}}

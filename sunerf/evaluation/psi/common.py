@@ -11,19 +11,24 @@ import matplotlib.pyplot as plt
 import numpy as np
 from astropy import units as u
 from matplotlib.colors import LogNorm
+from scipy.ndimage import gaussian_filter1d
 from sunpy.map import Map
 from sunpy.visualization.colormaps import cm
 
 from sunerf.data.psi.psi_test_paths import channel_file
 from sunerf.evaluation.cme.density_series import load_export_frame, load_psi_frame
+from sunerf.evaluation.cme.export_cme_series import DETECTION
 from sunerf.evaluation.cme.export_layout import SERIES_FILE, dump_name
+from sunerf.evaluation.cme.mass_transport import ray_structure
 
 TRUTH_TITLE = "Ground truth"
 TRUTH_COLOR = "black"
 RUN_COLORS = ("C0", "C1", "C2", "C3", "C4", "C5")
 PRODUCT_LABELS = {"tb": "tB", "pb": "pB"}
 # Stonyhurst longitudes of the viewpoints marked in the equatorial cut.
-VIEWPOINTS = {"Earth": 0.0, "L4": 60.0, "L5": -60.0}
+VIEWPOINTS = {"Halo": 0.0, "Side": 60.0, "Earth": -60.0}
+# Names of the views in the figures; the data and the save states keep the keys of the synthetic observers.
+VIEW_NAMES = {"L1": "Halo", "L4": "Side", "L5": "Earth", "L5_wide": "Earth (wide)", "P1": "Polar"}
 RADIUS_RANGE = (2.0, 30.0)
 DENSITY_LABEL = r"$n_e\,(r/R_\odot)^2$ [cm$^{-3}$]"
 DENSITY_CMAP = plt.get_cmap("plasma").copy()
@@ -124,6 +129,104 @@ def series_leading_edge(entry, key):
         return leading_edge(entry[key] / entry[key][0], entry["radius"])
 
 
+def track_outward(profiles, radius, smooth=2.0):
+    """Monotonic tracking of the CME in ``profiles[time, radius]`` relative to its first frame.
+
+    Returns the radius [R_sun] for every time of
+
+    * ``leading_edge``: outer end of the outermost enhancement above the leading-edge ratio,
+    * ``body_peak``: maximum of the ratio to the first frame,
+    * ``body_edge``: radius beyond the peak where the excess over the first frame has dropped to half.
+
+    Every feature is searched from its previous position outward and never
+    moves inward.  A feature that reaches the outer limit of the radius grid is
+    no longer tracked, so that the tracks follow the CME and do not fall back
+    onto the background once it has left.  ``smooth`` is the width of the
+    Gaussian smoothing of the ratio in grid steps for the body.
+    """
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = profiles / profiles[0]
+    tracks = {name: np.full(len(ratio), np.nan) for name in ("leading_edge", "body_edge", "body_peak")}
+    previous = dict.fromkeys(tracks, radius[0])
+    finished = dict.fromkeys(tracks, False)
+    step = radius[1] - radius[0]
+
+    def advance(name, index, value):
+        tracks[name][index] = previous[name] = max(value, previous[name])
+
+    for index in range(1, len(ratio)):
+        if not finished["leading_edge"]:
+            height, at_limit = outermost_above(ratio[index], radius)
+            if at_limit:
+                finished["leading_edge"] = True
+            elif np.isfinite(height):
+                advance("leading_edge", index, height)
+        if finished["body_peak"]:
+            continue
+        smoothed = gaussian_filter1d(np.nan_to_num(ratio[index], nan=1.0), smooth, mode="nearest")
+        # one grid step of tolerance below the previous peak keeps a slow body in the search range
+        candidates = np.flatnonzero((radius >= previous["body_peak"] - step) & (smoothed >= LEADING_EDGE_RATIO))
+        if not candidates.size:
+            continue
+        peak = candidates[np.argmax(smoothed[candidates])]
+        # the smoothed ratio is flat at the last grid points, so the limit is reached two steps below the top
+        if peak >= len(radius) - 3:
+            finished["body_peak"] = finished["body_edge"] = True
+            continue
+        offset = 0.0
+        if peak > 0:
+            left, center, right = smoothed[peak - 1:peak + 2]
+            curvature = left - 2 * center + right
+            offset = float(np.clip(0.5 * (left - right) / curvature, -0.5, 0.5)) if curvature < 0 else 0.0
+        advance("body_peak", index, radius[peak] + offset * step)
+        if finished["body_edge"]:
+            continue
+        half_level = 1.0 + 0.5 * (smoothed[peak] - 1.0)
+        below = np.flatnonzero(smoothed[peak:] <= half_level)
+        if not below.size or peak + below[0] >= len(radius) - 3:
+            finished["body_edge"] = True
+            continue
+        edge = peak + below[0]
+        fraction = (smoothed[edge - 1] - half_level) / (smoothed[edge - 1] - smoothed[edge])
+        advance("body_edge", index, radius[edge - 1] + fraction * step)
+    return tracks
+
+
+def keep_outward(track, tolerance=0.5):
+    """Samples of a height-time track that do not fall back behind the previous sample.
+
+    A sample more than ``tolerance`` [R_sun] below the last accepted one is
+    dropped; accepted samples never decrease.  After the structure has left the
+    grid, detections of the background behind it are therefore discarded.
+    """
+    kept = np.full(len(track), np.nan)
+    previous = -np.inf
+    for index, value in enumerate(track):
+        if np.isfinite(value) and value >= previous - tolerance:
+            kept[index] = previous = max(value, previous)
+    return kept
+
+
+def track_cut(entry):
+    """Front and cavity radius ``[time, latitude]`` along the rays of the meridional cut of a CME series.
+
+    The front is the maximum of the outermost enhancement of ``r^2 n_e`` along a
+    ray and the cavity the minimum behind it (``mass_transport.ray_structure``);
+    both are tracked outward only (:func:`keep_outward`).
+    """
+    radius, cut = entry["radius"], entry["cut_density"]
+    front, cavity = (np.full(cut.shape[:2], np.nan) for _ in range(2))
+    for time in range(cut.shape[0]):
+        for ray in range(cut.shape[1]):
+            structure = ray_structure(cut[time, ray] / radius ** 2, radius, **DETECTION)
+            front[time, ray], cavity[time, ray] = structure.sheath, structure.cavity
+    for ray in range(cut.shape[1]):
+        front[:, ray] = keep_outward(front[:, ray])
+        # a cavity belongs to an accepted front
+        cavity[:, ray] = keep_outward(np.where(np.isfinite(front[:, ray]), cavity[:, ray], np.nan))
+    return front, cavity
+
+
 def load_maps(root: Path, views, frames):
     return {view: {product: Map(channel_file(root, view, product, f"{frames[view]:04d}"))
                    for product in PRODUCT_LABELS} for view in views}
@@ -172,9 +275,8 @@ def add_sun(axis) -> None:
     axis.add_patch(plt.Circle((0.0, 0.0), 1.0, color="yellow", linewidth=0))
 
 
-def plot_image(axis, image, norm, extent):
-    artist = axis.imshow(image, origin="lower", cmap=cm.soholasco2, norm=norm, interpolation="none",
-                         extent=extent)
+def plot_image(axis, image, norm, extent, cmap=cm.soholasco2):
+    artist = axis.imshow(image, origin="lower", cmap=cmap, norm=norm, interpolation="none", extent=extent)
     axis.set_facecolor("black")
     axis.tick_params(labelsize=6.5)
     return artist
@@ -195,6 +297,21 @@ def format_time_axis(axis, max_ticks=6) -> None:
     axis.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=2, maxticks=max_ticks))
     axis.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
     axis.tick_params(labelsize=6.5)
+
+
+def title_size(n_columns) -> float:
+    """Font size of the column titles; smaller when many runs share the figure width."""
+    return 8 if n_columns <= 5 else 6.5
+
+
+def view_name(view) -> str:
+    """Name of a view in the figures."""
+    return VIEW_NAMES.get(view, view)
+
+
+def flat_label(label) -> str:
+    """Run label on one line for the metric tables (figure titles may hold line breaks)."""
+    return " ".join(label.split())
 
 
 def save_figure(fig, output_dir: Path, name: str) -> Path:
@@ -219,7 +336,7 @@ def finish_polar_axis(axis, outer) -> None:
 
 
 def plot_equatorial(axis, cube, radius, theta, phi, earth_longitude, norm, meridional_phi, label_viewpoints):
-    """Polar plot of the equatorial cut with Earth at the bottom and L4 on the right."""
+    """Polar plot of the equatorial cut with the halo view at the bottom and the side view on the right."""
     equator = int(np.argmin(np.abs(theta - np.pi / 2.0)))
     # Close the longitude seam.
     values = np.concatenate([cube[:, equator], cube[:1, equator]]) * radius ** 2
@@ -268,6 +385,6 @@ def plot_carrington(axis, cube, radius, theta, phi, map_radius, norm):
     axis.set_xticks([0, 120, 240, 360])
     axis.set_yticks([-90, 0, 90])
     axis.tick_params(labelsize=6.5)
-    axis.set_xlabel("Carr. longitude [deg]", fontsize=7)
+    axis.set_xlabel("Carr. lon. [deg]", fontsize=7)
     axis.set_ylabel("latitude [deg]", fontsize=7)
     return artist

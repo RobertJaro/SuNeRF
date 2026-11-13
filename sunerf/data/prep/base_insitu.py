@@ -309,7 +309,9 @@ class BaseInSituPreparer:
         parser.add_argument("--plot-dir", default=None, help=f"Optional directory for {description_label} prep QA plots")
 
     def _horizons_hci_positions(self, time_unix, target, chunk_size):
-        from sunpy.coordinates import frames, get_horizons_coord
+        from sunpy.coordinates import frames
+
+        from sunerf.data.horizons import get_horizons_coord
 
         positions = []
         fallback_targets = self.fallback_horizons_targets.get(target, ())
@@ -579,7 +581,9 @@ class BaseInSituPreparer:
         print(f"Wrote {self.label} verification plot to {plot_path}")
 
     def check_horizons_positions(self, time_unix, position_hci_rsun, n_points, out_path=None, plot_dir=None):
-        from sunpy.coordinates import frames, get_horizons_coord
+        from sunpy.coordinates import frames
+
+        from sunerf.data.horizons import get_horizons_coord
 
         check_idx = sample_time_indices(time_unix, n_points)
         print(f"Checking {len(check_idx)} {self.label} position samples against JPL Horizons...", flush=True)

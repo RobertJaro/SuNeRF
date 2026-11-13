@@ -187,10 +187,10 @@ observer already contains the light-travel correction of the rotating frame
 stamps the delayed detector time by default (`snapshot_time` is kept in
 `observer.json`), and `sunerf-evaluate-psi-euv --time` takes the emission time.
 
-The PSI closed loop runs with light travel time off on both sides
-(`render.sh --no-light-travel-time`, `psi_observers.yaml` `light_travel_time: false`):
-the frames are frozen snapshots, so a per-sample emission time has no truth to
-compare with. Observations keep `light_travel_time: true`.
+Since 2026-10-28 the PSI closed loop also stamps detector times
+(`render.sh` without `--no-light-travel-time`) and reconstructs with
+`light_travel_time: true`, so it exercises the same time mapping as the
+observations.
 
 ### Separate cool absorber (2026-09-19)
 
@@ -218,8 +218,9 @@ therefore sets the opacity of every channel of every instrument with fixed
 ratios (tau_94 : tau_131 : tau_171 : tau_193 : tau_211 ~ 0.2 : 0.5 : 1 : 1.35 : 1.7),
 which separates an absorber from a calibration error or an emission deficit.
 The field starts optically negligible (`cool_density_offset_log10_cm3: 7`), has
-an L1 prior on its LOS column (`lambda.cool_absorber`, column unit
-`module.cool_column_scale_cm2 = 1e19`), and the hierarchical sampling weights
+a concave sparsity prior `log1p(N / N_s)` on its LOS column (`lambda.cool_absorber`,
+`N_s = module.cool_column_scale_cm2 = 1e18`; originally a linear L1 with column
+unit 1e19), and the hierarchical sampling weights
 now include the intensity each node removes so absorbers are refined.
 
 In the same toy inversion the separate field reproduces all channels exactly,
@@ -269,3 +270,43 @@ baseline in place `lambda.regularization` is 0 in both first-model
 configurations: the radial density penalty mainly compensated the shallow prior
 and is one-sided, so it biased the outer shell low. Open-field regions are not
 hydrostatic; the network supplies those deviations.
+
+### Temperature-coupled baseline and emission-weighted diagnostics (2026-10-07)
+
+In the polar validation run (`polar_2025_10.yaml`, no absorption) the coronal
+holes came out hot in the EUI 174 diagnostics while the AIA view, density and
+DEM looked fine. Two causes. First, the single-temperature model has a
+degenerate hot branch: in a faint region a solution on the weak high-temperature
+wings of the 94, 131 and 193 responses (log T 6.8 to 7.2) reproduces "dim in
+every channel" as well as cool, tenuous plasma, and the fixed scale height
+never asked the hot solution to be extended in height.
+`model.density_profile: {type: hydrostatic_thermal}` (no parameter) uses the
+scale height of the predicted local temperature, `k_B T / (0.6 m_p g_sun)` =
+0.072 R_sun per MK, so hot plasma must fall off slowly and the steep off-limb
+profile rejects it. Second, the mean-temperature map was log10 of a
+density-weighted linear mean of T, which a few hot tenuous nodes on a long
+polar chord dominate; it is now the emission-measure weighted mean of log T,
+and the temperature and emission-height panels are masked where the emission
+measure is below 1e-3 of the image's 99th percentile. Since 2026-10-28 every
+plasma configuration (`all_2012_08`, `euv_wave_2022_03`, `polar_2025_10`,
+`psi_observers`) shares the model, sampling, training and loss sections of
+`polar_2025_10`, including the thermal baseline and the network;
+`tests/test_plasma_configuration.py` checks this. Since 2026-10-29 the network
+is again the Swish MLP on the isotropic positional encoding
+(`positional_isotropic`, `num_frequencies: [256, 80]`, `max_frequencies:
+[7.5, 7.5]`) instead of the SIREN with `w0_init: 60`.
+
+The first run with the thermal baseline showed stronger off-limb artifacts in
+the held-out EUI view. The prepared images end at 1.4 R_sun (AIA's detector at
+1.28), while the sampling shell reaches 1.7; the ring beyond 1.4 is only
+touched at the far ends of training chords, and an EUI ray at impact parameter
+1.3 reaches r = 1.7 at an AIA impact parameter of about 1.6. There the network
+output was free, and with the thermal baseline a hot free temperature also
+raised the baseline density (35 times more at 1.7 R_sun for 10 MK than the
+fixed 0.1 R_sun scale height). `model.supervised_radius_rsun: 1.4` now tapers
+every network output with a cubic smoothstep from 1 at that radius to 0 at
+`sampling.max_distance`, so the outer shell relaxes to the hydrostatic baseline
+at the initial temperature. The polar configurations also lower
+`temperature_grid.log10_K_max` to 6.8: no flaring plasma is expected at 1 h
+cadence, and the hot wings of the 94, 131 and 193 responses are what made the
+hot branch fit faint regions.

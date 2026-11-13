@@ -37,6 +37,14 @@ the hydrogen of cool material that does not emit in the EUV channels
 
 `alpha_c = alpha_c,hot + n_H,cool * sum_s A_s x_s sigma_c,s`.
 
+`n_H,cool` falls off with the base profile of the emitting density:
+`model.density_profile` evaluated at `model.initial_log_T`, for
+`hydrostatic_thermal` the isothermal hydrostatic atmosphere at that temperature
+(0.091 R_sun at log T 6.1). The scale height does not follow the predicted
+temperature, so the absorber cannot steer it. `model.cool_density_offset_log10_cm3`
+is the value at 1 R_sun; dense cool material at large heights has to be
+supported by the data.
+
 Its ionization state `absorption.cool_ion_fractions` (default
 `{H_I: 0.7, He_I: 0.7, He_II: 0.3}`) is a fixed assumption recorded in the
 reconstruction artifact; cross sections and abundances are those of this

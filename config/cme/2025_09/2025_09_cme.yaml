@@ -1,12 +1,9 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_cme_v07"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2025_09_cme_v07'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_cme_v22"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2025_09_cme_v22'
 
-# Training setup matched to config/cme/psi/psi_degraded_gain_2view.yaml (PUNCH,
-# CCOR and STEREO-A COR2 imitated by the L5_wide, L5 and L4 views): per-channel
-# additive and multiplicative image-plane corrections, no priors on either, with
-# the additive scale equal to the asinh knee of the instrument. Only the
-# instrument-specific parts differ from the PSI setup: additive scales, light
-# travel time, the 100 R_sun domain, and the in-situ datasets.
+# Per-channel additive and multiplicative image-plane corrections per instrument;
+# STEREO-A COR2 is the photometric reference (gain fixed at 1). LASCO adds a
+# sky-fixed F-corona term (helioprojective) next to the detector-fixed ones.
 instruments:
   - type: 'default'
     key: 'STEREO_A_COR2'
@@ -29,6 +26,27 @@ instruments:
       corrections: [tB_add, tB_mul]
       additive_parametrization: exp  # add = scale * a * exp(b), sign carried by a
       additive_scale: 1.0e-3
+  - type: 'default'
+    key: 'STEREO_A_COR2_CLEAR'
+    scaling: { type: "asinh", a: 1.0e-3 }
+    correction:
+      corrections: [tB_add, tB_mul]
+      additive_parametrization: exp  # add = scale * a * exp(b), sign carried by a
+      additive_scale: 1.0e-3
+#   - type: 'default'
+#     key: 'LASCO_C2'
+#     scaling: { type: "asinh", a: 1.0e-3 }
+#     correction:
+#       corrections: [f_corona, tB_add, tB_mul]
+#       additive_parametrization: exp  # add = scale * a * exp(b), sign carried by a
+#       additive_scale: 1.0e-3
+#   - type: 'default'
+#     key: 'LASCO_C3'
+#     scaling: { type: "asinh", a: 1.0e-3 }
+#     correction:
+#       corrections: [f_corona, tB_add, tB_mul]
+#       additive_parametrization: exp  # add = scale * a * exp(b), sign carried by a
+#       additive_scale: 1.0e-3
   - type: 'insitu'
     key: 'PSP'
     calibration: False
@@ -36,37 +54,28 @@ instruments:
     key: 'SOLO'
     calibration: False
 
-# Split-temporal SIREN: a static Carrington-frame branch plus a dynamic branch.
-# Shared PSI setup: train the static branch for 5000 steps, then ramp in the
-# dynamic contribution over the next 5000 steps. The image-plane corrections
-# have to converge while only the static branch is active.
+# Long cold phase: the corrections must converge before the dynamic branch starts.
 model:
   model_type: 'split_temporal'
-  cold_steps: 5000
+  cold_steps: 10000
   warm_steps: 5000
 
 module:
   lr_config: { start: 1.0e-3, end: 1.0e-4, iterations: 200000 }
 
 data:
-  # Keep the time coordinate identical when initializing the CME-stage model.
   ref_date: "2025-09-01T00:00:00"
-  # Primary CME.
   cme_time: &cme_time ["2025-09-21T12:00:00", "2025-09-23T12:00:00"]
   # Validation images use the observation closest to this time.
   valid_time: &valid_time "2025-09-22T08:00:00"
-  # Every imager is split into two equally sampled datasets that share the
-  # instrument modules: a background dataset at a fixed 6 h cadence over the
-  # full month and a CME dataset with every frame of the primary CME window.
-  # Each takes half of the rays per batch of the instrument.
+  # Each imager: full-month background dataset plus CME-window dataset.
   train_datasets:
     - type: 'COR'
       key: 'STEREO_A_COR2_background'
       instrument_key: 'STEREO_A_COR2'
       data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/cor2/pB/*"
       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/cor2/tB/*"
-      cadence: "6h"
-      batch_size: 1024
+      batch_size: 512
       debug: False
       correction_config: { type: file,
       tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/stereo_a_cor2_tB_correction.npy",
@@ -76,9 +85,8 @@ data:
     - type: 'punch'
       key: 'PUNCH_background'
       instrument_key: 'PUNCH'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/punch_pam/pB/*"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/punch_pam/tB/*"
-      cadence: "6h"
+      data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/punch_pam/pB/*"
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/punch_pam/tB/*"
       batch_size: 512
       debug: False
 
@@ -87,9 +95,41 @@ data:
       instrument_key: 'CCOR'
       data_path_pB: null
       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/ccor/*"
-      cadence: "6h"
       batch_size: 512
       debug: False
+
+    - type: 'COR'
+      key: 'STEREO_A_COR2_CLEAR_background'
+      instrument_key: 'STEREO_A_COR2_CLEAR'
+      data_path_pB: null
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/cor2_clear/*"
+      batch_size: 512
+      debug: False
+      correction_config: { type: file,
+      tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/stereo_a_cor2_tB_clear_correction.npy",
+      clean: False }
+
+#     - type: 'LASCO'
+#       key: 'LASCO_C2_background'
+#       instrument_key: 'LASCO_C2'
+#       data_path_pB: null
+#       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c2/tB/*"
+#       batch_size: 512
+#       debug: False
+#       correction_config: { type: file,
+#       tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c2_tB_correction.npy",
+#       clean: False }
+
+#     - type: 'LASCO'
+#       key: 'LASCO_C3_background'
+#       instrument_key: 'LASCO_C3'
+#       data_path_pB: null
+#       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c3/tB/*"
+#       batch_size: 512
+#       debug: False
+#       correction_config: { type: file,
+#       tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c3_tB_correction.npy",
+#       clean: False }
 
     - type: 'COR'
       key: 'STEREO_A_COR2_cme'
@@ -97,7 +137,7 @@ data:
       data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/cor2/pB/*"
       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/cor2/tB/*"
       time_range: *cme_time
-      batch_size: 1024
+      batch_size: 512
       debug: False
       correction_config: { type: file,
       tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/stereo_a_cor2_tB_correction.npy",
@@ -107,8 +147,8 @@ data:
     - type: 'punch'
       key: 'PUNCH_cme'
       instrument_key: 'PUNCH'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/punch_pam/pB/*"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/punch_pam/tB/*"
+      data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/punch_pam/pB/*"
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/punch_pam/tB/*"
       time_range: *cme_time
       batch_size: 512
       debug: False
@@ -122,28 +162,72 @@ data:
       batch_size: 512
       debug: False
 
+    - type: 'COR'
+      key: 'STEREO_A_COR2_CLEAR_cme'
+      instrument_key: 'STEREO_A_COR2_CLEAR'
+      data_path_pB: null
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/cor2_clear/*"
+      time_range: *cme_time
+      batch_size: 512
+      debug: False
+      correction_config: { type: file,
+      tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/stereo_a_cor2_tB_clear_correction.npy",
+      clean: False }
+
+#     - type: 'LASCO'
+#       key: 'LASCO_C2_cme'
+#       instrument_key: 'LASCO_C2'
+#       data_path_pB: null
+#       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c2/tB/*"
+#       time_range: *cme_time
+#       batch_size: 512
+#       debug: False
+#       correction_config: { type: file,
+#       tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c2_tB_correction.npy",
+#       clean: False }
+
+#     - type: 'LASCO'
+#       key: 'LASCO_C3_cme'
+#       instrument_key: 'LASCO_C3'
+#       data_path_pB: null
+#       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c3/tB/*"
+#       time_range: *cme_time
+#       batch_size: 512
+#       debug: False
+#       correction_config: { type: file,
+#       tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c3_tB_correction.npy",
+#       clean: False }
+
     - type: 'psp'
       key: 'PSP'
       instrument_key: 'PSP'
       data_path: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/psp/psp_insitu_20250901_20251001.npz"
       batch_size: 512
-      max_distance: 100.0
+      max_distance: 120.0
 
     - type: 'solar_orbiter'
       key: 'SOLO'
       instrument_key: 'SOLO'
       data_path: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/solo/solo_insitu_20250901_20251001.npz"
       batch_size: 512
-      max_distance: 100.0
+      max_distance: 120.0
 
     - type: 'random'
-      # Physics samples cover only the eruption phase.
-      time_range: *cme_time
-      radius_range: [1.5, 110.0]
+      key: 'random_background'
+      radius_range: [1.5, 160.0]
       unit: 'solRad'
-      batch_size: 4096
+      batch_size: 2048
       volume_uniform_sampling: True
-      radial_sampling_exponent: 2
+      radial_sampling_exponent: 1
+
+    - type: 'random'
+      key: 'random_cme'
+      time_range: *cme_time
+      radius_range: [1.5, 160.0]
+      unit: 'solRad'
+      batch_size: 2048
+      volume_uniform_sampling: True
+      radial_sampling_exponent: 1
 
   valid_datasets:
     - type: 'COR'
@@ -160,8 +244,8 @@ data:
     - type: 'punch'
       key: 'PUNCH'
       instrument_key: 'PUNCH'
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/punch_pam/pB/*"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/punch_pam/tB/*"
+      data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/punch_pam/pB/*"
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/punch_pam/tB/*"
       validation_time: *valid_time
 
     - type: 'CCOR'
@@ -170,6 +254,36 @@ data:
       data_path_pB: null
       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/ccor/*"
       validation_time: *valid_time
+
+    - type: 'COR'
+      key: 'STEREO_A_COR2_CLEAR'
+      instrument_key: 'STEREO_A_COR2_CLEAR'
+      data_path_pB: null
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/cor2_clear/*"
+      correction_config: { type: file,
+      tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/stereo_a_cor2_tB_clear_correction.npy",
+      clean: False }
+      validation_time: *valid_time
+
+#     - type: 'LASCO'
+#       key: 'LASCO_C2'
+#       instrument_key: 'LASCO_C2'
+#       data_path_pB: null
+#       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c2/tB/*"
+#       correction_config: { type: file,
+#       tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c2_tB_correction.npy",
+#       clean: False }
+#       validation_time: *valid_time
+
+#     - type: 'LASCO'
+#       key: 'LASCO_C3'
+#       instrument_key: 'LASCO_C3'
+#       data_path_pB: null
+#       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c3/tB/*"
+#       correction_config: { type: file,
+#       tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c3_tB_correction.npy",
+#       clean: False }
+#       validation_time: *valid_time
 
     - key: valid_radial
       type: radial_slices
@@ -184,20 +298,21 @@ data:
       instrument_key: 'PSP'
       data_path: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/psp/psp_insitu_20250901_20251001.npz"
       batch_size: 4096
-      max_distance: 100.0
+      max_distance: 120.0
 
     - type: 'solar_orbiter'
       key: 'valid_solo'
       instrument_key: 'SOLO'
       data_path: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/solo/solo_insitu_20250901_20251001.npz"
       batch_size: 4096
-      max_distance: 100.0
+      max_distance: 120.0
 
   Rs_per_ds: 100
   seconds_per_dt: 86400
   batch_size: 4096
   validation_batch_size: 4096
-  num_workers: 4  # total concurrent training-loader workers per DDP rank
+  num_workers: 4
+  preprocess_workers: 32  # pool size for the initial FITS loading and ray construction
 
 callbacks:
   - type: 'thomson_image'
@@ -206,6 +321,12 @@ callbacks:
     ds_key: 'PUNCH'
   - type: 'thomson_image'
     ds_key: 'CCOR'
+  - type: 'thomson_image'
+    ds_key: 'STEREO_A_COR2_CLEAR'
+#   - type: 'thomson_image'
+#     ds_key: 'LASCO_C2'
+#   - type: 'thomson_image'
+#     ds_key: 'LASCO_C3'
 
   - type: 'correction_image'
     ds_key: 'STEREO_A_COR2'
@@ -213,6 +334,12 @@ callbacks:
     ds_key: 'PUNCH'
   - type: 'correction_image'
     ds_key: 'CCOR'
+  - type: 'correction_image'
+    ds_key: 'STEREO_A_COR2_CLEAR'
+#   - type: 'correction_image'
+#     ds_key: 'LASCO_C2'
+#   - type: 'correction_image'
+#     ds_key: 'LASCO_C3'
 
   - type: radial_slices
     ds_key: valid_radial
@@ -231,33 +358,31 @@ callbacks:
 logging:
   entity: "robert_jarolim"
   project: "sunerf-cme-obs-v4"
-  name: "2025-09 - STEREO A COR2 + PUNCH + CCOR - matched to psi_degraded_gain_2view"
+  name: "2025-09 - STEREO A COR2 (+ clear) + PUNCH + CCOR - additive + multiplicative corrections + calibration factors"
 
+# Integrate past the 120 R_sun PUNCH mask to limit truncation at the field edge.
 sampling:
   type: "spherical"
   n_samples: 64
-  max_distance: 100.0
+  max_distance: 150.0
   radial_weighting: True
 
 lambda:
   image: 1.0
   ratio: 1.0
-  # No prior on the image-plane fields: an L2 prior on the additive masks would
-  # only select the smallest mask and bias the static corona, and a pull of the
-  # multiplicative fields toward one would bias a correct gain. Smoothness comes
-  # from the correction network (w0 = 1, exp(0.01 x)); the static background is
-  # calibrated after training and the CME excess is unaffected.
+  # No priors on corrections or gains; they would bias the static corona.
   tB_add: 0.0
   pB_add: 0.0
   tB_mul: 0.0
   pB_mul: 0.0
+  calibration: 0.0
   radial: 1.0
-  continuity: 1.0e-3
-  ballistic: 0.0
+  continuity: { start: 1.0e-2, end: 5.0e-4, iterations: 5.0e+4 }
+  ballistic:  { start: 1.0e-2, end: 5.0e-4, iterations: 5.0e+4 }
   velocity: 1.0
   insitu_density: 0.0
   insitu_velocity_radial: 0.0
 
 training:
-  log_every_n_steps: 1000
+  log_every_n_steps: 10000
 

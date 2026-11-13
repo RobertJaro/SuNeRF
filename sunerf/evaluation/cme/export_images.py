@@ -37,13 +37,12 @@ def build_parser():
                         help='Frame of the image series to render for each view, e.g. L4=153 P1=153')
     parser.add_argument('--device', default=None, help='torch device (default: cuda if available)')
     parser.add_argument('--batch_size', type=int, default=8192)
-    parser.add_argument('--trusted', action='store_true', help='Load a pickled (non weights-only) save state')
     return parser
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    loader = ThomsonSuNeRFLoader(args.sunerf_path, device=args.device, trusted=args.trusted)
+    loader = ThomsonSuNeRFLoader(args.sunerf_path, device=args.device)
     for view, frame in args.frames:
         # tB and pB share the geometry of the view; the pB file is the reference
         reference = Map(channel_file(args.data_path, view, 'pb', f'{frame:04d}'))

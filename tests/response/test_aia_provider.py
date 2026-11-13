@@ -143,7 +143,7 @@ def test_export_aia_throughput_uses_only_pinned_local_inputs(monkeypatch, tmp_pa
     expected = np.stack(
         [
             scale * np.array([0.25, 1.0]) * solid_angle.value
-            for scale in range(1, 7)
+            for scale in range(1, len(aia.AIA_CHANNEL_WAVELENGTHS) + 1)
         ]
     )
     np.testing.assert_allclose(artifact.throughput, expected, rtol=0, atol=0)

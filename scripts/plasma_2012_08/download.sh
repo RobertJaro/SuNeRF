@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 DRMS_EMAIL="robert.jarolim@uni-graz.at"
 
-RAW_ROOT="/glade/work/rjarolim/data/sunerf/2012_08/raw"
+RAW_ROOT="/glade/campaign/hao/radmhd/rjarolim/SUNERF_POLAR/data_2012_08/raw"
 AIA_CALIBRATION_ROOT="data/response_calibration/instruments/aia"
 AIA_CORRECTION_TABLE="${AIA_CALIBRATION_ROOT}/aia_correction.ecsv"
 AIA_POINTING_TABLE="${AIA_CALIBRATION_ROOT}/aia_pointing_2012_08.ecsv"

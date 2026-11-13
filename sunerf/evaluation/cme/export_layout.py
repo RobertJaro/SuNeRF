@@ -4,8 +4,10 @@
 
     <export>/density/rho000050.npy              export_density
     <export>/coordinates/rho000050.npz          export_density
+    <export>/rho000050.npz                      export_density_grid (observation runs, spherical frames)
     <export>/images/<view>/pb/<view>_pb0150.npy export_images
     <export>/cme_series.npz                     export_cme_series
+    <export>/insitu/<probe>.npz                 export_insitu
 """
 import os
 from pathlib import Path
@@ -41,3 +43,7 @@ def coordinates_file(export_path, name):
 def image_file(export_path, view, product, frame):
     """Exported image of the reference file ``<view>/<product>/*<frame>.fts``."""
     return os.path.join(export_path, 'images', view, product, f'{view}_{product}{frame:04d}.npy')
+
+
+def insitu_file(export_path, probe):
+    return os.path.join(export_path, 'insitu', f'{probe}.npz')

@@ -36,7 +36,7 @@ from sunerf.evaluation.cme.export_layout import labelled_path
 from sunerf.evaluation.cme.mass_transport import fit_speed
 from sunerf.evaluation.psi.common import (
     DENSITY_CMAP, DENSITY_LABEL, FIGURE_WIDTH, TRUTH_TITLE, add_colorbar, density_norm, format_time_axis,
-    leading_edge, load_series, save_figure,
+    leading_edge, load_series, save_figure, flat_label, title_size, view_name,
 )
 
 HEIGHTS = np.arange(2.0, 30.0 + 1e-6, 0.25)
@@ -124,14 +124,14 @@ def plot_track(axis, times, track, style, color, label):
 def write_speeds(path: Path, speeds) -> None:
     """Speed of the linear fit of every track, one line per panel and track."""
     lines = ["Speed of the linear fit of the height-time tracks in the J-maps [km/s].", "",
-             f"{'panel':<22}{'track':<20}{'speed':>10}"]
+             f"{'panel':<30}{'track':<20}{'speed':>10}"]
     for (panel, track), speed in speeds.items():
-        lines.append(f"{panel:<22}{track:<20}" + (f"{speed:>10.1f}" if np.isfinite(speed) else f"{'-':>10}"))
+        lines.append(f"{flat_label(panel):<30}{track:<20}" + (f"{speed:>10.1f}" if np.isfinite(speed) else f"{'-':>10}"))
     path.write_text("\n".join(lines) + "\n")
 
 
-def finish_axis(axis, title, ylabel, first, period, max_ticks=6):
-    axis.set_title(title, fontsize=8)
+def finish_axis(axis, title, ylabel, first, period, max_ticks=6, title_fontsize=8):
+    axis.set_title(title, fontsize=title_fontsize)
     axis.set_xlim(*period)
     axis.set_ylim(HEIGHTS[0], HEIGHTS[-1])
     axis.set_xlabel("Time [UT]", fontsize=7)
@@ -164,10 +164,10 @@ def main() -> None:
                                  shading="nearest", rasterized=True)
         # GT body edge along the CME direction at the times of the images
         edge = np.interp([time.timestamp() for time in times], psi_seconds, psi_edge)
-        speeds[view, "Plane-of-sky fit"] = plot_track(axis, times, leading_edge(ratio, HEIGHTS), "-", "red",
+        speeds[view_name(view), "Plane-of-sky fit"] = plot_track(axis, times, leading_edge(ratio, HEIGHTS), "-", "red",
                                                       "Plane-of-sky fit")
         plot_track(axis, times, edge, "--", TRUTH_LINE, "GT body edge")
-        finish_axis(axis, f"{view}: tB / tB(t$_0$)", r"Plane-of-sky height [R$_\odot$]", column == 0, period)
+        finish_axis(axis, f"{view_name(view)}: tB / tB(t$_0$)", r"Plane-of-sky height [R$_\odot$]", column == 0, period)
     add_colorbar(fig, artist, naive[0, -1], "brightness ratio")
 
     volume = rows[1].subgridspec(1, len(series) + 1, width_ratios=(*[1] * len(series), 0.05))
@@ -183,7 +183,8 @@ def main() -> None:
             plot_track(axis, psi["times"], psi_edge, "--", TRUTH_LINE, "GT body edge")
             speeds[label, "SuNeRF body edge"] = plot_track(axis, entry["times"], entry["body_edge_apex"], "--",
                                                            "white", "SuNeRF body edge")
-        finish_axis(axis, label, r"Radial distance [R$_\odot$]", column == 0, period, max_ticks=3)
+        finish_axis(axis, label, r"Radial distance [R$_\odot$]", column == 0, period, max_ticks=3,
+                    title_fontsize=title_size(len(series)))
     add_colorbar(fig, artist, volume[0, -1], DENSITY_LABEL)
     # one legend for all panels: the lines mean the same everywhere
     handles = [Line2D([], [], color="red", linestyle="-", linewidth=0.8, label="Plane-of-sky fit"),

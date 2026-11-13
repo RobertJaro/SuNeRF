@@ -19,7 +19,12 @@ from sunerf.data.euv.prepare import (
     _exposure_seconds,
     prepare_euv_files,
     prepare_euvi_map,
+    peak_dn_layer,
+    BLEED_PIXELS,
+    INTERPOLATION_PIXELS,
+    build_parser,
 )
+from sunerf.data.euv.observation import load_prepared_observation
 
 
 def _euv_map(
@@ -65,6 +70,8 @@ def _euv_map(
         header['telescop'] = 'SDO'
     if spacecraft:
         header['obsrvtry'] = f'STEREO-{spacecraft}'
+        # SECCHI_PREP saturation value, in the units of the data.
+        header['dsatval'] = 1.0e4
     return Map(np.asarray(data, dtype=np.float32), header)
 
 
@@ -263,8 +270,10 @@ def test_aia_uses_pinned_calibration_in_documented_order_without_clipping(
         valid_mask=np.array([[False, True], [True, True]]),
     )
 
+    # Data, mask and peak-DN layer share the pointing update and registration.
     assert calls == [
-        'pointing', 'pointing', 'register-3', 'register-0', 'degradation'
+        'pointing', 'pointing', 'pointing', 'register-3', 'register-0', 'register-0',
+        'degradation'
     ]
     assert prepared.data[0, 0] == -2.0
     assert np.isnan(prepared.data[0, 1])
@@ -494,3 +503,185 @@ def test_existing_products_are_skipped_without_overwrite(tmp_path, capsys):
 
     assert results == []
     assert 'already prepared' in capsys.readouterr().err
+
+
+def test_external_calibrations_must_be_exposure_normalized():
+    """EUVI and EUI are never divided by exposure in SuNeRF, so their BUNIT must already be a rate."""
+    counts = _euv_map(
+        [[5.0]], instrument='SECCHI/EUVI', channel=195, bunit='DN',
+        spacecraft='B', level='SECCHI_PREP_L1',
+    )
+    with pytest.raises(ValueError, match='not exposure-normalized'):
+        prepare_euvi_map(
+            counts,
+            spacecraft='B',
+            product_level='SECCHI_PREP_L1',
+            sensitivity_convention='static_assumed',
+            geometry=GeometryConfig(north_up=False),
+        )
+
+    eui_counts = _euv_map([[4.0]], level='L2', bunit='DN')
+    with pytest.raises(ValueError, match='not exposure-normalized'):
+        prepare_eui_map(
+            eui_counts,
+            calibration_id='cal-v1',
+            sensitivity_convention='static_assumed',
+            geometry=GeometryConfig(north_up=False),
+        )
+
+
+def _identity_aiapy(monkeypatch):
+    monkeypatch.setattr(
+        'sunerf.data.euv.prepare._load_aiapy_calibration',
+        lambda: (
+            lambda value, **kwargs: value,
+            lambda value, **kwargs: value,
+            lambda value, **kwargs: value,
+        ),
+    )
+    monkeypatch.setattr('sunerf.data.euv.prepare._load_pointing_table', lambda path: 'pointing')
+    monkeypatch.setattr(
+        'sunerf.data.euv.prepare._cached_correction_table',
+        lambda *args: QTable({'DATE': [], 'WAVELNTH': [], 'EFF_AREA': []}),
+    )
+
+
+ROWS = BLEED_PIXELS + INTERPOLATION_PIXELS  # reach along the readout columns
+COLS = 1 + INTERPOLATION_PIXELS            # reach across them
+
+
+def test_peak_dn_layer_covers_the_bleed_and_interpolation_reach():
+    dn = np.zeros((40, 40))
+    dn[20, 20] = 16000.0
+    dn[0, 0] = np.nan
+    layer = peak_dn_layer(dn)
+    expected = np.zeros(dn.shape, dtype=bool)
+    expected[20 - ROWS:21 + ROWS, 20 - COLS:21 + COLS] = True
+    assert np.array_equal(layer >= 16000.0, expected)
+    assert layer[0, 0] == 0.0 and layer.dtype == np.float32
+
+
+def test_aia_records_the_peak_detector_dn_and_masks_nothing(tmp_path, monkeypatch):
+    _identity_aiapy(monkeypatch)
+    correction = tmp_path / 'correction.ecsv'
+    pointing = tmp_path / 'pointing.ecsv'
+    correction.write_text('fixture')
+    pointing.write_text('fixture')
+    data = np.full((32, 32), 100.0)
+    data[12:16, 10] = 16383.0  # a clipped bleed trail along a readout column
+    source = _euv_map(data, instrument='AIA', channel=193, bunit='DN', level='L1')
+    source.meta['quality'] = 0
+
+    prepared, mask, provenance = prepare_aia_map(
+        source, correction_table_path=correction, pointing_table_path=pointing,
+        geometry=GeometryConfig(north_up=False),
+    )
+    assert mask.all() and np.isfinite(prepared.data).all()
+    assert (provenance['frame_peak_dn'], provenance['frame_peak_pixels']) == (16383.0, 4)
+    assert provenance['peak_dn_conversion'] == 'AIA level-1 DN'
+    expected = np.zeros(data.shape, dtype=bool)
+    expected[12 - ROWS:16 + ROWS, 10 - COLS:11 + COLS] = True
+    assert np.array_equal(provenance['peak_dn_layer'] >= 13000.0, expected)
+
+
+def _euvi(data, **header):
+    source = _euv_map(
+        data, instrument='SECCHI/EUVI', channel=195, spacecraft='A', level='SECCHI_PREP_L1'
+    )
+    for key, value in header.items():
+        source.meta[key] = value
+    return source
+
+
+def _prepare_euvi(source):
+    return prepare_euvi_map(
+        source, spacecraft='A', product_level='SECCHI_PREP_L1',
+        sensitivity_convention='reference_epoch', geometry=GeometryConfig(north_up=False),
+    )
+
+
+def test_euvi_peak_dn_is_on_the_14_bit_scale_of_the_header_saturation_value():
+    data = np.full((32, 32), 10.0)
+    data[5:8, 20] = 1000.0
+    _, mask, provenance = _prepare_euvi(_euvi(data, dsatval=1000.0, datasat=3))
+    assert mask.all()
+    assert provenance['frame_peak_dn'] == pytest.approx(16383.0)
+    assert provenance['frame_peak_pixels'] == 3
+
+    unsaturated = np.full((8, 8), 10.0)
+    _, _, provenance = _prepare_euvi(_euvi(unsaturated, dsatval=None))
+    assert provenance['peak_dn_conversion'] == 'unavailable'
+    assert provenance['peak_dn_layer'] is None
+    with pytest.raises(ValueError, match='not in the units'):
+        _prepare_euvi(_euvi(unsaturated * 1000, dsatval=1000.0))
+    with pytest.raises(ValueError, match='DATASAT=4 but no pixel'):
+        _prepare_euvi(_euvi(unsaturated, dsatval=1000.0, datasat=4))
+
+
+def _write_eui_with_peak(tmp_path, peak_rate):
+    data = np.full((16, 16), 10.0, dtype=np.float32)
+    data[4, 4] = peak_rate  # in the 2 s exposure
+    source = tmp_path / 'eui.fits'
+    _euv_map(data).save(source, overwrite=True)
+    results = prepare_euv_files(
+        [source], tmp_path / 'prepared', adapter='eui', sensitivity_convention='reference_epoch',
+        geometry=GeometryConfig(north_up=False), workers=1,
+    )
+    return results[0].output_path
+
+
+def test_eui_products_carry_the_peak_dn_layer_and_header(tmp_path):
+    path = _write_eui_with_peak(tmp_path, 500.0)
+    with fits.open(path) as hdul:
+        header = hdul[0].header
+        assert (header['PEAKDN'], header['PEAKNPX']) == (1000.0, 1)
+        assert header['PEAKEXT'] == 'PEAK_DN'
+        assert header['PEAKCONV'] == 'EUI level-2 rate * XPOSURE'
+        layer = hdul['PEAK_DN'].data
+        assert layer.shape == hdul[0].data.shape
+        assert layer[4, 4] == 1000.0 and layer[15, 15] == 20.0
+
+
+def test_the_loader_masks_pixels_whose_peak_reaches_the_saturation_level(tmp_path):
+    path = _write_eui_with_peak(tmp_path, 500.0)
+    _, mask = load_prepared_observation(path, required_mask=True)
+    assert mask.all()
+    _, mask = load_prepared_observation(path, required_mask=True, saturation_dn=900.0)
+    expected = np.zeros(mask.shape, dtype=bool)
+    expected[max(4 - ROWS, 0):5 + ROWS, max(4 - COLS, 0):5 + COLS] = True
+    assert np.array_equal(~mask, expected)
+    _, mask = load_prepared_observation(path, required_mask=True, saturation_dn=1500.0)
+    assert mask.all()
+
+    # A product without PEAK_DN has no peak information: it loads unmasked, with a warning.
+    with fits.open(path) as hdul:
+        stripped = fits.HDUList([hdul[0].copy(), hdul['VALID_MASK'].copy()])
+        stripped.writeto(tmp_path / 'old.fits')
+    with pytest.warns(UserWarning, match='without a PEAK_DN extension'):
+        _, mask = load_prepared_observation(tmp_path / 'old.fits', required_mask=True, saturation_dn=900.0)
+    assert mask.all()
+
+
+def test_preparation_takes_no_saturation_level():
+    common = ['--input', 'x.fits', '--output-dir', 'out', '--sensitivity-convention',
+              'reference_epoch']
+    build_parser().parse_args(['eui', *common])
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(['eui', *common, '--saturation-dn', '13000'])
+
+
+def test_the_peak_dn_layer_follows_reprojection_to_the_prepared_grid():
+    data = np.full((32, 32), 10.0)
+    data[14:18, 15] = 500.0  # 1000 DN in the 2 s exposure
+    prepared, mask, provenance = prepare_eui_map(
+        _euv_map(data), sensitivity_convention='reference_epoch',
+        geometry=GeometryConfig(north_up=False, shape=(16, 16),
+                                hpc_bounds_arcsec=(-30.0, -30.0, 30.0, 30.0)),
+    )
+    layer = provenance['peak_dn_layer']
+    assert layer.shape == prepared.data.shape == (16, 16)
+    assert np.array_equal(np.isfinite(layer), mask)
+    assert np.nanmax(layer) == 1000.0
+    # The saturated trail and its reach cover a compact patch of the new grid.
+    assert 0 < np.count_nonzero(layer >= 900.0) < 0.25 * layer.size
+

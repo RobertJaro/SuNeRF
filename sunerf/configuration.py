@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import math
+from datetime import datetime
 import re
 from collections.abc import Mapping, Sequence
 
@@ -36,7 +37,6 @@ _EUV_CALLBACK_DEFAULTS = {
         "channel_comparison": {
             "enabled": True,
             "rows": ["observation", "prediction", "residual"],
-            "stretch": "log",
             "intensity_percentile": 99.5,
             "residual_percentile": 99.0,
         },
@@ -336,6 +336,41 @@ def _validate_instrument_alignment(instrument, path):
     return True
 
 
+def _validate_instrument_saturation(instrument, path):
+    """Optional ``saturation_dn``: detector DN at which pixels become invalid.
+
+    Applied while loading the data: pixels whose prepared ``PEAK_DN`` (the
+    peak detector DN of their native neighbourhood, including the CCD column
+    bleed) reach it are not supervised. ``null`` or absent applies no mask.
+    """
+    value = instrument.get("saturation_dn")
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise PlasmaConfigError(f"{path}.saturation_dn must be a finite positive number or null")
+    return _positive_number(value, f"{path}.saturation_dn")
+
+
+def apply_instrument_saturation(config):
+    """Data config whose datasets carry their instrument's ``saturation_dn``.
+
+    The level belongs to the instrument; copying it into the dataset entries
+    passes it to the loader and makes it part of the data-cache fingerprint,
+    so a new level rebuilds the cache.
+    """
+    levels = {
+        instrument["key"]: instrument.get("saturation_dn")
+        for instrument in config["instruments"]
+    }
+    data = copy.deepcopy(config["data"])
+    for group in ("train_datasets", "valid_datasets"):
+        for dataset in data.get(group) or []:
+            level = levels.get(dataset["instrument_key"])
+            if level is not None:
+                dataset["saturation_dn"] = float(level)
+    return data
+
+
 def _validate_dataset_group(entries, path, instruments):
     entries = _require_sequence(entries, path)
     _validate_unique_keys(entries, path)
@@ -379,68 +414,57 @@ def _validate_dataset_group(entries, path, instruments):
                 f"{dataset_path}.scaling is unsupported; datasets stay in physical units "
                 f"and share instruments[].scaling.divisor of {instrument_key!r}"
             )
-        # Optional override of data.holdout, e.g. `holdout: null` for a training
-        # sequence without a validation counterpart.
-        if dataset.get("holdout") is not None:
-            _validate_holdout(dataset["holdout"])
+        if "saturation_dn" in dataset:
+            raise PlasmaConfigError(
+                f"{dataset_path}.saturation_dn is unsupported; the saturation level "
+                f"belongs to instruments[].saturation_dn of {instrument_key!r}"
+            )
+        # A training dataset uses every observation in its optional [start, end)
+        # window. A validation dataset renders one observation with all
+        # channels: the one closest to `time`, or else the middle of its window.
+        if "time" in dataset:
+            if path != "data.valid_datasets":
+                raise PlasmaConfigError(
+                    f"{dataset_path}.time selects a validation observation and is only "
+                    "supported in data.valid_datasets"
+                )
+            if "start" in dataset or "end" in dataset:
+                raise PlasmaConfigError(
+                    f"{dataset_path}.time selects the validation observation; "
+                    "start and end must not be set with it"
+                )
+            _parse_iso_timestamp(dataset["time"], f"{dataset_path}.time")
+        _validate_time_window(dataset, dataset_path)
         if dataset.get("strict_metadata") is not True:
             raise PlasmaConfigError(
                 f"{dataset_path}.strict_metadata must be true for schema-v2 plasma data"
             )
+        # Optional field of view: pixels whose line of sight passes the Sun
+        # farther than this impact parameter (solar radii) are not supervised.
+        # The prepared images keep the full detector; the cut is applied here.
+        if dataset.get("max_radius_rsun") is not None:
+            _positive_number(dataset["max_radius_rsun"], f"{dataset_path}.max_radius_rsun")
+        # Optional fixed cadence: observations closer than this to the last
+        # kept one are dropped.
+        if dataset.get("cadence_minutes") is not None:
+            _positive_number(dataset["cadence_minutes"], f"{dataset_path}.cadence_minutes")
     return entries
 
 
-def _freeze_config_value(value):
-    if isinstance(value, Mapping):
-        return tuple(
-            (str(key), _freeze_config_value(item))
-            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
-        )
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        return tuple(_freeze_config_value(item) for item in value)
-    return value
-
-
-def _dataset_signature(entry):
-    scientific_config = dict(entry)
-    # Dataset keys route batches and may legitimately differ between the
-    # train/validation loaders. Every field that selects or interprets the
-    # observations must otherwise be identical for an index-based holdout.
-    scientific_config.pop("key", None)
-    return _freeze_config_value(scientific_config)
-
-
-def _validate_holdout_separation(train_datasets, valid_datasets, data):
-    """Validation must never see training observations.
-
-    A validation dataset that reads the prepared files of a training dataset is
-    separated from it by the index-based holdout, which requires an identical
-    selection on both sides. Validation datasets with their own files (a view
-    that is never trained on) and training datasets without a validation twin
-    (e.g. a short high-cadence event sequence) need no counterpart.
-    """
-    train_by_path = {}
-    for index, dataset in enumerate(train_datasets):
-        train_by_path.setdefault(dataset["data_path"], []).append((index, dataset))
-    for index, dataset in enumerate(valid_datasets):
-        path = f"data.valid_datasets[{index}]"
-        shared = train_by_path.get(dataset["data_path"], ())
-        if not shared:
+def _validate_time_window(dataset, path):
+    """Optional ``start``/``end`` ISO timestamps selecting observations in [start, end)."""
+    bounds = {}
+    for field in ("start", "end"):
+        value = dataset.get(field)
+        if value is None:
             continue
-        if not any(
-            _dataset_signature(dataset) == _dataset_signature(train_dataset)
-            for _, train_dataset in shared
-        ):
-            raise PlasmaConfigError(
-                f"{path} shares data_path with data.train_datasets"
-                f"[{shared[0][0]}] and must select and interpret the same prepared "
-                "observations; the holdout performs the split"
-            )
-        if dataset.get("holdout", data.get("holdout")) is None:
-            raise PlasmaConfigError(
-                f"{path} shares data_path with a training dataset and requires a "
-                "holdout so validation observations are excluded from training"
-            )
+        bounds[field] = _parse_iso_timestamp(value, f"{path}.{field}")
+    if len(bounds) == 2:
+        start, end = bounds["start"], bounds["end"]
+        if (start.tzinfo is None) != (end.tzinfo is None):
+            raise PlasmaConfigError(f"{path}.start and {path}.end must both carry or omit a timezone")
+        if start >= end:
+            raise PlasmaConfigError(f"{path}.start must be earlier than {path}.end")
 
 
 def _validate_shuffle(config):
@@ -460,6 +484,8 @@ def _validate_shuffle(config):
         if start < end:
             raise PlasmaConfigError("shuffle.start_seconds must be >= shuffle.end_seconds")
         _positive_integer(shuffle.get("iterations"), "shuffle.iterations")
+        if "cold_iterations" in shuffle:
+            _positive_integer(shuffle["cold_iterations"], "shuffle.cold_iterations", minimum=0)
     elif shuffle_type == "time":
         probability = float(shuffle.get("probability", 0.5))
         if not math.isfinite(probability) or not 0 <= probability <= 1:
@@ -469,14 +495,13 @@ def _validate_shuffle(config):
         raise PlasmaConfigError(f"shuffle.type={shuffle_type!r} is unsupported")
 
 
-def _validate_holdout(config):
-    holdout = _require_mapping(config, "data.holdout")
-    unknown = set(holdout).difference({"strategy", "count"})
-    if unknown:
-        raise PlasmaConfigError(f"data.holdout contains unsupported fields: {sorted(unknown)}")
-    if holdout.get("strategy") != "center":
-        raise PlasmaConfigError("data.holdout.strategy must currently be 'center'")
-    _positive_integer(holdout.get("count"), "data.holdout.count")
+def _parse_iso_timestamp(value, path):
+    if not isinstance(value, str) or not value.strip():
+        raise PlasmaConfigError(f"{path} must be an ISO 8601 timestamp string")
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise PlasmaConfigError(f"{path}={value!r} is not an ISO 8601 timestamp") from error
 
 
 def _validate_temperature_grid(model):
@@ -505,17 +530,24 @@ def _validate_temperature_grid(model):
     if "density_profile" in model:
         profile = _require_mapping(model["density_profile"], "model.density_profile")
         profile_type = profile.get("type")
-        fields = {"power_law": "exponent", "hydrostatic": "scale_height_rsun"}
+        fields = {
+            "power_law": "exponent",
+            "hydrostatic": "scale_height_rsun",
+            "hydrostatic_thermal": None,
+        }
         if profile_type not in fields:
             raise PlasmaConfigError(
-                "model.density_profile.type must be 'power_law' or 'hydrostatic'"
+                "model.density_profile.type must be 'power_law', 'hydrostatic' "
+                "or 'hydrostatic_thermal'"
             )
         unknown = set(profile) - {"type", fields[profile_type]}
         if unknown:
             raise PlasmaConfigError(
                 f"model.density_profile contains unsupported fields: {sorted(unknown)}"
             )
-        if profile_type == "hydrostatic" or fields[profile_type] in profile:
+        if profile_type == "hydrostatic" or (
+            fields[profile_type] is not None and fields[profile_type] in profile
+        ):
             _positive_number(
                 profile.get(fields[profile_type]),
                 f"model.density_profile.{fields[profile_type]}",
@@ -627,11 +659,25 @@ def _validate_training_contract(config):
             module.get("regularization_density_scale_cm3"),
             "module.regularization_density_scale_cm3",
         )
+        grid = _require_mapping(config.get("model", {}), "model").get("temperature_grid", {})
+        edges = module.get("regularization_log_T_range")
+        if not (
+            isinstance(edges, (list, tuple)) and len(edges) == 2
+            and all(isinstance(value, (int, float)) and math.isfinite(value) for value in edges)
+            and float(grid.get("log10_K_min", -math.inf)) <= edges[0] < edges[1]
+            <= float(grid.get("log10_K_max", math.inf))
+        ):
+            raise PlasmaConfigError(
+                "module.regularization_log_T_range must be two increasing values inside "
+                "model.temperature_grid when lambda.regularization is enabled"
+            )
 
     if "cool_column_scale_cm2" in module:
         _positive_number(module["cool_column_scale_cm2"], "module.cool_column_scale_cm2")
     if "light_travel_time" in module:
         _boolean(module["light_travel_time"], "module.light_travel_time")
+    if module.get("calibration_iterations") is not None:
+        _positive_integer(module["calibration_iterations"], "module.calibration_iterations")
 
     lr = _require_mapping(module.get("lr_config"), "module.lr_config")
     _positive_number(lr.get("start"), "module.lr_config.start")
@@ -701,7 +747,7 @@ def _resolve_callback_channels(requested, available, path):
 def _validate_euv_callbacks(config, valid_datasets, channel_orders):
     callbacks = config.setdefault("callbacks", {})
     callbacks = _require_mapping(callbacks, "callbacks")
-    unknown_callbacks = set(callbacks).difference({"euv_tomography"})
+    unknown_callbacks = set(callbacks).difference({"euv_tomography", "north_pole_view"})
     if unknown_callbacks:
         raise PlasmaConfigError(
             f"callbacks contains unsupported entries: {sorted(unknown_callbacks)}"
@@ -752,7 +798,7 @@ def _validate_euv_callbacks(config, valid_datasets, channel_orders):
         dataset_settings = _require_mapping(
             dataset_settings, f"callbacks.euv_tomography.datasets.{dataset_key}"
         )
-        unsupported = set(dataset_settings).difference({"channels"})
+        unsupported = set(dataset_settings).difference({"channels", "normalize"})
         if unsupported:
             raise PlasmaConfigError(
                 f"callbacks.euv_tomography.datasets.{dataset_key} contains unsupported "
@@ -764,7 +810,14 @@ def _validate_euv_callbacks(config, valid_datasets, channel_orders):
                 dataset_settings.get("channels", "all"),
                 channel_orders[instrument_key],
                 f"callbacks.euv_tomography.datasets.{dataset_key}.channels",
-            )
+            ),
+            # Match mean and standard deviation of the prediction to the
+            # observation per channel before the comparison plot. Intended for
+            # held-out views whose gain is never trained.
+            "normalize": _boolean(
+                dataset_settings.get("normalize", False),
+                f"callbacks.euv_tomography.datasets.{dataset_key}.normalize",
+            ),
         }
     if normalized["enabled"] and not normalized_datasets:
         raise PlasmaConfigError(
@@ -805,11 +858,6 @@ def _validate_euv_callbacks(config, valid_datasets, channel_orders):
         "callbacks.euv_tomography.products.channel_comparison.rows",
         {"observation", "prediction", "residual", "relative_residual"},
     )
-    if comparison["stretch"] not in {"linear", "asinh", "log"}:
-        raise PlasmaConfigError(
-            "callbacks.euv_tomography.products.channel_comparison.stretch must be "
-            "'linear', 'asinh' or 'log'"
-        )
     comparison["intensity_percentile"] = _percentage(
         comparison["intensity_percentile"],
         "callbacks.euv_tomography.products.channel_comparison.intensity_percentile",
@@ -894,6 +942,48 @@ def _validate_euv_callbacks(config, valid_datasets, channel_orders):
             "callbacks.euv_tomography must enable at least one plot product"
         )
     callbacks["euv_tomography"] = normalized
+    callbacks["north_pole_view"] = _validate_north_pole_view(
+        callbacks.get("north_pole_view", {}),
+        normalized,
+        dataset_instruments,
+        channel_orders,
+    )
+
+
+def _validate_north_pole_view(supplied, euv_tomography, dataset_instruments, channel_orders):
+    """Rendered view from above the solar north pole (off unless enabled).
+
+    ``dataset`` names the validation dataset whose instrument, observation
+    time, observer distance and field of view are used (default: the first
+    validation dataset). ``channels`` defaults to that dataset's
+    euv_tomography channels. Cadence and resolution follow euv_tomography.
+    """
+    path = "callbacks.north_pole_view"
+    supplied = _require_mapping(supplied, path)
+    unknown = set(supplied).difference({"enabled", "dataset", "channels"})
+    if unknown:
+        raise PlasmaConfigError(f"{path} contains unsupported fields: {sorted(unknown)}")
+    enabled = _boolean(supplied.get("enabled", False), f"{path}.enabled")
+    dataset_key = supplied.get("dataset")
+    if dataset_key is None:
+        dataset_key = next(iter(dataset_instruments), None)
+    dataset_key = None if dataset_key is None else str(dataset_key)
+    if dataset_key not in dataset_instruments:
+        if not enabled:
+            return {"enabled": False, "dataset": dataset_key, "channels": []}
+        raise PlasmaConfigError(
+            f"{path}.dataset must name a validation dataset: {sorted(dataset_instruments)}"
+        )
+    channels = supplied.get("channels")
+    if channels is None:
+        configured = euv_tomography["datasets"].get(dataset_key)
+        channels = configured["channels"] if configured is not None else "all"
+    channels = _resolve_callback_channels(
+        channels,
+        channel_orders[dataset_instruments[dataset_key]],
+        f"{path}.channels",
+    )
+    return {"enabled": enabled, "dataset": dataset_key, "channels": channels}
 
 
 def _find_unresolved_placeholders(value, path="config"):
@@ -941,6 +1031,7 @@ def validate_plasma_config(config):
         )
         if _validate_instrument_alignment(instrument, f"instruments[{index}]"):
             aligned_instruments.add(key)
+        _validate_instrument_saturation(instrument, f"instruments[{index}]")
 
     responses_by_instrument = {
         instrument["key"]: instrument["temperature_response"]
@@ -968,7 +1059,6 @@ def validate_plasma_config(config):
     valid_datasets = _validate_dataset_group(
         data.get("valid_datasets"), "data.valid_datasets", channel_orders
     )
-    _validate_holdout_separation(train_datasets, valid_datasets, data)
     supervised_instruments = {dataset["instrument_key"] for dataset in train_datasets}
     configured_references = {
         key
@@ -1019,11 +1109,6 @@ def validate_plasma_config(config):
             "instruments[].alignment is only trained on instruments present in "
             f"data.train_datasets; held-out views: {sorted(held_out_aligned)}"
         )
-    if "holdout" not in data:
-        raise PlasmaConfigError(
-            "data.holdout is required so validation observations are excluded from training"
-        )
-    _validate_holdout(data["holdout"])
 
     sampling = _require_mapping(config.get("sampling", {}), "sampling")
     _positive_integer(sampling.get("n_samples", 64), "sampling.n_samples", minimum=2)
@@ -1031,6 +1116,21 @@ def validate_plasma_config(config):
     max_distance = _positive_number(sampling.get("max_distance"), "sampling.max_distance")
     if min_distance < 0 or min_distance >= max_distance:
         raise PlasmaConfigError("sampling requires 0 <= min_distance < max_distance")
+    supervised_radius = config.get("model", {}).get("supervised_radius_rsun")
+    if supervised_radius is not None:
+        _positive_number(supervised_radius, "model.supervised_radius_rsun")
+        if float(supervised_radius) >= max_distance:
+            raise PlasmaConfigError(
+                "model.supervised_radius_rsun must be smaller than sampling.max_distance"
+            )
+    for group, entries in (("train_datasets", train_datasets), ("valid_datasets", valid_datasets)):
+        for index, dataset in enumerate(entries):
+            radius = dataset.get("max_radius_rsun")
+            if radius is not None and float(radius) >= max_distance:
+                raise PlasmaConfigError(
+                    f"data.{group}[{index}].max_radius_rsun must be smaller than "
+                    "sampling.max_distance"
+                )
 
     hierarchical = _require_mapping(
         config.get("hierarchical_sampling", {}), "hierarchical_sampling"

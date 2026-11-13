@@ -44,7 +44,6 @@ def build_parser():
     parser.add_argument('--out_path', help='Output directory (default: <save state dir>/mass_transport)')
     parser.add_argument('--device', default=None, help='torch device (default: cuda if available)')
     parser.add_argument('--batch_size', type=int, default=8192)
-    parser.add_argument('--trusted', action='store_true', help='Load a pickled (non weights-only) save state')
     # ground truth
     parser.add_argument('--data_path', help='Glob of ground-truth density cubes; omit for model-only evaluation')
     parser.add_argument('--dataset', choices=['hao', 'psi'], default='hao')
@@ -251,7 +250,7 @@ def main(argv=None):
     out_path = args.out_path or os.path.join(os.path.dirname(args.sunerf_path), 'mass_transport')
     os.makedirs(out_path, exist_ok=True)
 
-    loader = ThomsonSuNeRFLoader(args.sunerf_path, device=args.device, trusted=args.trusted)
+    loader = ThomsonSuNeRFLoader(args.sunerf_path, device=args.device)
     times, radius = [], None
     mass_r = {'true': [], 'pred': []}
     records = {'true': [], 'pred': []}

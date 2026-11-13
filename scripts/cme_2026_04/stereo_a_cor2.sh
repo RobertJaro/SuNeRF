@@ -32,7 +32,7 @@ python -m sunerf.data.download.download_cor \
 ################################################################################
 # Remove incomplete or invalid polarization triplets
 ################################################################################
-python -m sunerf.data.cor.remove_invalid_triplets \
+python -m sunerf.data.cor.split_triplets \
   --glob "${COR_RAW_DIR}/*.fts" \
   --clear-dir "${COR_CLEAR_RAW_DIR}"
 
@@ -40,14 +40,11 @@ python -m sunerf.data.cor.remove_invalid_triplets \
 # Run SECCHI_PREP through SolarSoft/IDL
 ################################################################################
 # Produces total-brightness, polarized-brightness, and clear FITS products.
-export SECCHI_INPUT_GLOB="${COR_RAW_DIR}/*.fts"
-export SECCHI_TB_OUT="${COR_PREP_DIR}/tB"
-export SECCHI_PB_OUT="${COR_PREP_DIR}/pB"
-csh "${REPO_DIR}/scripts/secchi_prep_triplets.csh"
+csh "${REPO_DIR}/scripts/secchi_prep_triplets.csh" \
+  "${COR_RAW_DIR}/*.fts" "${COR_PREP_DIR}/tB" "${COR_PREP_DIR}/pB"
 
-export SECCHI_CLEAR_INPUT_GLOB="${COR_CLEAR_RAW_DIR}/*.fts"
-export SECCHI_CLEAR_OUT="${COR_PREP_DIR}/clear"
-csh "${REPO_DIR}/scripts/secchi_prep_clear.csh"
+csh "${REPO_DIR}/scripts/secchi_prep_clear.csh" \
+  "${COR_CLEAR_RAW_DIR}/*.fts" "${COR_PREP_DIR}/clear"
 
 ################################################################################
 # Prepare total- and polarized-brightness maps

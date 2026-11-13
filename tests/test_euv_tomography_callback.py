@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import numpy as np
 import torch
 
 from sunerf.train.euv_callback import EUVTomographyCallback
@@ -10,7 +11,6 @@ def _products():
         "channel_comparison": {
             "enabled": True,
             "rows": ["observation", "prediction", "residual", "relative_residual"],
-            "stretch": "log",
             "intensity_percentile": 99.5,
             "residual_percentile": 99.0,
         },
@@ -126,11 +126,13 @@ def test_callback_cadence_and_all_plot_families(monkeypatch):
     )
 
     callback.on_validation_end(None, _module())
-    assert logged == []
+    assert not any(key.startswith("euv_tomography.") for key in logged)
+    assert "validation/psnr.aia_valid" in logged
+    logged.clear()
 
     callback.on_validation_end(None, _module())
 
-    assert set(logged) == {
+    assert {key for key in logged if key.startswith("euv_tomography.")} == {
         "euv_tomography.aia_valid.channel_comparison",
         "euv_tomography.aia_valid.plasma_diagnostics",
         "euv_tomography.aia_valid.thermal_distribution",
@@ -188,3 +190,98 @@ def test_plasma_diagnostics_track_modeled_physics():
     assert _diagnostic_titles(callback, module) == [
         "Mean log$_{10}$(T / K)", "Cool H column [cm$^{-2}$]",
     ]
+
+
+def test_emission_weighted_diagnostics_are_masked_where_nothing_emits():
+    from sunerf.train.euv_callback import _emission_measure_mask
+
+    callback = EUVTomographyCallback(
+        "aia_valid", "AIA", (2, 2), ({"id": "A94"}, {"id": "A171"}), ("171",), _products(),
+    )
+    # The emission measure is required whenever a masked diagnostic is plotted.
+    assert "emission_measure_cm5" in callback.validation_output_keys
+
+    module = _module()
+    outputs = module.validation_outputs["aia_valid"]
+    outputs["emission_measure_cm5"] = torch.tensor([1e26, 2e26, 3e26, 1e22])
+    outputs = callback._reshape_outputs(outputs)
+    image_mask = np.ones((2, 2), dtype=bool)
+    mask = _emission_measure_mask(np.squeeze(outputs["emission_measure_cm5"]), image_mask)
+    assert mask.tolist() == [[True, True], [True, False]]
+
+    renderer = module.rendering.rendering_modules["AIA"]
+    figure = callback._plot_plasma_diagnostics(outputs, renderer)
+    by_title = {axis.get_title(): axis for axis in figure.axes if axis.get_title()}
+    masked = by_title["Mean log$_{10}$(T / K)"].images[0].get_array()
+    unmasked = by_title["Column $N_e$ [cm$^{-2}$]"].images[0].get_array()
+    assert np.ma.getmaskarray(masked).tolist() == [[False, False], [False, True]]
+    assert not np.ma.getmaskarray(unmasked).any()
+
+
+def test_normalize_matches_prediction_moments_to_observation():
+    from sunerf.train.euv_callback import _match_mean_and_std
+
+    observed = np.array([[1.0, 2.0], [3.0, np.nan]])
+    predicted = np.array([[10.0, 30.0], [50.0, 70.0]])
+    matched = _match_mean_and_std(predicted, observed)
+    finite = np.isfinite(observed)
+    assert np.isclose(np.mean(matched[finite]), np.mean(observed[finite]))
+    assert np.isclose(np.std(matched[finite]), np.std(observed[finite]))
+
+    callback = EUVTomographyCallback(
+        "eui_valid",
+        "AIA",
+        (2, 2),
+        ({"id": "A94"}, {"id": "A171"}),
+        ("A94",),
+        _products(),
+        normalize=True,
+    )
+    outputs = callback._reshape_outputs(_module().validation_outputs["aia_valid"])
+    figure = callback._plot_channel_comparison(outputs)
+    titles = [axis.get_title() for axis in figure.axes if axis.get_title()]
+    assert "A94 — observation" in titles
+    assert "A94 — prediction (normalized)" in titles
+
+
+def test_validation_metrics_on_full_images(monkeypatch):
+    logged = {}
+    monkeypatch.setattr(
+        "sunerf.train.euv_callback.wandb.log", lambda payload: logged.update(payload)
+    )
+    products = _products()
+    for product in products.values():
+        product["enabled"] = False
+    products["response_and_gains"]["enabled"] = True
+    callback = EUVTomographyCallback(
+        "aia_valid", "AIA", (16, 16), ({"id": "A94"}, {"id": "A171"}), ("A94",), products,
+        every_n_validations=10,
+    )
+    # Metrics need the images even when no image figure is enabled.
+    assert {"target_image", "pred_image", "valid_mask"} <= set(callback.validation_output_keys)
+
+    rng = np.random.default_rng(0)
+    target = rng.uniform(0.2, 0.8, size=(256, 2)).astype(np.float32)
+    prediction = target.copy()
+    prediction[:, 1] += 0.1
+    valid_mask = np.ones((256, 2), dtype=bool)
+    valid_mask[:128, 1] = False
+    # Masked pixels must not count, even if they are far off.
+    prediction[:128, 1] = 5.0
+    module = SimpleNamespace(validation_outputs={"aia_valid": {
+        "target_image": torch.from_numpy(target),
+        "pred_image": torch.from_numpy(prediction),
+        "valid_mask": torch.from_numpy(valid_mask),
+    }})
+
+    callback.on_validation_end(None, module)
+
+    assert logged["validation/loss.aia_valid.A94"] == 0.0
+    assert logged["validation/psnr.aia_valid.A94"] == np.inf
+    assert np.isclose(logged["validation/ssim.aia_valid.A94"], 1.0)
+    assert np.isclose(logged["validation/loss.aia_valid.A171"], 0.01, rtol=1e-4)
+    assert np.isclose(logged["validation/psnr.aia_valid.A171"], 20.0, rtol=1e-4)
+    assert logged["validation/ssim.aia_valid.A171"] < 1.0
+    assert np.isclose(logged["validation/loss.aia_valid"], 0.005, rtol=1e-4)
+    assert np.isclose(logged["validation/psnr.aia_valid"], -10 * np.log10(0.005), rtol=1e-4)
+    assert not any(key.startswith("euv_tomography.") for key in logged)

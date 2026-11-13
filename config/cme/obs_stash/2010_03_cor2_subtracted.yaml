@@ -47,7 +47,6 @@ data:
       unit: 'solRad'
       batch_size: 4096
   valid_datasets:
-    # 1) Standard instrument validation (renders images)
     - type: 'COR'
       key: 'STEREO_A_COR2'
       instrument_key: 'STEREO_A_COR2'
@@ -75,15 +74,13 @@ data:
   seconds_per_dt: 86400
   batch_size: 4096
   validation_batch_size: 4096
-  num_workers: 16
+  num_workers: 4
 
 callbacks:
-  # image callbacks
   - type: 'thomson_image'
     ds_key: 'STEREO_A_COR2'
   - type: 'thomson_image'
     ds_key: 'STEREO_B_COR2'
-  # correction images
   - type: 'correction_image'
     ds_key: 'STEREO_A_COR2'
   - type: 'correction_image'

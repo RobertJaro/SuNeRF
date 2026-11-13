@@ -18,6 +18,7 @@ from sunerf.data.loader.base_loader import BaseDataModule
 from sunerf.model.model import PlasmaModel
 from sunerf.model.sunerf import BaseSuNeRFModule
 from sunerf.model.util import jacobian
+from sunerf.physics.euv import R_SUN_CM
 from sunerf.rendering.base_tracing import BasicRenderingModule
 from sunerf.rendering.plasma import PlasmaRadiativeTransfer, init_absorption_model
 from sunerf.resources import normalize_artifact_reference, resolve_artifact_path
@@ -257,8 +258,10 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
     def __init__(self, Rs_per_ds, seconds_per_dt, instruments_config,
                  lambda_config=None, sampling_config=None, hierarchical_sampling_config=None, absorption_config=None,
                  model_config=None, shuffle_config=None,
-                 regularization_density_scale_cm3=None, light_travel_time=True,
-                 cool_column_scale_cm2=1.0e19, supervised_instrument_keys=None, **kwargs):
+                 regularization_density_scale_cm3=None, regularization_log_T_range=None,
+                 light_travel_time=True, cool_column_scale_cm2=1.0e18,
+                 calibration_iterations=None,
+                 supervised_instrument_keys=None, **kwargs):
         instruments_config = _normalize_instrument_response_paths(instruments_config)
         supervised_instrument_keys = _validate_instrument_calibration_gauge(
             instruments_config, supervised_instrument_keys
@@ -449,6 +452,18 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
             # Legacy name of the mlp backend, which used sine activations by default.
             backend = 'mlp'
             model_config.setdefault('activation', 'sine')
+        supervised_radius = model_config.pop('supervised_radius_rsun', None)
+        if supervised_radius is not None:
+            # Schema v2 fixes model units to solar radii, so the sampling shell
+            # edge is the end of the taper.
+            shell_radius = float((sampling_config or {}).get('max_distance', np.nan))
+            supervised_radius = float(supervised_radius)
+            if not np.isfinite(shell_radius) or not 0.0 < supervised_radius < shell_radius:
+                raise ValueError(
+                    'model.supervised_radius_rsun must be positive and smaller than '
+                    'sampling.max_distance.'
+                )
+            model_config['deviation_taper'] = (supervised_radius, shell_radius)
         model = PlasmaModel(log_T=log_T_range, backend=backend, **model_config)
         rendering = BasicRenderingModule(
             model=model,
@@ -473,13 +488,29 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
         self.lambda_regularization = float(lambda_config.get('regularization', 1.0e-4))
         self.lambda_absorption = float(lambda_config.get('absorption', 0.0))
         self.lambda_calibration = float(lambda_config.get('calibration', 1.0e-4))
-        # L1 sparsity prior on the LOS hydrogen column of the cool absorber: it is
-        # only constrained where it sits in front of bright emission.
+        # Sparsity prior on the LOS hydrogen column of the cool absorber: it is
+        # only constrained where it sits in front of bright emission. See
+        # ``compute_cool_column_regularization``.
         self.lambda_cool_absorber = float(lambda_config.get('cool_absorber', 1.0e-4))
         cool_column_scale_cm2 = float(cool_column_scale_cm2)
         if not np.isfinite(cool_column_scale_cm2) or cool_column_scale_cm2 <= 0:
             raise ValueError('cool_column_scale_cm2 must be finite and positive.')
         self.cool_column_scale_cm2 = cool_column_scale_cm2
+        # Learnable gains train for the first ``calibration_iterations`` steps
+        # and are frozen afterwards, so they cannot keep drifting to absorb
+        # unresolved plasma structure.
+        if calibration_iterations is not None:
+            calibration_iterations = int(calibration_iterations)
+            if calibration_iterations <= 0:
+                raise ValueError('calibration_iterations must be a positive integer.')
+        self.calibration_iterations = calibration_iterations
+        self._trainable_calibration = {
+            key: tuple(
+                name for name in ('instrument_scaling', 'common_instrument_scaling')
+                if getattr(module, name).requires_grad
+            )
+            for key, module in self.rendering.rendering_modules.items()
+        }
         lambdas = {
             'image': self.lambda_image,
             'regularization': self.lambda_regularization,
@@ -510,6 +541,25 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
             'regularization_density_scale_cm3',
             torch.tensor(regularization_density_scale_cm3, dtype=torch.float32),
         )
+        # Emission-measure prior on the temperature edges: plasma between the
+        # two configured temperatures costs nothing, beyond them the weight
+        # rises smoothly to one at the model bounds.
+        bounds = (float(log_T_range[0]), float(log_T_range[-1]))
+        if regularization_log_T_range is None:
+            if self.lambda_regularization > 0:
+                raise ValueError(
+                    'regularization_log_T_range must be explicit when lambda.regularization is enabled.'
+                )
+            regularization_log_T_range = bounds
+        lower, upper = (float(value) for value in regularization_log_T_range)
+        if not (np.isfinite(lower) and np.isfinite(upper) and bounds[0] <= lower < upper <= bounds[1]):
+            raise ValueError(
+                'regularization_log_T_range must be two increasing values inside model.temperature_grid.'
+            )
+        self.register_buffer('temperature_bounds', torch.tensor(bounds, dtype=torch.float32))
+        self.register_buffer(
+            'regularization_log_T_range', torch.tensor([lower, upper], dtype=torch.float32)
+        )
 
         # Only legacy absorption has a single shared model. Physical opacity is
         # channel-specific and is owned by each instrument renderer.
@@ -531,8 +581,10 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
             'model_config': raw_model_config,
             'shuffle_config': raw_shuffle_config,
             'regularization_density_scale_cm3': regularization_density_scale_cm3,
+            'regularization_log_T_range': [lower, upper],
             'light_travel_time': bool(light_travel_time),
             'cool_column_scale_cm2': cool_column_scale_cm2,
+            'calibration_iterations': calibration_iterations,
             **raw_module_kwargs,
         }
 
@@ -649,14 +701,16 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
                 calibration_instruments.add(instrument_key)
             if 'cool_hydrogen_column_cm2' in rendering_out[ds_key]:
                 cool_column_regularization.append(
-                    (rendering_out[ds_key]['cool_hydrogen_column_cm2']
-                     / self.cool_column_scale_cm2).mean()
+                    self.compute_cool_column_regularization(
+                        rendering_out[ds_key]['cool_hydrogen_column_cm2']
+                    )
                 )
             if self.lambda_regularization != 0:
                 density_regularization.append(
-                    self.compute_radial_density_regularization(
+                    self.compute_spectral_em_regularization(
                         rendering_out[ds_key]['em'],
-                        rendering_out[ds_key]['distance'],
+                        rendering_out[ds_key]['log_T'],
+                        rendering_out[ds_key]['node_dl_cm'],
                     )
                 )
 
@@ -726,14 +780,47 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
         continuity_eq = dRho_dt + total_ne * div_v + v_dot_grad_rho
         return continuity_eq.square().mean()
 
-    def compute_radial_density_regularization(self, emission_measure_density_cm6, distance):
-        """Penalize outer-corona density relative to an explicit physical scale."""
-        dimensionless_density_squared = (
-            emission_measure_density_cm6
-            / self.regularization_density_scale_cm3.square()
-        )
-        radial_weight = torch.clip(distance - 1.2, min=0).square()
-        return (dimensionless_density_squared * radial_weight).mean()
+    def unconstrained_temperature_weight(self, log_T):
+        """Weight of the emission-measure prior at ``log_T``.
+
+        Zero inside ``regularization_log_T_range``; outside, a cubic smoothstep
+        of the distance to the edge, reaching one at the model's temperature
+        bound. The slope vanishes at the edge, so the prior starts softly.
+        """
+        lower, upper = self.regularization_log_T_range
+        t_min, t_max = self.temperature_bounds
+        eps = torch.finfo(log_T.dtype).eps
+        below = ((lower - log_T) / (lower - t_min).clamp_min(eps)).clamp(0.0, 1.0)
+        above = ((log_T - upper) / (t_max - upper).clamp_min(eps)).clamp(0.0, 1.0)
+        s = below + above  # at most one is nonzero
+        return s * s * (3.0 - 2.0 * s)
+
+    def compute_spectral_em_regularization(self, emission_measure_density_cm6, log_T, node_dl_cm):
+        """L1 penalty on the LOS emission measure at the edges of the temperature range.
+
+        Every sample contributes its emission measure times the edge weight of
+        its temperature, so plasma pushed toward the temperature bounds is more
+        expensive than plasma inside the configured range. The column is
+        expressed in units of ``regularization_density_scale_cm3`` squared over
+        one solar radius, a quiet-Sun column for the default 1e8 cm^-3.
+        """
+        temperature = torch.nan_to_num(log_T.squeeze(-1), nan=float(self.temperature_bounds[1]))
+        weight = self.unconstrained_temperature_weight(temperature)
+        column = (weight * emission_measure_density_cm6.squeeze(-1) * node_dl_cm).sum(dim=1)
+        scale = self.regularization_density_scale_cm3.square() * R_SUN_CM
+        return (column / scale).mean()
+
+    def compute_cool_column_regularization(self, cool_hydrogen_column_cm2):
+        """Concave sparsity prior on the LOS hydrogen column of the cool absorber.
+
+        ``log1p(N / N_s)`` with ``N_s = cool_column_scale_cm2`` costs a thin
+        column linearly (slope ``1 / N_s``) and a dense one only
+        logarithmically. A diffuse haze over many rays is therefore more
+        expensive than the same total column concentrated in a few compact
+        absorbers, which the data can support. The default ``N_s = 1e18 cm^-2``
+        is an optical depth of about 0.1 at 171-193 A.
+        """
+        return torch.log1p(cool_hydrogen_column_cm2 / self.cool_column_scale_cm2).mean()
 
     def compute_static_regularization(self, total_log_ne, mean_log_T, query_points):
         # Differentiate dimensionless logarithmic plasma variables. Using
@@ -831,7 +918,23 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
             metrics[f'alignment.{instrument_key}.shift_y_arcsec'] = shift[1]
         return metrics
 
+    def set_calibration_step(self, global_step):
+        """Freeze the learnable gains once ``calibration_iterations`` steps are done."""
+        if self.calibration_iterations is None:
+            return
+        trainable = int(global_step) < self.calibration_iterations
+        for instrument_key, names in self._trainable_calibration.items():
+            module = self.rendering.rendering_modules[instrument_key]
+            for name in names:
+                getattr(module, name).requires_grad_(trainable)
+
+    def on_train_start(self):
+        # Resumed runs may start past the calibration phase.
+        super().on_train_start()
+        self.set_calibration_step(self.global_step)
+
     def on_train_batch_end(self, *args, **kwargs):
+        self.set_calibration_step(self.global_step)
         metrics = self._instrument_scaling_metrics()
         if metrics:
             self.log_dict(metrics, sync_dist=True)
@@ -959,11 +1062,6 @@ def _artifact_instrument_metadata(sunerf, data_module):
     return metadata
 
 
-def plasma_safe_artifact_path(save_path):
-    save_path = os.path.abspath(os.fspath(save_path))
-    return save_path if save_path.endswith(PLASMA_SAFE_ARTIFACT_SUFFIX) else f'{save_path}{PLASMA_SAFE_ARTIFACT_SUFFIX}'
-
-
 def _response_artifact_references(instrument_metadata):
     references = {}
     for instrument_key, metadata in instrument_metadata.items():
@@ -1052,7 +1150,11 @@ def _safe_plasma_state(sunerf, data_module, instrument_metadata, provenance):
 
 @rank_zero_only
 def save_plasma_sunerf(sunerf: PlasmaSuNeRFModule, data_module: BaseDataModule, save_path):
-    """Publish one weights-only plasma reconstruction artifact."""
+    """Publish one weights-only plasma reconstruction artifact at exactly ``save_path``.
+
+    The run writes it as ``save_state.snf`` after every validation; the file is
+    the torch weights-only state, whatever its extension.
+    """
     save_path = os.path.abspath(os.fspath(save_path))
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     configured_instruments = {
@@ -1075,14 +1177,15 @@ def save_plasma_sunerf(sunerf: PlasmaSuNeRFModule, data_module: BaseDataModule, 
     provenance = {
         'config_schema_version': getattr(sunerf, 'config_schema_version', None),
         'config_fingerprint': getattr(sunerf, 'config_fingerprint', None),
+        # Source files (path, size, mtime) of the whole run config: the data
+        # globs and the response and absorption artifacts. The data module's
+        # own record list is the data subset of these and is kept only as its
+        # fingerprint.
         'config_source_records': copy.deepcopy(
             getattr(sunerf, 'config_source_records', [])
         ),
         'data_cache_format_version': getattr(data_module, 'cache_format_version', None),
         'data_cache_fingerprint': getattr(data_module, 'cache_fingerprint', None),
-        'data_source_records': copy.deepcopy(
-            getattr(data_module, 'cache_source_records', [])
-        ),
         'response_artifacts': response_artifacts,
         'absorption_artifacts': absorption_artifacts,
         'response_calibration': {
@@ -1091,10 +1194,9 @@ def save_plasma_sunerf(sunerf: PlasmaSuNeRFModule, data_module: BaseDataModule, 
             if value.get('calibration') is not None
         },
     }
-    safe_path = plasma_safe_artifact_path(save_path)
     safe_state = _safe_plasma_state(sunerf, data_module, instrument_metadata, provenance)
-    atomic_torch_save(safe_state, safe_path)
+    atomic_torch_save(safe_state, save_path)
     # Verify that the just-published artifact is accepted by PyTorch's
     # restricted unpickler.
-    torch.load(safe_path, map_location='cpu', weights_only=True)
-    return safe_path
+    torch.load(save_path, map_location='cpu', weights_only=True)
+    return save_path

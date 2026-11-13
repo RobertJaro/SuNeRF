@@ -196,7 +196,10 @@ def build_parser():
         )
     )
     parser.add_argument("--temperature-response-artifact", dest="temperature_response_file", required=True)
-    parser.add_argument("--response-channels", dest="response_channels", nargs="+", default=None)
+    parser.add_argument(
+        "--response-channels", dest="response_channels", nargs="+", required=True,
+        help="Ordered channels to render; channels not listed are never computed.",
+    )
     parser.add_argument(
         "--hydrogen-to-electron-ratio",
         dest="hydrogen_to_electron_ratio",

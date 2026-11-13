@@ -22,12 +22,15 @@ from sunerf.response import ResponseArtifact
 class _LossHarness:
     _expanded_valid_mask = staticmethod(PlasmaSuNeRFModule._expanded_valid_mask)
     _masked_image_loss = PlasmaSuNeRFModule._masked_image_loss
-    compute_radial_density_regularization = PlasmaSuNeRFModule.compute_radial_density_regularization
+    compute_spectral_em_regularization = PlasmaSuNeRFModule.compute_spectral_em_regularization
+    unconstrained_temperature_weight = PlasmaSuNeRFModule.unconstrained_temperature_weight
     compute_static_regularization = PlasmaSuNeRFModule.compute_static_regularization
 
     def __init__(self):
         self.channel_loss_weights = {'A': [1.0, 1.0]}
         self.regularization_density_scale_cm3 = torch.tensor(1e8)
+        self.temperature_bounds = torch.tensor([5.0, 6.0])
+        self.regularization_log_T_range = torch.tensor([5.5, 6.0])  # the cool edge is penalized
 
 
 def test_masked_image_loss_averages_channels_before_combining_them():
@@ -86,17 +89,19 @@ def test_static_density_and_temperature_derivatives_cannot_cancel():
     assert regularization > 0
 
 
-def test_radial_density_regularization_is_invariant_to_matching_unit_scale():
+def test_spectral_em_regularization_is_invariant_to_matching_unit_scale():
     harness = _LossHarness()
-    distance = torch.tensor([[1.3, 1.5]])
-    emission_measure_density = torch.tensor([[1e16, 4e16]])
-    baseline = harness.compute_radial_density_regularization(
-        emission_measure_density, distance
+    node_dl_cm = torch.tensor([[1e10, 1e10]])
+    log_T = torch.tensor([[[5.2], [5.8]]])
+    emission_measure_density = torch.tensor([[[1e16], [4e16]]])
+    baseline = harness.compute_spectral_em_regularization(
+        emission_measure_density, log_T, node_dl_cm
     )
+    assert baseline.item() > 0.0
 
     harness.regularization_density_scale_cm3 = torch.tensor(1e9)
-    rescaled = harness.compute_radial_density_regularization(
-        emission_measure_density * 100, distance
+    rescaled = harness.compute_spectral_em_regularization(
+        emission_measure_density * 100, log_T, node_dl_cm
     )
 
     torch.testing.assert_close(rescaled, baseline)
@@ -187,7 +192,8 @@ def test_plasma_artifact_is_atomic_versioned_and_carries_channel_identity(tmp_pa
     assert provenance['config_fingerprint'] == 'config-sha256'
     assert provenance['data_cache_fingerprint'] == 'data-sha256'
     assert provenance['config_source_records'][0]['path'] == '/input/config-source'
-    assert provenance['data_source_records'][0]['path'] == '/input/observation.fits'
+    # the data module's source records are the data subset of the config records
+    assert 'data_source_records' not in provenance
     response_reference = provenance['response_artifacts']['AIA']
     assert response_reference['sha256'] == response_sha256
     assert response_reference['provenance']['response_id'] == 'fixture-response'
@@ -380,11 +386,120 @@ def test_plasma_loader_prefers_weights_only_safe_sidecar(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match='does not exactly match renderer channels'):
         loader._load_instrument_metadata(wrong_channels)
 
-    wrong_response_id = copy.deepcopy(loader.instrument_metadata)
-    wrong_response_id['AIA']['channels'][0]['response_id'] = 'different-response'
-    with pytest.raises(ValueError, match='do not match renderer response identity'):
-        loader._load_instrument_metadata(wrong_response_id)
+    # A rebuilt artifact that gains a channel keeps the run loadable; the ID it
+    # was trained with stays in the channel metadata.
+    def rebuilt_response(a94_value):
+        return ResponseArtifact(
+            channels=('A94', 'A304'),
+            log_temperature=np.array([5.0, 6.0]),
+            response=np.stack([np.full(2, a94_value), np.full(2, 3.0)]),
+            response_unit='cm5 DN / (pix s)',
+            emission_measure_convention='ne2',
+            provenance={'provider': 'test-fixture'},
+        )
+
+    rebuilt_response(1.0).save(response_path)
+    rebuilt = PlasmaSuNeRFLoader(safe_path, device='cpu')
+    assert rebuilt.rendering.rendering_modules['AIA'].channels == ('A94',)
+    assert (
+        rebuilt.instrument_metadata['AIA']['channels'][0]['response_id']
+        == response_artifact.response_id
+    )
+    # A changed table for a channel the run uses is still rejected.
+    rebuilt_response(2.0).save(response_path)
+    with pytest.raises(ValueError, match='immutable physics state'):
+        PlasmaSuNeRFLoader(safe_path, device='cpu')
+    response_artifact.save(response_path)
 
     data_module.seconds_per_dt = 1.0
     with pytest.raises(ValueError, match='module seconds_per_dt'):
         save_plasma_sunerf(module, data_module, tmp_path / 'invalid-scale.snf')
+
+
+def test_safe_plasma_candidate_resolves_snf_save_state_to_run_artifact(tmp_path):
+    from sunerf.evaluation.loader import _safe_plasma_candidate
+
+    artifact = tmp_path / 'save_state.safe.pt'
+    artifact.write_bytes(b'')
+    assert _safe_plasma_candidate(tmp_path / 'save_state.snf') == str(artifact)
+    assert _safe_plasma_candidate(artifact) == str(artifact)
+    sidecar = tmp_path / 'other.snf.safe.pt'
+    sidecar.write_bytes(b'')
+    assert _safe_plasma_candidate(tmp_path / 'other.snf') == str(sidecar)
+    assert _safe_plasma_candidate(tmp_path / 'missing.snf') is None
+
+
+def test_safe_artifact_reloads_random_positional_encoding_from_saved_state(tmp_path, monkeypatch):
+    """Isotropic encoding directions are drawn at construction and must come from the artifact."""
+    monkeypatch.chdir(tmp_path)
+    response_path = tmp_path / 'response.npz'
+    response_artifact = ResponseArtifact(
+        channels=('A193',),
+        log_temperature=np.array([5.0, 6.0, 7.0]),
+        response=np.ones((1, 3)),
+        response_unit='cm5 DN / (pix s)',
+        emission_measure_convention='ne2',
+        provenance={'provider': 'test-fixture'},
+    )
+    response_artifact.save(response_path)
+    module = PlasmaSuNeRFModule(
+        Rs_per_ds=1.0,
+        seconds_per_dt=86400.0,
+        instruments_config=[{
+            'key': 'AIA',
+            'type': 'plasma',
+            'temperature_response': {
+                'artifact': response_path.name,
+                'channels': ['A193'],
+                'response_id': response_artifact.response_id,
+                'learnable': True,
+                'global_reference': True,
+                'common_gain_limit_dex': 1.0,
+            },
+            'scaling': {'type': 'linear', 'divisor': [25.0]},
+        }],
+        model_config={
+            'type': 'mlp',
+            'dim': 8,
+            'n_layers': 2,
+            'density_offset_log10_cm3': 8.0,
+            'encoding': 'positional_isotropic',
+            'num_frequencies': [6, 2],
+            'max_frequencies': [3, 2],
+            'temperature_grid': {'log10_K_min': 5.0, 'log10_K_max': 7.0, 'step_dex': 1.0},
+        },
+        sampling_config={'type': 'spherical', 'min_distance': 1.0, 'max_distance': 1.5, 'n_samples': 2,
+                         'perturb': False},
+        hierarchical_sampling_config={'type': 'hierarchical', 'n_samples': 2, 'perturb': False},
+        absorption_config={'type': None},
+        lambda_config={'regularization': 0.0},
+        regularization_density_scale_cm3=1e8,
+        validation_dataset_mapping={},
+    )
+    module.config_schema_version = 2
+    module.config_fingerprint = 'config-fingerprint'
+    module.config_source_records = []
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [2, 2]
+    wcs.wcs.cdelt = [-0.01, 0.01]
+    wcs.wcs.crval = [0, 0]
+    wcs.wcs.ctype = ['HPLN-TAN', 'HPLT-TAN']
+    wcs.wcs.cunit = ['deg', 'deg']
+    data_module = SimpleNamespace(
+        config={'aia': {
+            'type': 'plasma', 'instrument_key': 'AIA', 'wcs': wcs, 'image_shape': (3, 4),
+            'times': [datetime(2025, 1, 1)], 'channel_ids': ('193',), 'cmaps': ('sdoaia193',),
+            'measurement_units': ('DN / s',),
+        }},
+        Rs_per_ds=1.0, seconds_per_dt=86400.0, ref_date=datetime(2025, 1, 1),
+        cache_format_version=3, cache_fingerprint='data-fingerprint', cache_source_records=[],
+    )
+    # the run writes the weights-only state as save_state.snf, exactly at the given path
+    safe_path = save_plasma_sunerf(module, data_module, tmp_path / 'save_state.snf')
+    assert safe_path == str(tmp_path / 'save_state.snf')
+    assert sorted(p.name for p in tmp_path.glob('save_state*')) == ['save_state.snf']
+    saved_directions = module.rendering.model.backend.d_in[0].B.detach().clone()
+
+    loader = PlasmaSuNeRFLoader(tmp_path / 'save_state.snf', device='cpu')
+    loaded_directions = loader.rendering.model.backend.d_in[0].B.detach()
+    assert torch.equal(loaded_directions, saved_directions)

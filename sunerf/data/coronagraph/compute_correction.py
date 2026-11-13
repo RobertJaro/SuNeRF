@@ -203,7 +203,7 @@ def main():
     output_dir = Path(args.output).parent
     os.makedirs(output_dir, exist_ok=True)
 
-    files = sorted(glob.glob(args.input))
+    files = sorted(f for f in glob.glob(args.input) if os.path.isfile(f))
     if not files:
         raise ValueError("No files matched --input pattern")
 

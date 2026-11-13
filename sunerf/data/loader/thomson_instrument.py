@@ -20,7 +20,7 @@ from sunpy.visualization.colormaps import cm
 from tqdm import tqdm
 
 from sunerf.data.date_util import normalize_datetime, unnormalize_datetime
-from sunerf.data.dataset import TensorsDataset
+from sunerf.data.dataset import ObservationCacheWriter, TensorsDataset, shuffled_valid_rows
 from sunerf.data.loader.base_loader import BaseDataModule, MapDataLoader
 from sunerf.data.loader.insitu import PSPDataset, SolarOrbiterDataset
 from sunerf.data.loader.volume_sampling import RandomSphericalCoordinateDataset
@@ -242,8 +242,15 @@ def _fit_radial_mad_scale(image_stack, projected_radius, config):
 
 
 def create_scaling_mask(projected_radius, scaling_mask_config, image_stack=None):
-    """Create either a legacy polynomial brightness mask or an annular MAD scale mask."""
+    """Create a legacy polynomial brightness mask, a fixed ``r^-2`` mask or an annular MAD scale mask.
+
+    The images are divided by the mask, so ``r2`` compensates the brightness
+    by ``r^2`` with the projected radius in solar radii.
+    """
     mask_type = scaling_mask_config.get("type", "log_polyfit").lower()
+    if mask_type == "r2":
+        mask = projected_radius.astype(np.float32) ** -2
+        return np.stack([mask, mask], axis=-1)
     if mask_type == "log_polyfit":
         tB_coeffs = np.load(scaling_mask_config["tB_coeffs_file"])
         pB_coeffs = np.load(scaling_mask_config["pB_coeffs_file"])
@@ -289,6 +296,10 @@ def valid_training_rows(tensors):
     image_finite = np.isfinite(tensors["image"])
     valid = image_finite.any(axis=-1)
     for key in ("rays", "time", "image_coords", "hpc_coords"):
+        if key not in tensors:
+            # The time is constant per observation and tiled by the cache
+            # writer; it never carries a non-finite value.
+            continue
         values = tensors[key]
         valid &= np.isfinite(values).all(axis=tuple(range(1, values.ndim)))
     if "scaling_mask" in tensors:
@@ -314,9 +325,6 @@ class ThomsonDataModule(BaseDataModule):
         **kwargs,
     ):
         os.makedirs(work_directory, exist_ok=True)
-
-        if preprocess_workers is None:
-            preprocess_workers = kwargs.get("num_workers")
 
         ref_date = (
             parse(ref_date) if ref_date is not None else None
@@ -418,10 +426,10 @@ class ThomsonDataModule(BaseDataModule):
                 assert (
                     len(train_dict) > 0
                 ), "Specify at least one dataset for reference times. The random dataset configuration needs to be last in config file."
-                if ds_key != "random":
+                if not ds_key.startswith("random"):
                     raise ValueError(
-                        f"The random dataset must be keyed 'random' (got '{ds_key}'): the physics "
-                        "losses read the batch under that key. Remove the 'key' entry."
+                        f"Random dataset keys must start with 'random' (got '{ds_key}'): the physics "
+                        "losses pool the points of every batch entry with that prefix."
                     )
                 # Sample times over the full span of the image datasets unless
                 # the config restricts them, e.g. to the eruption phase.
@@ -597,6 +605,9 @@ class ThomsonDataModule(BaseDataModule):
         return RenderModeDataset(dataset, render_mode=mode)
 
 
+_OBS_DATE_CACHE = {}
+
+
 class GenericThomsonDataset(TensorsDataset):
     DATE_OBS_KEYS = (
         "DATE-OBS",
@@ -634,6 +645,15 @@ class GenericThomsonDataset(TensorsDataset):
 
     @classmethod
     def _read_obs_date(cls, file_path):
+        # Pairing reads every header in parallel; the time-range filter and the
+        # cadence sampling reuse those dates instead of opening the files again.
+        key = (cls.DATE_OBS_KEYS, os.path.abspath(file_path))
+        if key not in _OBS_DATE_CACHE:
+            _OBS_DATE_CACHE[key] = cls._read_obs_date_from_header(file_path)
+        return _OBS_DATE_CACHE[key]
+
+    @classmethod
+    def _read_obs_date_from_header(cls, file_path):
         headers = []
         for ext in (0, 1):
             try:
@@ -850,6 +870,7 @@ class GenericThomsonDataset(TensorsDataset):
         pairing_tolerance_seconds=1.0,
         shuffle=None,
         filter_nans=None,
+        shuffle_seed=None,
         preprocess_workers=None,
         log_data_overview=True,
         clip_negative=False,
@@ -862,8 +883,10 @@ class GenericThomsonDataset(TensorsDataset):
         self.reference_frame = reference_frame
         self.azimuthal_equidistant = azimuthal_equidistant
         # select files with min diff in dates
-        tB_files = sorted(glob.glob(data_path_tB))
-        pB_files = sorted(glob.glob(data_path_pB)) if data_path_pB is not None else None
+        # Files only: a rejected/ directory of moved-aside frames matches "tB/*".
+        tB_files = sorted(f for f in glob.glob(data_path_tB) if os.path.isfile(f))
+        pB_files = (sorted(f for f in glob.glob(data_path_pB) if os.path.isfile(f))
+                    if data_path_pB is not None else None)
         if not tB_files:
             raise FileNotFoundError(
                 f"No tB files matched data_path_tB={data_path_tB!r} "
@@ -1026,10 +1049,8 @@ class GenericThomsonDataset(TensorsDataset):
             [normalize_datetime(t, seconds_per_dt, ref_date) for t in times]
         )
         self.normalized_times = normalized_times
-        times_arr = np.tile(
-            normalized_times[:, None, None, None], (1, *image_stack.shape[1:3], 1)
-        )
-        data_dict["time"] = times_arr
+        # The time is constant per frame; the cache writer tiles it per row.
+        data_dict.pop("time", None)
 
         # add hpc coordinates
         hpc_coords = data_dict["hpc_coords"]
@@ -1098,15 +1119,16 @@ class GenericThomsonDataset(TensorsDataset):
                 f'Image shape: {data_dict["image"].shape}; MIN: {np.nanmin(data_dict["image"])}; MAX: {np.nanmax(data_dict["image"])}'
             )
             print(
-                f"Time shape: {times_arr.shape}; MIN: {np.nanmin(times_arr)}; MAX: {np.nanmax(times_arr)}"
+                f"Normalized times: {len(normalized_times)}; MIN: {np.nanmin(normalized_times)}; "
+                f"MAX: {np.nanmax(normalized_times)}"
             )
 
         data_dict.pop("pose", None)
+        n_frames = image_stack.shape[0]
         tensors = {
             k: v.reshape((-1, *v.shape[3:]))
             for k, v in data_dict.items()
-            if k
-            in ["image", "rays", "time", "image_coords", "hpc_coords", "scaling_mask"]
+            if k in ["image", "rays", "image_coords", "hpc_coords", "scaling_mask"]
         }
 
         # FITS and correction pipelines can contain +/-Inf as well as NaN. Store
@@ -1117,7 +1139,7 @@ class GenericThomsonDataset(TensorsDataset):
 
         # An explicit mask avoids writing NaNs through every dense tensor merely
         # so the cache writer can discover the same invalid image rows again.
-        valid_mask = None if test else valid_training_rows(tensors)
+        valid_mask = None if test else valid_training_rows(tensors).reshape(n_frames, -1)
 
         # info for plotting
         self.image_shape = image_stack.shape[1:3]
@@ -1143,15 +1165,32 @@ class GenericThomsonDataset(TensorsDataset):
         self.data_config = data_config
         dataset_shuffle = (not test) if shuffle is None else shuffle
         dataset_filter_nans = (not test) if filter_nans is None else filter_nans
+        work_directory = kwargs.pop("work_directory")
         dataset_kwargs = {"instrument": instrument_key, **kwargs}
-        super().__init__(
-            tensors=tensors,
-            batch_size=batch_size,
-            shuffle=dataset_shuffle,
-            filter_nans=dataset_filter_nans,
-            valid_mask=valid_mask,
-            **dataset_kwargs,
+        # Frames are fed to the writer one by one from the in-memory stacks,
+        # each with its own random row order: the cache interleaves random
+        # pixels of every frame, so each batch covers the whole sequence.
+        writer = ObservationCacheWriter(
+            work_directory, n_frames, ds_name=ds_key, shuffle=dataset_shuffle,
+            shuffle_seed=shuffle_seed,
         )
+        seeds = np.random.SeedSequence(shuffle_seed).spawn(n_frames)
+        rows_per_frame = tensors["image"].shape[0] // n_frames
+        for frame in range(n_frames):
+            rows = slice(frame * rows_per_frame, (frame + 1) * rows_per_frame)
+            frame_tensors = {key: values[rows] for key, values in tensors.items()}
+            indices = shuffled_valid_rows(
+                frame_tensors,
+                None if valid_mask is None or not dataset_filter_nans else valid_mask[frame],
+                filter_rows=dataset_filter_nans,
+                rng=np.random.default_rng(seeds[frame]) if dataset_shuffle else None,
+            )
+            writer.add(frame_tensors, indices)
+        del tensors, data_dict
+        cache = writer.finalize(
+            constant_tensors={"time": normalized_times.astype(np.float32)[:, None]}
+        )
+        super().__init__(cache=cache, batch_size=batch_size, **dataset_kwargs)
 
 
 class HAOThomsonDataset(GenericThomsonDataset):

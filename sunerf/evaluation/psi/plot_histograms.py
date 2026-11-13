@@ -23,7 +23,7 @@ from matplotlib.gridspec import GridSpec
 
 from sunerf.evaluation.cme.export_layout import labelled_path
 from sunerf.evaluation.psi.common import (
-    FIGURE_WIDTH, RADIUS_RANGE, add_colorbar, add_panel_metric, load_densities, save_figure,
+    FIGURE_WIDTH, RADIUS_RANGE, add_colorbar, add_panel_metric, load_densities, save_figure, flat_label, title_size,
 )
 
 
@@ -67,13 +67,13 @@ def density_metrics(truth, reconstruction) -> dict:
 def write_metrics(path: Path, dump, labels, metrics) -> None:
     """Metrics of every run for the unnormalized and for the normalized reconstruction."""
     def row(name, values):
-        cells = [f"{value:>18d}" if isinstance(value, int) else f"{value:>18.4f}" for value in values]
+        cells = [f"{value:>28d}" if isinstance(value, int) else f"{value:>28.4f}" for value in values]
         return f"{name:<22}" + "".join(f"  {cell}" for cell in cells)
 
     def column(key):
         return [entry[key] for entry in metrics]
 
-    header = " " * 22 + "".join(f"  {label:>18}" for label in labels)
+    header = " " * 22 + "".join(f"  {flat_label(label):>28}" for label in labels)
     lines = [
         f"SuNeRF density against GT, dump {dump}, {RADIUS_RANGE[0]:g}-{RADIUS_RANGE[1]:g} R_sun",
         "All grid points with a positive density in GT and in the run; equal weight per grid point.",
@@ -129,7 +129,7 @@ def main() -> None:
         superscript = "^{\\mathrm{norm}}" if normalized else ""
         add_panel_metric(axis, f"r$_{{\\log}}$ = {entry['correlation_log10']:.3f}\n"
                                f"RMSE$_{{\\log}}{superscript}$ = {rmse:.3f}")
-        axis.set_title(label, fontsize=8)
+        axis.set_title(label, fontsize=title_size(len(cubes)))
         axis.set_xlim(*limits)
         axis.set_ylim(*limits)
         axis.set_aspect("equal")

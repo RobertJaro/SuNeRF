@@ -9,7 +9,7 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 ################################################################################
 # Configuration
 ################################################################################
-DATA_ROOT="/glade/work/rjarolim/data/sunerf-cme/2025_09"
+DATA_ROOT="/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09"
 START="2025-09-01T00:00:00"
 END="2025-10-01T00:00:00"
 

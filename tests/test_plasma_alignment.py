@@ -92,7 +92,7 @@ def _instruments(tmp_path):
     ]
 
 
-def _module(config, supervised=('AIA', 'EUVI-A')):
+def _module(config, supervised=('AIA', 'EUVI-A'), lambda_config=None, **kwargs):
     return PlasmaSuNeRFModule(
         Rs_per_ds=1., seconds_per_dt=86400., instruments_config=config,
         supervised_instrument_keys=list(supervised), validation_dataset_mapping={},
@@ -100,7 +100,9 @@ def _module(config, supervised=('AIA', 'EUVI-A')):
                       'temperature_grid': {'log10_K_min': 5., 'log10_K_max': 6., 'step_dex': 1.}},
         sampling_config={'type': 'spherical', 'min_distance': 1., 'max_distance': 1.5, 'n_samples': 4, 'perturb': False},
         hierarchical_sampling_config={'type': 'hierarchical', 'n_samples': 4, 'perturb': False},
-        absorption_config={'type': None}, lambda_config={'regularization': 0.}, regularization_density_scale_cm3=1e8,
+        absorption_config={'type': None}, regularization_density_scale_cm3=1e8,
+        lambda_config={'regularization': 0.} if lambda_config is None else lambda_config,
+        **kwargs,
     )
 
 
@@ -158,7 +160,7 @@ def _config():
     train = copy.deepcopy(config['data']['train_datasets'][0])
     train.update(key='euvi_train', instrument_key='EUVI-A', data_path='/data/euvi/*.prepared.fits')
     valid = copy.deepcopy(train)
-    valid['key'] = 'euvi_valid'
+    valid.update(key='euvi_valid', time='2025-10-14T09:00:00')
     config['data']['train_datasets'].append(train)
     config['data']['valid_datasets'].append(valid)
     return config

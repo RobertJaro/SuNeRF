@@ -301,7 +301,8 @@ class PlasmaImageCallback(BaseCallback):
 class ThomsonImageCallback(BaseCallback):
 
     validation_output_keys = (
-        'target_image', 'model_image', 'target_ratio', 'model_ratio', 'scaling_mask',
+        'target_image', 'model_image', 'clean_image', 'target_ratio', 'model_ratio', 'clean_ratio',
+        'scaling_mask',
     )
 
     def __init__(self, ds_key, image_shape):
@@ -320,13 +321,15 @@ class ThomsonImageCallback(BaseCallback):
 
         model_image = outputs['model_image']
         target_image = outputs['target_image']
+        clean_image = outputs.get('clean_image')
         scaling_mask = outputs.get('scaling_mask')
         brightness_label = 'Radially adjusted brightness' if scaling_mask is not None else 'Scaled brightness'
 
         target_ratio = outputs['target_ratio']
         model_ratio = outputs['model_ratio']
 
-        fig, axs = plt.subplots(3, 2, figsize=(7, 9))
+        n_cols = 2 if clean_image is None else 3
+        fig, axs = plt.subplots(3, n_cols, figsize=(3.5 * n_cols, 9))
 
         # pB and tB images
         for i in range(2):
@@ -354,6 +357,14 @@ class ThomsonImageCallback(BaseCallback):
             plt.colorbar(im, cax=cax)
             ax.set_title(f'Prediction\n{brightness_label}')
 
+            if clean_image is not None:
+                ax = axs[i, 2]
+                im = ax.imshow(clean_image[..., i], cmap=brightness_cmap, vmin=v_min, vmax=v_max, origin='lower')
+                divider = make_axes_locatable(ax)
+                cax = divider.append_axes("right", size="5%", pad=0.05)
+                plt.colorbar(im, cax=cax)
+                ax.set_title(f'Prediction (no correction)\n{brightness_label}')
+
         # ratio images
         ax = axs[2, 0]
         if np.isnan(target_ratio[..., 0]).all():
@@ -372,6 +383,17 @@ class ThomsonImageCallback(BaseCallback):
         cax = divider.append_axes("right", size="5%", pad=0.05)
         plt.colorbar(im, cax=cax)
         ax.set_title(f'Prediction')
+
+        clean_ratio = outputs.get('clean_ratio')
+        if clean_ratio is not None:
+            ax = axs[2, 2]
+            im = ax.imshow(clean_ratio[..., 0], cmap='plasma', vmin=0, vmax=v_max, origin='lower')
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            plt.colorbar(im, cax=cax)
+            ax.set_title(f'Prediction (no correction)')
+        elif clean_image is not None:
+            axs[2, 2].set_axis_off()
 
         [ax.set_xticks([]) for ax in axs.flatten()]
         [ax.set_yticks([]) for ax in axs.flatten()]
@@ -596,11 +618,19 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
         channel_cmaps = [cmap] * len(channel_labels) if isinstance(cmap, str) else list(cmap)
         if len(channel_cmaps) != len(channel_labels):
             raise ValueError('cmap must contain one entry per image channel.')
+        # EUV channels span several decades between coronal holes and active
+        # regions: one log stretch per channel, shared by every frame, with the
+        # 1st and 99.9th percentiles of the positive pixels as its limits.
         channel_norms = []
         for c in range(len(channel_labels)):
-            finite = images[..., c][np.isfinite(images[..., c])]
-            v_max = float(np.max(finite)) if finite.size else 1.0
-            channel_norms.append(Normalize(vmin=0, vmax=max(v_max, np.finfo(np.float32).eps)))
+            positive = images[..., c][np.isfinite(images[..., c]) & (images[..., c] > 0)]
+            if positive.size == 0:
+                channel_norms.append(None)
+                continue
+            vmin, vmax = (float(v) for v in np.percentile(positive, [1.0, 99.9]))
+            if vmax <= vmin:
+                vmax = np.nextafter(vmin, np.inf)
+            channel_norms.append(LogNorm(vmin=vmin, vmax=vmax))
 
     tb_norm = _channel_lognorm(images[..., 0] if images.ndim == 4 else images)
     pb_norm = _channel_lognorm(images[..., 1]) if images.ndim == 4 and images.shape[-1] > 1 else None
@@ -724,7 +754,7 @@ def log_overview(images, poses, times, cmap, seconds_per_dt, Rs_per_ds, ref_date
         if channel_labels is not None:
             for c, (label, channel_cmap, norm) in enumerate(zip(channel_labels, channel_cmaps, channel_norms)):
                 ax = plt.subplot(1, n_columns, 2 + c)
-                _imshow_linear(ax, img[..., c], label, norm, plot_cmap=channel_cmap)
+                _imshow_log(ax, img[..., c], label, norm, plot_cmap=channel_cmap)
             wandb.log({f'overview/{ds_key}': wandb.Image(fig)})
             plt.close(fig)
             continue
@@ -1403,10 +1433,47 @@ class FixedViewpointSeriesCallback(BaseCallback):
         plt.close(fig)
 
 
+def _match_moments(pred, obs, valid, log=False):
+    """Shift and scale ``pred`` so that its mean and standard deviation over the
+    ``valid`` samples equal those of ``obs``. In log space when ``log`` is set.
+
+    Returns the normalized prediction and the applied (scale, offset); the
+    identity transform when fewer than two samples are available.
+    """
+    if log:
+        pred = np.log10(np.clip(pred, 1e-30, None))
+        obs = np.log10(np.clip(obs, 1e-30, None))
+    valid = valid & np.isfinite(pred) & np.isfinite(obs)
+    if np.count_nonzero(valid) < 2 or np.nanstd(pred[valid]) == 0:
+        scale, offset = 1.0, 0.0
+    else:
+        scale = float(np.nanstd(obs[valid]) / np.nanstd(pred[valid]))
+        offset = float(np.nanmean(obs[valid]) - scale * np.nanmean(pred[valid]))
+    normalized = pred * scale + offset
+    if log:
+        normalized = 10 ** normalized
+    return normalized, (scale, offset)
+
+
+def _correlation(pred, obs, valid):
+    """Pearson correlation coefficient of ``pred`` and ``obs`` over the ``valid`` samples; NaN with fewer than
+    three samples or a constant series."""
+    valid = valid & np.isfinite(pred) & np.isfinite(obs)
+    if np.count_nonzero(valid) < 3 or np.std(pred[valid]) == 0 or np.std(obs[valid]) == 0:
+        return float('nan')
+    return float(np.corrcoef(pred[valid], obs[valid])[0, 1])
+
+
 class InSituTimeSeriesCallback(BaseCallback):
     """
     Plot in-situ observations against SuNeRF samples along the spacecraft trajectory.
     Expects validation outputs from InSituDataset wrapped as QUERY_POINTS.
+
+    The SuNeRF samples are normalized to the in-situ data by matching mean and
+    standard deviation over the observed samples (density in log space, velocity
+    linear); the raw samples are shown as a thin dashed line.  The Pearson
+    correlation of the normalized samples with the in-situ data (density in log
+    space) is logged as ``validation/insitu_correlation.<name>.<quantity>``.
     """
 
     validation_output_keys = (
@@ -1447,11 +1514,18 @@ class InSituTimeSeriesCallback(BaseCallback):
         else:
             has_density = np.isfinite(density_obs)
 
+        density_raw = density_pred
+        density_pred, (density_scale, density_offset) = _match_moments(
+            density_raw, density_obs, has_density, log=True
+        )
+
         fig, axs = plt.subplots(3, 2, figsize=(12, 10), dpi=150)
 
         ax = axs[0, 0]
         ax.plot(x[has_density], density_obs[has_density], color="black", lw=1.0, label=self.name)
-        ax.plot(x, density_pred, color="tab:orange", lw=1.0, label="SuNeRF")
+        ax.plot(x, density_raw, color="tab:orange", lw=0.6, ls="--", alpha=0.6, label="SuNeRF raw")
+        ax.plot(x, density_pred, color="tab:orange", lw=1.0,
+                label=rf"SuNeRF norm. ($\log n_e \times {density_scale:.2f} {density_offset:+.2f}$)")
         ax.set_yscale("log")
         ax.set_ylabel(r"$n_e$ [cm$^{-3}$]")
         ax.set_xlabel(xlabel)
@@ -1459,6 +1533,9 @@ class InSituTimeSeriesCallback(BaseCallback):
 
         ax = axs[0, 1]
         good_density = has_density & np.isfinite(density_obs) & np.isfinite(density_pred) & (density_obs > 0) & (density_pred > 0)
+        correlations = {'density': _correlation(np.log10(np.clip(density_pred, 1e-30, None)),
+                                                np.log10(np.clip(density_obs, 1e-30, None)), good_density)}
+        ax.set_title(rf"normalized, $r(\log n_e)$ = {correlations['density']:.2f}")
         if np.any(good_density):
             ax.scatter(density_obs[good_density], density_pred[good_density], s=4, alpha=0.35)
             lo = np.nanmin([density_obs[good_density].min(), density_pred[good_density].min()])
@@ -1478,15 +1555,22 @@ class InSituTimeSeriesCallback(BaseCallback):
             else:
                 has_velocity = np.isfinite(vr_obs)
 
+            vr_raw = vr_pred
+            vr_pred, (vr_scale, vr_offset) = _match_moments(vr_raw, vr_obs, has_velocity)
+
             ax = axs[1, 0]
             ax.plot(x[has_velocity], vr_obs[has_velocity], color="black", lw=1.0, label=self.name)
-            ax.plot(x, vr_pred, color="tab:blue", lw=1.0, label="SuNeRF")
+            ax.plot(x, vr_raw, color="tab:blue", lw=0.6, ls="--", alpha=0.6, label="SuNeRF raw")
+            ax.plot(x, vr_pred, color="tab:blue", lw=1.0,
+                    label=rf"SuNeRF norm. ($v_r \times {vr_scale:.2f} {vr_offset:+.0f}$)")
             ax.set_ylabel(r"$v_r$ [km s$^{-1}$]")
             ax.set_xlabel(xlabel)
             ax.legend()
 
             ax = axs[1, 1]
             good_v = has_velocity & np.isfinite(vr_obs) & np.isfinite(vr_pred)
+            correlations['velocity_radial'] = _correlation(vr_pred, vr_obs, good_v)
+            ax.set_title(rf"normalized, $r(v_r)$ = {correlations['velocity_radial']:.2f}")
             if np.any(good_v):
                 ax.scatter(vr_obs[good_v], vr_pred[good_v], s=4, alpha=0.35)
                 lo = np.nanmin([vr_obs[good_v].min(), vr_pred[good_v].min()])
@@ -1509,11 +1593,13 @@ class InSituTimeSeriesCallback(BaseCallback):
         density_residual = np.log10(np.clip(density_pred, 1e-30, None)) - np.log10(np.clip(density_obs, 1e-30, None))
         axs[2, 1].plot(x, density_residual, color="tab:red", lw=1.0)
         axs[2, 1].axhline(0.0, color="black", lw=0.8, ls="--")
-        axs[2, 1].set_ylabel(r"$\Delta \log_{10}(n_e)$")
+        axs[2, 1].set_ylabel(r"$\Delta \log_{10}(n_e)$ (normalized)")
         axs[2, 1].set_xlabel(xlabel)
 
         fig.tight_layout()
-        wandb.log({f"insitu.timeseries.{self.name}": wandb.Image(fig)})
+        wandb.log({f"insitu.timeseries.{self.name}": wandb.Image(fig),
+                   **{f"validation/insitu_correlation.{self.name}.{key}": value
+                      for key, value in correlations.items()}})
         plt.close(fig)
 
 

@@ -37,6 +37,7 @@ from tqdm import tqdm
 
 from sunerf.configuration import canonical_channel_id
 from sunerf.resources import is_builtin, resolve_artifact_path
+from astropy import units as u
 from astropy.io import fits
 
 from sunerf.data.euv.observation import (
@@ -130,9 +131,27 @@ def resolve_instrument_scaling(instruments_config):
     return instruments_config
 
 
+def _field_of_view_mask(path, max_radius_rsun):
+    """Pixels whose line of sight passes the Sun within ``max_radius_rsun``.
+
+    The same impact-parameter cut as the training loader
+    (``data.*_datasets[].max_radius_rsun``), so the divisor describes the
+    supervised pixels.
+    """
+    from sunpy.map.maputils import all_coordinates_from_map
+
+    from sunerf.data.euv.observation import load_prepared_map
+    from sunerf.data.ray_sampling import hpc_impact_parameter
+
+    s_map = load_prepared_map(path)
+    coordinates = all_coordinates_from_map(s_map)
+    impact = hpc_impact_parameter(coordinates.Tx, coordinates.Ty, s_map.dsun)
+    return np.asarray(impact.to_value(u.R_sun)) <= float(max_radius_rsun)
+
+
 def _file_statistics(payload):
     """Percentile of one prepared file, placed at its channel index; NaN elsewhere."""
-    path, channel_numbers, percentile = payload
+    path, channel_numbers, percentile, max_radius_rsun = payload
     with fits.open(path, memmap=False) as hdul:
         header = hdul[0].header
         image = np.asarray(hdul[0].data, dtype=np.float64)
@@ -141,6 +160,8 @@ def _file_statistics(payload):
     if channel not in channel_numbers:
         return row
     valid_mask = _fits_valid_mask(path, image.shape, required=False)
+    if max_radius_rsun is not None:
+        valid_mask = valid_mask & _field_of_view_mask(path, max_radius_rsun)
     row[channel_numbers.index(channel)] = observation_scaling_statistics(
         image[..., None], valid_mask[..., None], percentile
     )[0]
@@ -163,7 +184,10 @@ def _dataset_payloads(dataset, channel_numbers, percentile, max_files):
     if max_files is not None and len(files) > max_files:
         positions = np.unique(np.linspace(0, len(files) - 1, int(max_files), dtype=np.int64))
         files = [files[index] for index in positions]
-    return len(files), [(path, tuple(channel_numbers), percentile) for path in files]
+    max_radius_rsun = dataset.get('max_radius_rsun')
+    return len(files), [
+        (path, tuple(channel_numbers), percentile, max_radius_rsun) for path in files
+    ]
 
 
 def estimate_instrument_scaling(

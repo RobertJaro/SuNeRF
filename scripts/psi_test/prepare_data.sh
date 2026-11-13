@@ -40,7 +40,7 @@ PB_SMOOTH_FRACTION=0.02
 MASK_FRACTION=1.0
 STEREO_PREP_ROOT="/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2010_03/prep"
 LASCO_PREP_ROOT="/glade/work/rjarolim/data/sunerf-cme/2010_03/prep/lasco_c2"
-PUNCH_PREP_ROOT="/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/punch_pam"
+PUNCH_PREP_ROOT="/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/punch_pam"
 CCOR_PREP_ROOT="/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/ccor"
 
 ################################################################################

@@ -10,9 +10,9 @@ python -m sunerf.data.download.download_cor --start 2012-08-01  --end 2012-09-01
 python -m sunerf.data.download.download_cor --start 2012-08-01  --end 2012-09-01 --output /glade/work/rjarolim/data/sunerf-cme/2012_08/stereo_b_cor2 --detector COR2 --source STEREO_B
 
 # clean up COR triplets
-python -m sunerf.data.cor.remove_invalid_triplets \
+python -m sunerf.data.cor.split_triplets \
   --glob "/glade/work/rjarolim/data/sunerf-cme/2012_08/stereo_a_cor2/*.fts" --dry-run
-python -m sunerf.data.cor.remove_invalid_triplets \
+python -m sunerf.data.cor.split_triplets \
   --glob "/glade/work/rjarolim/data/sunerf-cme/2012_08/stereo_b_cor2/*.fts" --dry-run
 
 # prep COR files
@@ -22,7 +22,7 @@ cd /glade/u/home/rjarolim
 module load idl
 
 setenv SSW_INSTR "SECCHI LASCO STEREO SOHO"
-setenv SSW /glade/u/home/rjarolim/ssw
+setenv SSW /glade/work/rjarolim/ssw
 setenv NRL_LIB $SSW/soho/lasco
 source $SSW/gen/setup/setup.ssw
 sswidl

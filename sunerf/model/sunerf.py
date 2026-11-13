@@ -64,7 +64,7 @@ class BaseSuNeRFModule(LightningModule):
         # twice on some Lightning versions and bypasses its checkpoint state.
         self.log('Learning Rate', self.optimizer.param_groups[0]['lr'])
 
-        self.rendering.on_train_batch_end(*args, **kwargs)
+        self.rendering.on_train_batch_end(*args, global_step=self.global_step, **kwargs)
 
     def on_validation_epoch_start(self):
         self.validation_outputs = {}

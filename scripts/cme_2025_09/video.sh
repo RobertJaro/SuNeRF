@@ -9,7 +9,7 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 ################################################################################
 # Configuration
 ################################################################################
-DATA_ROOT="/glade/work/rjarolim/data/sunerf-cme/2025_09"
+DATA_ROOT="/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09"
 RUN_ROOT="/glade/work/rjarolim/sunerf-cme-obs/2025_09_v34"
 #RUN_ROOT="/glade/work/rjarolim/sunerf-cme-obs/2025_09_cme_v02"
 SUNERF_PATH="${RUN_ROOT}/save_state.snf"

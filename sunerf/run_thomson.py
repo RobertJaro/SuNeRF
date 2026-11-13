@@ -97,9 +97,18 @@ if __name__ == '__main__':
         'check_val_every_n_epoch'] if 'check_val_every_n_epoch' in training_config else 1
     init_path = training_config.get('init_path')
     ignore_unexpected_state_prefixes = tuple(training_config.get('ignore_unexpected_state_prefixes', ()))
-    ckpt_path = training_config.get('meta_path', None if init_path else 'last')
     if init_path is not None and 'meta_path' in training_config:
         raise ValueError("training.init_path and training.meta_path are mutually exclusive.")
+    # A run with a checkpoint of its own always continues from it. Only a fresh
+    # run starts from the init_path weights (or from meta_path when given).
+    resume_ckpt = os.path.join(base_path, 'last.ckpt')
+    if os.path.exists(resume_ckpt):
+        ckpt_path = 'last'
+        if init_path is not None:
+            print(f"Resuming from {resume_ckpt}; ignoring training.init_path.")
+            init_path = None
+    else:
+        ckpt_path = training_config.get('meta_path', None if init_path else 'last')
     physics_update_interval = training_config.get('physics_update_interval', 1)
 
     # Start the W&B run on rank zero first; data preparation logs overviews.

@@ -1,17 +1,8 @@
 base_path: "/glade/work/rjarolim/sunerf-cme-obs/psi_obs/degraded_2view_v01"
 work_directory: "/glade/derecho/scratch/rjarolim/sunerf-cme-obs/psi_obs/degraded_2view_v01"
 
-# Observations rendered by scripts/psi_test/render_clean.sh in the field of view
-# of the instrument that each view imitates:
-#   L5_wide: PUNCH, 15--30 R_sun
-#   L5: CCOR, 3.7--17 R_sun, total brightness only
-#   L4: STEREO-A COR2, 2.5--15 R_sun
-# The clear polar P1 view (80 deg latitude, 2--30 R_sun) is withheld for evaluation.
-# scripts/psi_test/prepare_data.sh degrades the training views as
-# clean + detector additive with the noise mask of the imitated instrument
-# (peak 0.7 of the image p99, no gain). The model learns per-channel additive
-# image-plane fields.
-# All psi_clean_* and psi_degraded_* configs share one training setup.
+# PSI views in the FOV of PUNCH (L5_wide), CCOR (L5, tB only), COR2 (L4).
+# Training views degraded with an additive detector mask; polar view P1 held out.
 instruments:
   - type: default
     key: L5_wide
@@ -35,10 +26,7 @@ instruments:
     key: P1
     scaling: { type: "asinh", a: 1.0e-3 }
 
-# Split-temporal SIREN: a static Carrington-frame branch plus a dynamic branch.
-# Long cold phase: the additive masks have to converge while only the static
-# branch is active; once the dynamic branch is on it absorbs static image-plane
-# structure and the masks stop improving.
+# Long cold phase: the additive masks must converge before the dynamic branch starts.
 model:
   model_type: split_temporal
   cold_steps: 5000
@@ -49,16 +37,10 @@ module:
   lr_config: { start: 1.0e-3, end: 1.0e-4, iterations: 200000 }
 
 data:
-  # First pre-event frame: scripts/psi_test/render_clean.sh prepends 20 days
-  # (80 frames at 6 h) of the corotating first cube before the eruption at
-  # 2021-10-28T15:30:00.
+  # 20 pre-event days (80 frames at 6 h) precede the eruption.
   ref_date: "2021-10-08T15:30:00"
-  # Eruption phase covered by the 145 PSI cubes.
   cme_time: &cme_time ["2021-10-28T15:30:00", "2021-10-29T03:30:00"]
-  # Every view is split into two equally sampled datasets that share the
-  # instrument modules: a background dataset at a fixed 6 h cadence over the
-  # full series and a CME dataset with every frame of the PSI cube sequence.
-  # Each takes half of the rays per batch of the view.
+  # Each view: 6 h background dataset plus full-cadence CME dataset.
   train_datasets:
     - type: psi_cme
       key: L5_wide_background
@@ -139,8 +121,6 @@ data:
       instrument_key: P1
       data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/P1/pb/P1_pb0130.fts"
       data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/P1/tb/P1_tb0130.fts"
-    # The slice timelines cover only the PSI cubes (145 dumps at 5 min), not
-    # the 20 pre-event days rendered from the static first cube.
     - type: radial_slices
       key: valid_radial
       radii: [5, 10, 15, 20, 25]
@@ -151,8 +131,6 @@ data:
       validation_time_range: *cme_time
 
   Rs_per_ds: 15
-  # The series spans 20.5 days (20 pre-event days plus 145 cubes at 5 min);
-  # one model time unit is one day.
   seconds_per_dt: 86400
   batch_size: 4096
   validation_batch_size: 4096
@@ -186,14 +164,12 @@ logging:
 sampling:
   type: spherical
   n_samples: 64
-  # The rendered lines of sight end at the 30.2 R_sun cube boundary.
   max_distance: 30.2
   radial_weighting: true
 
 lambda:
   image: 1.0
   ratio: 1.0
-  # No prior on the additive masks.
   tB_add: 0.0
   pB_add: 0.0
   continuity: 1.0e-3

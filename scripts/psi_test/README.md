@@ -77,6 +77,11 @@ The learned observation model of the `psi_degraded_*` configs uses
 image-coordinate `tB_add` and `pB_add` fields (tB only for the CCOR-like L5
 view). The `psi_degraded_gain_*` configs add `tB_mul` and `pB_mul` fields for
 the injected gain, trained by `train_gain_2view.sh` and `train_gain_3view.sh`.
+`config/cme/psi/psi_degraded_gain_2view_cold_correction.yaml` is the 2-view
+degraded_gain fit with the cold phase extended to 20000 steps and
+`module.correction_schedule: cold`: the image-plane fields are learned only while
+the dynamic branch is inactive and frozen once it is ramped in (the observation
+counterpart is `config/cme/2025_09/2025_09_cme_cold_correction.yaml`).
 
 Install the HDF4 reader once, prepare all data in the CPU job, and then submit
 the single training script:
@@ -205,3 +210,56 @@ requires the PSI heliospheric cubes.
 
 Without `psi-io`/`pyhdf` the cubes are read by a built-in parser for plain,
 uncompressed HDF4 data sets, which covers the MAS output.
+
+## Two-stage fit: background, then CME with fixed degradation
+
+`config/cme/psi/psi_degraded_gain_2view_background.yaml` and
+`config/cme/psi/psi_degraded_gain_2view_cme.yaml` split the degraded+gain 2-view
+fit into two runs:
+
+1. `train_background.sh` trains on the background datasets only: every view at
+   a fixed 6 h cadence over the full series, eruption phase included, so the CME
+   frames carry no extra weight. The physics samples cover the full series. This
+   stage learns the corotating corona and the image-plane `tB_add`/`pB_add`/
+   `tB_mul`/`pB_mul` fields.
+2. `train_cme.sh` continues from `final.ckpt` of stage 1 (`training.init_path`
+   loads the model weights only; optimizer and step count start fresh) with the
+   degradation fields fixed (`correction.trainable: false`) and two datasets per
+   view, the 6 h background series and every frame of the eruption phase. The
+   dynamic branch is already trained, so `cold_steps` and `warm_steps` are 0.
+   Submit it after stage 1 has written `final.ckpt`. Like every run, it resumes
+   from its own `last.ckpt` when one exists and reads `init_path` only on the
+   first start, so it can be resubmitted after the walltime.
+
+Both stages share `ref_date`, instruments and model layout, so the checkpoint
+loads strictly.
+
+## Synthetic in-situ probe
+
+`scripts/psi_test/prepare_insitu.sh` (after `render_clean.sh`) writes two
+virtual-spacecraft products with `sunerf.data.psi.synthetic_insitu` into
+`psi_obs/insitu/`: `PSP_synth.npz`, a probe that follows the real PSP
+encounter-25 trajectory (JPL Horizons, perihelion 2025-09-15T20:18 at 9.86
+solar radii) shifted so that the perihelion falls at 2021-10-27T20:00 and
+rotated so that the probe sits at the CME Carrington longitude (245 degrees) at
+20:00 UT of the eruption day; and `PSP_synth_heldout.npz`, the same orbit
+rotated 30 degrees east. During the eruption the training probe is outbound at
+17--20 solar radii, where the CME body passes it. Every dump gives one sample
+at its tabulated time; the 20 pre-event days are sampled at 1 h from the
+corotating first cube, and samples outside the cubes are dropped, so the probe
+enters the series about two days before the eruption.
+
+The products use the format of the prepared PSP data and load through the `psp`
+dataset type. `<probe>_truth.npz` holds the clean samples; the delivered file
+carries lognormal density scatter (sigma 0.15), 25 km/s velocity errors and
+velocity gaps in 20 % of the 30 min windows. The public PSI release holds no
+velocity cubes, so `has_velocity` is 0 until `--velocity-dir` points to MAS
+`vr`/`vt`/`vp` cubes (the tangential component then receives the corotation
+term).
+
+`config/cme/psi/psi_degraded_gain_2view_insitu.yaml` adds the training probe
+to the degraded+gain 2-view setup (`insitu_density` and
+`insitu_velocity_radial` at 1e-2, background/CME split as for the images) and
+validates on both probes (`insitu_timeseries` callbacks). `train_insitu.sh`
+runs it; `evaluate.sh` exports the reconstruction along both probes
+(`export_insitu`) and draws plot 8 (`plot_insitu`).

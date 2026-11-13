@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """
-filter_polar_triplets.py
-
-Remove COR2 polarization files that do not have a close-in-time matching triplet.
+Split a folder of SECCHI COR files into polarization triplets and clear images.
 
 Logic
 -----
-For each POLAR=0 file (P000), find the closest POLAR=120 (P120) and POLAR=240 (P240)
-by |DATE-OBS difference|. If either match is farther than `--max-dt` seconds, delete
-the P000 file and also delete the "orphan" counterpart if it was within threshold
-(so you don't keep incomplete pairs).
+1. Files whose POLAR is not 0, 120 or 240 (clear and total-brightness double
+   exposures) are moved to `--clear-dir`; without `--clear-dir` they are deleted.
+2. For each POLAR=0 file (P000), find the closest POLAR=120 (P120) and POLAR=240
+   (P240) by |DATE-OBS difference|. If either match is farther than `--max-dt`
+   seconds, delete the P000 file and also delete the "orphan" counterpart if it was
+   within threshold (so you don't keep incomplete triplets).
 
 Default threshold: 300 s (5 minutes).
 
 Example
 -------
-python filter_polar_triplets.py \
+python -m sunerf.data.cor.split_triplets \
   --glob "/glade/work/rjarolim/data/sunerf-cme/2024_10/cor/COR2/*.fts" \
+  --clear-dir "/glade/work/rjarolim/data/sunerf-cme/2024_10/cor/COR2/clear" \
   --max-dt 300
 """
 

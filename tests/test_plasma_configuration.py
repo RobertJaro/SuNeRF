@@ -27,7 +27,6 @@ def _config():
             "seconds_per_dt": 86400.0,
             "batch_size": 1024,
             "num_workers": 4,
-            "holdout": {"strategy": "center", "count": 1},
             "train_datasets": [
                 {
                     "type": "AIA",
@@ -46,6 +45,7 @@ def _config():
                     "data_path": "/data/aia/*.prepared.fits",
                     "wavelengths": [94, 171],
                     "strict_metadata": True,
+                    "time": "2025-10-14T09:00:00",
                 }
             ],
         },
@@ -60,6 +60,7 @@ def _config():
         },
         "module": {
             "regularization_density_scale_cm3": 1.0e8,
+            "regularization_log_T_range": [5.0, 7.0],
             "lr_config": {"start": 1.0e-3, "end": 1.0e-4, "iterations": 100_000},
         },
         "training": {"epochs": 10, "log_every_n_steps": 100},
@@ -119,7 +120,7 @@ def test_euv_callback_defaults_cover_every_validation_dataset():
 
     assert callback["enabled"] is True
     assert callback["datasets"] == {
-        "aia_valid": {"channels": ["94", "171"]}
+        "aia_valid": {"channels": ["94", "171"], "normalize": False}
     }
     assert callback["products"]["channel_comparison"]["enabled"] is True
     assert callback["products"]["thermal_distribution"]["enabled"] is True
@@ -135,7 +136,6 @@ def test_euv_callback_resolves_configured_channel_aliases():
             "products": {
                 "channel_comparison": {
                     "rows": ["prediction", "relative_residual"],
-                    "stretch": "linear",
                 },
                 "ray_sampling": {"enabled": True, "pixel_fraction": [0.5, 0.75]},
             },
@@ -146,6 +146,7 @@ def test_euv_callback_resolves_configured_channel_aliases():
 
     assert callback["every_n_validations"] == 3
     assert callback["datasets"]["aia_valid"]["channels"] == ["171"]
+    assert callback["datasets"]["aia_valid"]["normalize"] is False
     assert callback["products"]["channel_comparison"]["rows"] == [
         "prediction", "relative_residual"
     ]
@@ -188,6 +189,71 @@ def test_validate_plasma_config_rejects_invalid_contracts(mutation, match):
     mutation(config)
     with pytest.raises(PlasmaConfigError, match=match):
         validate_plasma_config(config)
+
+
+def test_euv_callback_dataset_normalize_is_boolean():
+    config = _config()
+    config["callbacks"] = {
+        "euv_tomography": {"datasets": {"aia_valid": {"normalize": True}}}
+    }
+    callback = validate_plasma_config(config)["callbacks"]["euv_tomography"]
+    assert callback["datasets"]["aia_valid"]["normalize"] is True
+
+    config["callbacks"]["euv_tomography"]["datasets"]["aia_valid"]["normalize"] = "yes"
+    with pytest.raises(PlasmaConfigError, match="normalize"):
+        validate_plasma_config(config)
+
+
+def test_north_pole_view_is_off_by_default_and_inherits_channels():
+    validated = validate_plasma_config(_config())
+    assert validated["callbacks"]["north_pole_view"] == {
+        "enabled": False, "dataset": "aia_valid", "channels": ["94", "171"],
+    }
+
+    config = _config()
+    config["callbacks"] = {
+        "euv_tomography": {"datasets": {"aia_valid": {"channels": [171]}}},
+        "north_pole_view": {"enabled": True},
+    }
+    pole = validate_plasma_config(config)["callbacks"]["north_pole_view"]
+    assert pole == {"enabled": True, "dataset": "aia_valid", "channels": ["171"]}
+
+    config["callbacks"]["north_pole_view"]["channels"] = "all"
+    pole = validate_plasma_config(config)["callbacks"]["north_pole_view"]
+    assert pole["channels"] == ["94", "171"]
+
+
+@pytest.mark.parametrize(
+    ("pole_config", "match"),
+    [
+        ({"enabled": True, "dataset": "aia_train"}, "must name a validation dataset"),
+        ({"enabled": True, "channels": [193]}, "match exactly one"),
+        ({"enabled": True, "resolution": 512}, "unsupported fields"),
+        ({"enabled": "yes"}, "north_pole_view.enabled"),
+    ],
+)
+def test_north_pole_view_rejects_invalid_settings(pole_config, match):
+    config = _config()
+    config["callbacks"] = {"north_pole_view": pole_config}
+    with pytest.raises(PlasmaConfigError, match=match):
+        validate_plasma_config(config)
+
+
+def test_shipped_polar_2012_08_renders_the_north_pole():
+    validated = _shipped_plasma_config("polar_2012_08")
+    assert validated["callbacks"]["north_pole_view"] == {
+        "enabled": True,
+        "dataset": "AIA",
+        "channels": ["94", "131", "171", "193", "211", "335"],
+    }
+    assert [instrument["key"] for instrument in validated["instruments"]] == [
+        "AIA", "EUVI-A", "EUVI-B",
+    ]
+    assert all(
+        "data_2012_08" in dataset["data_path"]
+        for group in ("train_datasets", "valid_datasets")
+        for dataset in validated["data"][group]
+    )
 
 
 def test_schema_v2_rejects_legacy_response_inputs():
@@ -380,26 +446,13 @@ def test_schema_v2_requires_strict_prepared_fits_ingestion():
         validate_plasma_config(config)
 
 
-def test_shared_sources_require_a_matching_holdout_split():
-    config = _config()
-    config["data"]["valid_datasets"][0]["match_tolerance_minutes"] = 5
-    with pytest.raises(PlasmaConfigError, match="same prepared observations"):
-        validate_plasma_config(config)
-
-    config = _config()
-    for group in ("train_datasets", "valid_datasets"):
-        config["data"][group][0]["holdout"] = None
-    with pytest.raises(PlasmaConfigError, match="requires a holdout"):
-        validate_plasma_config(config)
-
-
 def test_validation_only_and_training_only_datasets_are_supported():
     config = _config()
     # Validation-only view of a configured instrument with its own files.
     config["data"]["valid_datasets"][0]["data_path"] = "/data/other/*.prepared.fits"
     # High-cadence event sequence without a validation counterpart.
     event = copy.deepcopy(config["data"]["train_datasets"][0])
-    event.update(key="aia_event", data_path="/data/event/*.prepared.fits", holdout=None)
+    event.update(key="aia_event", data_path="/data/event/*.prepared.fits")
     config["data"]["train_datasets"].append(event)
     validate_plasma_config(config)
 
@@ -435,6 +488,27 @@ def test_normal_time_shuffle_is_expressed_in_seconds():
         validate_plasma_config(config)
 
 
+def test_cold_and_calibration_iterations_are_validated():
+    config = _config()
+    config["shuffle"] = {
+        "type": "normal_time",
+        "start_seconds": 43_200.0,
+        "end_seconds": 0.0,
+        "iterations": 10_000,
+        "cold_iterations": 10_000,
+    }
+    config["module"]["calibration_iterations"] = 10_000
+    validate_plasma_config(config)
+
+    config["shuffle"]["cold_iterations"] = -1
+    with pytest.raises(PlasmaConfigError, match="cold_iterations"):
+        validate_plasma_config(config)
+    config["shuffle"]["cold_iterations"] = 0
+    config["module"]["calibration_iterations"] = 0
+    with pytest.raises(PlasmaConfigError, match="calibration_iterations"):
+        validate_plasma_config(config)
+
+
 def test_canonical_2012_multi_instrument_config_uses_v2_contract():
     repository = Path(__file__).resolve().parents[1]
     config = load_yaml_config(repository / "config/plasma/all_2012_08.yaml")
@@ -442,7 +516,6 @@ def test_canonical_2012_multi_instrument_config_uses_v2_contract():
     validated = validate_plasma_config(config)
 
     assert validated["schema_version"] == 2
-    assert validated["data"]["holdout"] == {"strategy": "center", "count": 1}
     assert all(
         "artifact" in instrument["temperature_response"]
         for instrument in validated["instruments"]
@@ -462,6 +535,21 @@ def test_physical_density_regularization_requires_an_explicit_scale():
 
     with pytest.raises(PlasmaConfigError, match="regularization_density_scale_cm3"):
         validate_plasma_config(config)
+
+
+def test_emission_measure_prior_requires_edges_inside_the_temperature_grid():
+    for edges in (None, [5.0], [7.0, 5.0], [6.0, 6.0], [3.0, 7.0], [5.0, 9.5], "5,7"):
+        config = _config()
+        if edges is None:
+            config["module"].pop("regularization_log_T_range")
+        else:
+            config["module"]["regularization_log_T_range"] = edges
+        with pytest.raises(PlasmaConfigError, match="regularization_log_T_range"):
+            validate_plasma_config(config)
+    config = _config()
+    config["module"].pop("regularization_log_T_range")
+    config["lambda"]["regularization"] = 0.0
+    validate_plasma_config(config)  # the edges are only needed when the prior is enabled
 
 
 def test_pointwise_model_controls_and_packaged_artifacts_are_validated():
@@ -497,22 +585,79 @@ def test_pointwise_model_controls_and_packaged_artifacts_are_validated():
             validate_plasma_config(invalid)
 
 
-def test_shipped_absorption_configuration_is_valid_and_portable():
-    for name, absorption_artifact in (
-        ("all_2012_08", None),
-        ("all_2012_08_absorption", "builtin:h_he_photoionization"),
-    ):
-        config = load_yaml_config(
-            str(Path(__file__).parents[1] / "config" / "plasma" / f"{name}.yaml")
-        )
-        validated = validate_plasma_config(config)
+SHIPPED_PLASMA_CONFIGS = (
+    "all_2012_08", "euv_wave_2022_03", "polar_2012_08", "polar_2025_10",
+    "polar_2025_10_absorption", "psi_observers",
+)
+# Absorption runs share their base with polar_2025_10_absorption instead.
+SHIPPED_ABSORPTION_CONFIGS = ("all_2012_08", "polar_2025_10_absorption")
+# Fields that only the absorption runs add to the shared sections.
+ABSORPTION_ONLY_FIELDS = {
+    "model": ("cool_absorber", "cool_density_offset_log10_cm3"),
+    "module": ("calibration_iterations",),
+    "lambda": ("cool_absorber",),
+}
+# Sections every plasma reconstruction shares with the reference polar_2025_10.
+SHARED_PLASMA_SECTIONS = (
+    "model", "module", "sampling", "hierarchical_sampling", "absorption",
+    "shuffle", "training", "lambda",
+)
 
-        artifacts = [
-            instrument["temperature_response"]["artifact"]
-            for instrument in validated["instruments"]
-        ]
-        assert artifacts == ["builtin:aia", "builtin:euvi_a", "builtin:euvi_b"]
-        assert validated["absorption"].get("artifact") == absorption_artifact
+
+def _shipped_plasma_config(name):
+    return validate_plasma_config(load_yaml_config(
+        str(Path(__file__).parents[1] / "config" / "plasma" / f"{name}.yaml")
+    ))
+
+
+def test_shipped_plasma_configurations_share_one_base():
+    references = {
+        False: _shipped_plasma_config("polar_2025_10"),
+        True: _shipped_plasma_config("polar_2025_10_absorption"),
+    }
+    for name in SHIPPED_PLASMA_CONFIGS:
+        reference = references[name in SHIPPED_ABSORPTION_CONFIGS]
+        shipped = _shipped_plasma_config(name)
+        for section in SHARED_PLASMA_SECTIONS:
+            expected, actual = copy.deepcopy(reference[section]), copy.deepcopy(shipped[section])
+            if section == "lambda":
+                # The emission-measure prior weight is still tuned per run.
+                expected.pop("regularization", None)
+                actual.pop("regularization", None)
+            assert actual == expected, f"{name}.{section} differs from polar_2025_10"
+        assert shipped["data"]["batch_size"] == reference["data"]["batch_size"]
+        for instrument in shipped["instruments"]:
+            assert not instrument.get("alignment", False), name
+            assert "temperature_cutoff" not in instrument["temperature_response"], name
+
+
+def test_absorption_reference_only_adds_absorption_to_the_base():
+    base = _shipped_plasma_config("polar_2025_10")
+    absorption = _shipped_plasma_config("polar_2025_10_absorption")
+    assert base["absorption"] == {"type": None}
+    assert absorption["absorption"]["type"] == "photoionization"
+    for section in SHARED_PLASMA_SECTIONS:
+        if section == "absorption":
+            continue
+        expected, actual = copy.deepcopy(base[section]), copy.deepcopy(absorption[section])
+        for field in ABSORPTION_ONLY_FIELDS.get(section, ()):
+            assert field in actual, f"{section}.{field}"
+            actual.pop(field)
+        if section == "lambda":
+            expected.pop("regularization", None)
+            actual.pop("regularization", None)
+        assert actual == expected, f"polar_2025_10_absorption.{section} differs beyond absorption"
+
+
+def test_shipped_absorption_configuration_is_valid_and_portable():
+    validated = _shipped_plasma_config("all_2012_08")
+    artifacts = [
+        instrument["temperature_response"]["artifact"]
+        for instrument in validated["instruments"]
+    ]
+    assert artifacts == ["builtin:aia", "builtin:euvi_a", "builtin:euvi_b"]
+    assert validated["absorption"]["artifact"] == "builtin:h_he_photoionization"
+    assert validated["model"]["cool_absorber"] is True
 
 
 def test_light_travel_time_is_a_validated_module_option():
@@ -529,13 +674,10 @@ def test_light_travel_time_is_a_validated_module_option():
     with pytest.raises(PlasmaConfigError, match="module.light_travel_time must be a boolean"):
         validate_plasma_config(config)
 
-    # Observations carry detector timestamps; the synthetic PSI frames are stamped
-    # with their snapshot times (render.sh uses --no-light-travel-time).
-    for name, expected in (("all_2012_08", True), ("psi_observers", False)):
-        shipped = load_yaml_config(
-            str(Path(__file__).parents[1] / "config" / "plasma" / f"{name}.yaml")
-        )
-        assert validate_plasma_config(shipped)["module"]["light_travel_time"] is expected
+    # Observations carry detector timestamps, and so do the synthetic PSI frames
+    # (scripts/psi_euv/render.sh keeps the light travel time).
+    for name in SHIPPED_PLASMA_CONFIGS:
+        assert _shipped_plasma_config(name)["module"]["light_travel_time"] is True
 
 
 def test_cool_absorber_configuration_is_validated():
@@ -569,25 +711,113 @@ def test_density_profile_configuration_is_validated():
     validate_plasma_config(config)
     config["model"]["density_profile"] = {"type": "power_law", "exponent": 2.0}
     validate_plasma_config(config)
+    config["model"]["density_profile"] = {"type": "hydrostatic_thermal"}
+    validate_plasma_config(config)
 
     for profile, match in (
-        ({"type": "exponential"}, "power_law' or 'hydrostatic"),
+        ({"type": "exponential"}, "'hydrostatic' or 'hydrostatic_thermal'"),
         ({"type": "hydrostatic"}, "scale_height_rsun"),
         ({"type": "hydrostatic", "scale_height_rsun": -0.1}, "scale_height_rsun"),
         ({"type": "hydrostatic", "scale_height_rsun": 0.1, "exponent": 2}, "unsupported fields"),
+        ({"type": "hydrostatic_thermal", "scale_height_rsun": 0.1}, "unsupported fields"),
     ):
         invalid = copy.deepcopy(config)
         invalid["model"]["density_profile"] = profile
         with pytest.raises(PlasmaConfigError, match=match):
             validate_plasma_config(invalid)
 
-    # Both shipped first-model configurations use the hydrostatic baseline and
-    # run without the radial density penalty.
-    for name in ("all_2012_08", "psi_observers"):
-        shipped = validate_plasma_config(load_yaml_config(
-            str(Path(__file__).parents[1] / "config" / "plasma" / f"{name}.yaml")
-        ))
-        assert shipped["model"]["density_profile"] == {
-            "type": "hydrostatic", "scale_height_rsun": 0.1,
-        }
-        assert shipped["lambda"]["regularization"] == 0.0
+    # Every shipped plasma configuration couples the scale height to the
+    # predicted temperature so that faint coronal holes cannot be fitted by hot
+    # plasma, and tapers the network outside the 1.4 R_sun field of view.
+    for name in SHIPPED_PLASMA_CONFIGS:
+        shipped = _shipped_plasma_config(name)
+        assert shipped["model"]["density_profile"] == {"type": "hydrostatic_thermal"}
+        assert shipped["model"]["supervised_radius_rsun"] == 1.4
+        assert shipped["sampling"]["max_distance"] == 1.7
+        # The spectral emission-measure prior replaces the 6.8 ceiling that
+        # piled plasma up at the bound.
+        assert shipped["model"]["temperature_grid"]["log10_K_max"] == 7.5
+    assert _shipped_plasma_config("polar_2025_10")["lambda"]["regularization"] > 0.0
+
+
+def test_supervised_radius_must_lie_inside_the_sampling_shell():
+    config = _config()
+    config["model"]["supervised_radius_rsun"] = 0.5 * config["sampling"]["max_distance"]
+    validate_plasma_config(config)
+    for value, match in (
+        (config["sampling"]["max_distance"], "smaller than sampling.max_distance"),
+        (-1.0, "supervised_radius_rsun"),
+    ):
+        invalid = copy.deepcopy(config)
+        invalid["model"]["supervised_radius_rsun"] = value
+        with pytest.raises(PlasmaConfigError, match=match):
+            validate_plasma_config(invalid)
+
+
+def test_dataset_field_of_view_is_validated():
+    config = _config()
+    for group in ("train_datasets", "valid_datasets"):
+        config["data"][group][0]["max_radius_rsun"] = 1.4
+    validated = validate_plasma_config(config)
+    assert validated["data"]["train_datasets"][0]["max_radius_rsun"] == 1.4
+
+    for value, match in (
+        (config["sampling"]["max_distance"], "smaller than sampling.max_distance"),
+        (-1.0, "max_radius_rsun"),
+    ):
+        invalid = copy.deepcopy(config)
+        for group in ("train_datasets", "valid_datasets"):
+            invalid["data"][group][0]["max_radius_rsun"] = value
+        with pytest.raises(PlasmaConfigError, match=match):
+            validate_plasma_config(invalid)
+
+
+def test_validation_time_is_validated():
+    config = _config()
+    validated = validate_plasma_config(config)
+    assert validated["data"]["valid_datasets"][0]["time"] == "2025-10-14T09:00:00"
+
+    config["data"]["valid_datasets"][0]["time"] = "yesterday"
+    with pytest.raises(PlasmaConfigError, match="ISO 8601"):
+        validate_plasma_config(config)
+
+    config = _config()
+    config["data"]["train_datasets"][0]["time"] = "2025-10-14T09:00:00"
+    with pytest.raises(PlasmaConfigError, match="only supported in data.valid_datasets"):
+        validate_plasma_config(config)
+
+    # A validation dataset sets either its time or a window.
+    config = _config()
+    config["data"]["valid_datasets"][0]["start"] = "2025-10-13T09:00:00"
+    with pytest.raises(PlasmaConfigError, match="start and end must not be set"):
+        validate_plasma_config(config)
+    del config["data"]["valid_datasets"][0]["time"]
+    validate_plasma_config(config)
+
+
+def test_dataset_time_window_is_validated():
+    config = _config()
+    config["data"]["train_datasets"][0].update(start="2025-10-13T09:00:00", end="2025-10-14T09:00:00")
+    validated = validate_plasma_config(config)
+    assert validated["data"]["train_datasets"][0]["start"] == "2025-10-13T09:00:00"
+
+    reversed_window = _config()
+    reversed_window["data"]["train_datasets"][0].update(
+        start="2025-10-14T09:00:00", end="2025-10-13T09:00:00"
+    )
+    with pytest.raises(PlasmaConfigError, match="earlier than"):
+        validate_plasma_config(reversed_window)
+
+    malformed = _config()
+    malformed["data"]["train_datasets"][0]["end"] = "yesterday"
+    with pytest.raises(PlasmaConfigError, match="ISO 8601"):
+        validate_plasma_config(malformed)
+
+
+def test_dataset_cadence_is_validated():
+    config = _config()
+    config["data"]["train_datasets"][0]["cadence_minutes"] = 60
+    validate_plasma_config(config)
+    config["data"]["train_datasets"][0]["cadence_minutes"] = 0
+    with pytest.raises(PlasmaConfigError, match="cadence_minutes"):
+        validate_plasma_config(config)

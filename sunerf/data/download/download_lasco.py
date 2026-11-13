@@ -23,8 +23,12 @@ ARCHIVES = {
         "url": "https://lasco-www.nrl.navy.mil/lz/level_1/",
         "subdir": "level_1",
     },
+    "level_05": {
+        "url": "https://lasco-www.nrl.navy.mil/lz/level_05/",
+        "subdir": "level_05",
+    },
     "polarized": {
-        "url": "https://lasco-www.nrl.navy.mil/lz/polarize/2010_03/vig/c2/",
+        "url": "https://lasco-www.nrl.navy.mil/lz/polarize/",
         "subdir": "polarized",
     },
 }
@@ -137,6 +141,19 @@ def list_level_1_day_files(url: str, instrument: str) -> List[ArchiveFile]:
     return sorted(files, key=lambda file: file.url)
 
 
+def list_polarized_files(url: str, instrument: str, start: dt.datetime, end: dt.datetime) -> List[ArchiveFile]:
+    """PB and %P files of the monthly folders <YYYY_MM>/vig/<c2|c3>/ covering the period."""
+    files: List[ArchiveFile] = []
+    months = sorted({(day.year, day.month) for day in iter_days(start, end)})
+    for year, month in months:
+        month_url = urljoin(url, f"{year:04d}_{month:02d}/vig/{instrument.lower()}/")
+        try:
+            files.extend(list_archive_files(month_url))
+        except Exception as exc:
+            print(f"Warning: could not list {month_url} ({exc})", flush=True)
+    return sorted(files, key=lambda file: file.url)
+
+
 def list_level_1_files(url: str, instrument: str, start: dt.datetime, end: dt.datetime) -> List[ArchiveFile]:
     files: List[ArchiveFile] = []
     for day in iter_days(start, end):
@@ -193,7 +210,7 @@ def build_parser():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Download prepped SOHO/LASCO C2 data from the NRL LASCO archive."
+        description="Download SOHO/LASCO C2/C3 data from the NRL LASCO archive."
     )
     add_common_arguments(parser, default_output="lasco")
     parser.add_argument(
@@ -208,9 +225,10 @@ def build_parser():
     parser.add_argument(
         "--product",
         nargs="+",
-        choices=["level_1", "polarized"],
+        choices=["level_1", "level_05", "polarized"],
         default=["level_1", "polarized"],
-        help="Product(s) to download (default: level_1 polarized).",
+        help="Product(s) to download (default: level_1 polarized). level_05 is uncalibrated "
+             "and needs SolarSoft reduce_level_1.",
     )
     parser.add_argument("--workers", default=10, type=int)
     return parser
@@ -225,13 +243,11 @@ def download(request, *, instruments, products, workers=10):
     selected_total = 0
     for instrument in instruments:
         for product in products:
-            if instrument == "C3" and product == "polarized":
-                raise ValueError("the configured polarized LASCO archive contains C2 only")
             archive = ARCHIVES[product]
             files = (
                 list_level_1_files(archive["url"], instrument, request.start, request.end)
-                if product == "level_1"
-                else list_archive_files(archive["url"])
+                if product in ("level_1", "level_05")
+                else list_polarized_files(archive["url"], instrument, request.start, request.end)
             )
             selected_urls = filter_by_time(files, request.start, request.end)
             selected_total += len(selected_urls)

@@ -1,5 +1,6 @@
 import copy
 
+import pytest
 import torch
 from torch import nn
 
@@ -62,19 +63,35 @@ def _batch():
 
 
 def test_shell_misses_are_finite_and_explicitly_invalid():
-    for sampler in (
-        SphericalSampler(Rs_per_ds=1, min_distance=1, max_distance=2, n_samples=4),
-        StratifiedSampler(Rs_per_ds=1, max_distance=2, n_samples=4),
-    ):
-        sampler.eval()
-        rays_o = torch.tensor([[3.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
-        rays_d = torch.tensor([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
-        output = sampler(rays_o, rays_d)
+    sampler = SphericalSampler(Rs_per_ds=1, min_distance=1, max_distance=2, n_samples=4)
+    sampler.eval()
+    rays_o = torch.tensor([[3.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+    rays_d = torch.tensor([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    output = sampler(rays_o, rays_d)
 
-        assert output['ray_valid'].tolist() == [True, False]
-        assert torch.isfinite(output['points']).all()
-        assert torch.isfinite(output['z_vals']).all()
-        torch.testing.assert_close(output['z_vals'][1], torch.zeros(4))
+    assert output['ray_valid'].tolist() == [True, False]
+    assert torch.isfinite(output['points']).all()
+    assert torch.isfinite(output['z_vals']).all()
+    torch.testing.assert_close(output['z_vals'][1], torch.zeros(4))
+
+
+def test_stratified_sampler_uses_a_fixed_path_length_per_ray():
+    sampler = StratifiedSampler(Rs_per_ds=1, max_distance=2, n_samples=4)
+    sampler.eval()
+    rays_o = torch.tensor([[3.0, 0.0, 0.0], [3.0, 0.0, 0.0], [float('nan'), 0.0, 0.0]])
+    rays_d = torch.tensor([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]]).requires_grad_()
+    output = sampler(rays_o, rays_d)
+
+    # The disk-center ray ends at the photosphere, the ray that never comes
+    # close to the Sun keeps the full interval around the observer distance.
+    assert output['ray_valid'].tolist() == [True, True, False]
+    torch.testing.assert_close(output['z_vals'][0, [0, -1]], torch.tensor([1.0, 2.0]))
+    torch.testing.assert_close(output['z_vals'][1, [0, -1]], torch.tensor([1.0, 5.0]))
+    torch.testing.assert_close(output['z_vals'][2], torch.zeros(4))
+    assert torch.isfinite(output['points']).all()
+
+    output['points'][output['ray_valid']].square().sum().backward()
+    assert torch.isfinite(rays_d.grad).all()
 
 
 def test_ray_gradients_are_finite_for_grazing_rays_and_shell_misses():
@@ -199,3 +216,25 @@ def test_normal_time_augmentation_converts_physical_seconds_to_model_time():
     rendering.shuffler.to(dtype=torch.float64)
     assert rendering.shuffler.gamma.dtype == torch.float64
     assert config['start_seconds'] == 1800
+
+
+def test_normal_time_jitter_holds_during_cold_phase_then_decays():
+    rendering = BasicRenderingModule(
+        model=_ConstantModel(),
+        rendering_modules={'test': _ConstantRenderer()},
+        Rs_per_ds=1,
+        seconds_per_dt=3600,
+        sampling_config={'min_distance': 1, 'max_distance': 2},
+        hierarchical_sampling_config={'n_samples': 3},
+        shuffle_config={
+            'type': 'normal_time',
+            'start_seconds': 3600,
+            'end_seconds': 0,
+            'iterations': 10,
+            'cold_iterations': 5,
+        },
+    )
+    shuffler = rendering.shuffler
+    for step, expected in [(0, 1.0), (5, 1.0), (6, 0.9), (10, 0.5), (15, 0.0), (100, 0.0)]:
+        shuffler.set_step(step)
+        assert shuffler.scaling.item() == pytest.approx(expected)

@@ -7,7 +7,7 @@ For each FITS file matched by --data_path, the script:
 1) Loads the file as a SunPy Map.
 2) Computes helioprojective coordinates for each pixel.
 3) Masks pixels inside the configured occulter/radius bounds.
-4) Optionally clips data to configured minimum/maximum values.
+4) Masks values <= 0 and optionally values above the configured maximum.
 5) Saves the result to --out_path with the same basename.
 
 Example
@@ -163,6 +163,8 @@ def main():
     parser.add_argument("--out_path", type=str, required=True, help="Output directory for preprocessed maps.")
     add_common_prep_arguments(parser)
     parser.add_argument("--num_workers", type=int, default=16)
+    parser.add_argument("--n_images", type=int, nargs="+", default=None,
+                        help="Keep only files whose N_IMAGES header is one of these values (e.g., 3 6 for SECCHI COR2 clear).")
     add_cadence_argument(parser)
     args = parser.parse_args()
 
@@ -170,6 +172,10 @@ def main():
     files = sorted(glob(args.data_path))
     if not files:
         raise FileNotFoundError(f"No files matched: {args.data_path}")
+    if args.n_images is not None:
+        original_count = len(files)
+        files = [f for f in files if fits.getheader(f).get("N_IMAGES") in args.n_images]
+        print(f"N_IMAGES in {args.n_images} kept {len(files)} of {original_count} files.")
     if args.start is not None or args.end is not None or args.cadence is not None:
         original_count = len(files)
         files = select_items_by_time(

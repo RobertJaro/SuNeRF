@@ -16,11 +16,11 @@ from matplotlib.gridspec import GridSpec
 from sunerf.evaluation.cme.export_layout import view_frame
 from sunerf.evaluation.psi.common import (
     FIGURE_WIDTH, PRODUCT_LABELS, VIEWPOINTS, add_colorbar, add_sun, image_norm, label_plane_axes, load_maps,
-    map_extent, plot_image, save_figure,
+    map_extent, plot_image, save_figure, view_name,
 )
 
-ROLES = {"Earth": ("C1", "L1: C2-like\n(3 views)"), "L4": ("C0", "L4: COR2-like"),
-         "L5": ("C3", "L5: CCOR-like\n+ PUNCH-like")}
+ROLES = {"Halo": ("C1", "Halo: C2-like\n(3 views)"), "Side": ("C0", "Side: COR2-like"),
+         "Earth": ("C3", "Earth: CCOR-like\n+ PUNCH-like")}
 
 
 def parse_args() -> argparse.Namespace:
@@ -51,7 +51,7 @@ def plot_geometry(axis) -> None:
         axis.annotate(text, (x, y), xytext=(0, -9), textcoords="offset points",
                       ha="center", va="top", fontsize=6.5, color=color)
     axis.plot(0, 0.35, marker="^", color="C2", markersize=6)
-    axis.annotate("P1: 80° lat.\n(held out)", (0, 0.35), xytext=(0, 6), textcoords="offset points",
+    axis.annotate("Polar: 80° lat.\n(held out)", (0, 0.35), xytext=(0, 6), textcoords="offset points",
                   ha="center", fontsize=6.5, color="C2")
 
 
@@ -82,7 +82,7 @@ def main() -> None:
             artist = plot_image(axis, np.asarray(maps[view][product].data), norm, map_extent(maps[view][product]))
             add_sun(axis)
             if row == 0:
-                axis.set_title(view, fontsize=8)
+                axis.set_title(view_name(view), fontsize=8)
             label_plane_axes(axis, r"x [R$_\odot$]", r"y [R$_\odot$]", show_x=row == 1 or view in args.tb_only,
                              show_y=column == 0)
         add_colorbar(fig, artist, grid[row, -1], f"{PRODUCT_LABELS[product]} [MSB]")

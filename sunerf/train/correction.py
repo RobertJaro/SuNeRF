@@ -342,16 +342,15 @@ class PointingAlignmentModule(nn.Module):
     def camera_axes(rays_o):
         """Per-ray (right, up, forward) unit axes matching ``pose_spherical``."""
         forward = -rays_o / (torch.linalg.norm(rays_o, dim=-1, keepdim=True) + 1e-8)
-        up0 = torch.zeros_like(forward)
-        up0[..., 2] = 1.0
-        # Same pole guard as pose_spherical: fall back to +y near the poles.
-        polar = (forward[..., 2:3].abs() > 0.999)
-        up0_polar = torch.zeros_like(forward)
-        up0_polar[..., 1] = 1.0
-        up0 = torch.where(polar, up0_polar, up0)
-        right = torch.cross(forward, up0, dim=-1)
+        # Same up vector as pose_spherical: the local solar north at the
+        # observer, continuous through the poles.
+        lon = torch.atan2(rays_o[..., 1], rays_o[..., 0])
+        lat = torch.atan2(rays_o[..., 2], torch.linalg.norm(rays_o[..., :2], dim=-1))
+        up = torch.stack([-torch.sin(lat) * torch.cos(lon),
+                          -torch.sin(lat) * torch.sin(lon),
+                          torch.cos(lat)], dim=-1)
+        right = torch.cross(forward, up, dim=-1)
         right = right / (torch.linalg.norm(right, dim=-1, keepdim=True) + 1e-8)
-        up = torch.cross(right, forward, dim=-1)
         return right, up, forward
 
     def forward(self, rays):

@@ -17,6 +17,8 @@ around the CME direction; no pre-event background is subtracted (see
 * ``beam_density[time, radius]``: compensated density ``r^2 n_e`` along the CME
   direction (median of fixed directions within 5 deg) [cm^-3 R_sun^2], with the body
   edge and peak of this profile (``beam_body_edge``, ``beam_body_peak``),
+* ``cut_density[time, latitude, radius]``: ``r^2 n_e`` along fixed rays of the meridional cut
+  through the CME direction (``cut_latitude``, every 2 deg within 60 deg) [cm^-3 R_sun^2],
 * ``direction_latitude``, ``direction_longitude``: excess-mass weighted direction [rad].
 
 Example::
@@ -40,6 +42,9 @@ RADIUS_GRID = np.arange(3.0, 30.0 + 1e-6, 0.25)
 DETECTION = dict(dr=0.25, smooth=0.5, r_search_min=RADIUS_GRID[0])
 ANGULAR_STRIDE = 2
 BEAM_HALF_ANGLE = np.deg2rad(5.0)
+# rays of the meridional cut relative to the CME latitude
+CUT_OFFSETS = np.deg2rad(np.arange(-60.0, 60.0 + 1e-6, 2.0))
+CUT_LATITUDE_LIMIT = np.deg2rad(88.0)
 # name in the series: quantity of mass_transport.cone_summary (front: outer edge, sheath: peak of the body)
 TRACKS = {'body_edge_apex': 'front_apex', 'body_edge_median': 'front_median', 'body_peak_median': 'sheath_median',
           'cavity_median': 'cavity_median', 'detection_fraction': 'detection_fraction'}
@@ -96,24 +101,45 @@ def beam_directions(target_latitude, target_longitude):
     return np.array(latitude), np.array(longitude) % (2 * np.pi)
 
 
-def beam_profile(frame, target_latitude, target_longitude):
-    """Compensated density ``r^2 n_e`` on the radius grid along the target direction (radians).
+def sample_directions(frame, latitude, longitude):
+    """Compensated density ``r^2 n_e`` on the radius grid along the given directions (radians).
 
-    The density is interpolated at fixed directions, so that the profile does
-    not depend on the mesh of the frame (the PSI mesh changes within a series).
+    The density is interpolated at the directions, so that the profiles do not
+    depend on the mesh of the frame (the PSI mesh changes within a series).
+    Returns ``profiles[direction, radius]``.
     """
     shell = frame.radius >= RADIUS_GRID[0]
     rho = frame.rho[shell]
     with np.errstate(divide='ignore', invalid='ignore'):
         log_rho = np.where(rho > 0, np.log(rho), np.nan).transpose(1, 2, 0)  # (lat, lon, r)
     # periodic longitude
-    longitude = np.concatenate([frame.longitude[-1:] - 2 * np.pi, frame.longitude, frame.longitude[:1] + 2 * np.pi])
+    grid_longitude = np.concatenate([frame.longitude[-1:] - 2 * np.pi, frame.longitude,
+                                     frame.longitude[:1] + 2 * np.pi])
     log_rho = np.concatenate([log_rho[:, -1:], log_rho, log_rho[:, :1]], axis=1)
-    beam_latitude, beam_longitude = beam_directions(target_latitude, target_longitude)
-    points = np.stack([np.clip(beam_latitude, frame.latitude[0], frame.latitude[-1]), beam_longitude], -1)
-    rays = RegularGridInterpolator((frame.latitude, longitude), log_rho)(points)  # (direction, r)
-    profile = np.exp(np.nanmedian(rays, axis=0)) * frame.radius[shell] ** 2
-    return np.interp(RADIUS_GRID, frame.radius[shell], profile)
+    points = np.stack([np.clip(latitude, frame.latitude[0], frame.latitude[-1]), longitude % (2 * np.pi)], -1)
+    rays = np.exp(RegularGridInterpolator((frame.latitude, grid_longitude), log_rho)(points))  # (direction, r)
+    profiles = rays * frame.radius[shell] ** 2
+    return np.stack([np.interp(RADIUS_GRID, frame.radius[shell], profile) for profile in profiles])
+
+
+def beam_profile(frame, target_latitude, target_longitude):
+    """Compensated density ``r^2 n_e`` on the radius grid along the target direction (radians).
+
+    Median of the fixed directions of the beam in log density.
+    """
+    profiles = sample_directions(frame, *beam_directions(target_latitude, target_longitude))
+    return np.exp(np.nanmedian(np.log(profiles), axis=0))
+
+
+def cut_latitudes(target_latitude):
+    """Latitudes of the meridional cut through the CME direction (radians)."""
+    return np.clip(target_latitude + CUT_OFFSETS, -CUT_LATITUDE_LIMIT, CUT_LATITUDE_LIMIT)
+
+
+def latitude_cut(frame, target_latitude, target_longitude):
+    """Compensated density ``r^2 n_e[latitude, radius]`` in the meridional cut through the CME direction."""
+    latitude = cut_latitudes(target_latitude)
+    return sample_directions(frame, latitude, np.full(latitude.size, target_longitude))
 
 
 # name in the series: structure map of mass_transport.structure_maps
@@ -147,6 +173,7 @@ def reduce_frame(frame, target_latitude, target_longitude, half_angle):
         'direction_latitude': direction[0],
         'direction_longitude': direction[1],
         'beam_density': beam,
+        'cut_density': latitude_cut(frame, target_latitude, target_longitude),
         'beam_body_edge': beam_structure.front,
         'beam_body_peak': beam_structure.sheath,
     }
@@ -170,6 +197,7 @@ def main(argv=None):
     os.makedirs(os.path.dirname(os.path.abspath(args.out_file)), exist_ok=True)
     np.savez(args.out_file, times=np.array(times, dtype='datetime64[s]'), radius=RADIUS_GRID,
              target_latitude=direction[0], target_longitude=direction[1], cone_half_angle=direction[2],
+             cut_latitude=cut_latitudes(direction[0]),
              **{key: np.array([record[key] for record in records]) for key in records[0]})
 
 

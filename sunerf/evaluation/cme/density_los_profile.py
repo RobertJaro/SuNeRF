@@ -8,7 +8,8 @@ from astropy.coordinates import SkyCoord
 from matplotlib import pyplot as plt
 from matplotlib.colors import LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from sunpy.coordinates import frames, get_horizons_coord
+from sunpy.coordinates import frames
+from sunerf.data.horizons import get_horizons_coord
 from sunpy.coordinates.ephemeris import get_body_heliographic_stonyhurst
 from sunpy.map import Map, all_coordinates_from_map, make_fitswcs_header
 from sunpy.visualization.colormaps import cm

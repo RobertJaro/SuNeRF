@@ -94,7 +94,7 @@ def main():
     )
     parser.add_argument(
         "--reference-path",
-        default="/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/punch_pam/*",
+        default="/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/punch_pam/*",
         help="Glob used to derive the valid datetime range.",
     )
     parser.add_argument(
@@ -114,9 +114,9 @@ def main():
     print(f"Reference range: {start.isoformat()} to {end.isoformat()}")
 
     target_paths = args.target_path or [
-        "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/cor2/tB/*",
-        "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/cor2/pB/*",
-        "/glade/work/rjarolim/data/sunerf-cme/2025_09/prep/ccor/*",
+        "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/cor2/tB/*",
+        "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/cor2/pB/*",
+        "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/ccor/*",
     ]
 
     for target in target_paths:

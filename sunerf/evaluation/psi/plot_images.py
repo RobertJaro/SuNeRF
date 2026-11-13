@@ -4,18 +4,22 @@
 Rows are the views, columns the clean GT render, the degraded observation and
 the clean image rendered from every run (``sunerf.evaluation.cme.export_images``).
 The held-out view has no degraded observation.  Dashed lines separate the
-column groups and the yellow disk marks the size of the Sun.
+column groups and the yellow disk marks the size of the Sun.  The views listed in
+``--polarization-views`` get a second row with the degree of polarization
+``p = pB / tB`` (Gibson et al. 2026, Solar Phys.) on a linear scale from 0 to 1.
 
 PSNR and SSIM of every image against the GT render are computed on the
 displayed scale: log brightness mapped to [0, 1] with the color range of the GT
-image of the view, over the pixels valid in both images.  Writes ``psi_images``
-and the metrics to ``psi_images.txt``.
+image of the view, over the pixels valid in both images; the degree of
+polarization is compared as it is.  Writes ``psi_images`` and the metrics to
+``psi_images.txt``.
 """
 import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import Normalize
 from matplotlib.gridspec import GridSpec
 from matplotlib.lines import Line2D
 from skimage.metrics import structural_similarity
@@ -23,7 +27,7 @@ from skimage.metrics import structural_similarity
 from sunerf.evaluation.cme.export_layout import image_file, labelled_path, view_frame
 from sunerf.evaluation.psi.common import (
     FIGURE_WIDTH, TRUTH_TITLE, add_colorbar, add_panel_metric, add_sun, image_norm, label_plane_axes, load_maps,
-    map_extent, plot_image, save_figure,
+    map_extent, plot_image, save_figure, flat_label, title_size, view_name,
 )
 
 
@@ -36,6 +40,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runs", type=labelled_path, nargs="+", required=True, metavar="LABEL=EXPORT",
                         help="Column title and export directory of every compared run.")
     parser.add_argument("--heldout-view", default="P1", help="View without degraded observation.")
+    parser.add_argument("--polarization-views", nargs="*", default=[],
+                        help="Views with an additional row of the degree of polarization pB / tB.")
     parser.add_argument("--separators", type=int, nargs="*", default=[],
                         help="Columns (counted from 1) followed by a dashed separator, e.g. 2 4.")
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -67,12 +73,12 @@ def write_metrics(path: Path, titles, metrics) -> None:
         "of the GT image of the view, over the pixels valid in both images; correlation: Pearson",
         "coefficient of the linear brightness.",
         "",
-        f"{'view':<10}{'metric':<13}" + "".join(f"  {title:>18}" for title in titles),
+        f"{'view':<14}{'metric':<13}" + "".join(f"  {flat_label(title):>28}" for title in titles),
     ]
     for view, row in metrics.items():
         for key in ("psnr", "ssim", "correlation"):
-            cells = [f"{entry[key]:>18.4f}" if entry is not None else f"{'-':>18}" for entry in row]
-            lines.append(f"{view:<10}{key:<13}" + "".join(f"  {cell}" for cell in cells))
+            cells = [f"{entry[key]:>28.4f}" if entry is not None else f"{'-':>28}" for entry in row]
+            lines.append(f"{view_name(view):<14}{key:<13}" + "".join(f"  {cell}" for cell in cells))
     path.write_text("\n".join(lines) + "\n")
 
 
@@ -90,6 +96,12 @@ def add_separators(fig, axes, columns) -> None:
         fig.add_artist(line)
 
 
+def degree_of_polarization(pb, tb):
+    """``p = pB / tB``; NaN where no total brightness is measured."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(tb > 0, pb / tb, np.nan)
+
+
 def main() -> None:
     args = parse_args()
     frames = dict(args.frames)
@@ -97,37 +109,56 @@ def main() -> None:
     degraded = load_maps(args.degraded_dir, [view for view in frames if view != args.heldout_view], frames)
     titles = [TRUTH_TITLE, "Degraded", *(label for label, _ in args.runs)]
 
-    fig = plt.figure(figsize=(FIGURE_WIDTH, FIGURE_WIDTH / (len(titles) + 0.6) * len(frames) + 0.3),
+    def product(maps, view, name):
+        return np.asarray(maps[view][name].data)
+
+    def exported(export_dir, view, name):
+        return np.load(image_file(export_dir, view, name, frames[view]))
+
+    # rows: every view in pB, followed by its degree of polarization where requested
+    rows = []
+    for view in frames:
+        label = f"{view_name(view)} (held out)" if view == args.heldout_view else view_name(view)
+        images = [product(clean, view, "pb"), product(degraded, view, "pb") if view in degraded else None]
+        images += [exported(export_dir, view, "pb") for _, export_dir in args.runs]
+        rows.append((view_name(view), label, view, images, image_norm(images[:1]), None, "pB [MSB]"))
+        if view in args.polarization_views:
+            images = [degree_of_polarization(product(clean, view, "pb"), product(clean, view, "tb")),
+                      degree_of_polarization(product(degraded, view, "pb"), product(degraded, view, "tb"))
+                      if view in degraded else None]
+            images += [degree_of_polarization(exported(export_dir, view, "pb"), exported(export_dir, view, "tb"))
+                       for _, export_dir in args.runs]
+            rows.append((f"{view_name(view)} p", label, view, images, Normalize(0.0, 1.0, clip=True), "jet",
+                         "p = pB / tB"))
+
+    fig = plt.figure(figsize=(FIGURE_WIDTH, FIGURE_WIDTH / (len(titles) + 0.6) * len(rows) + 0.3),
                      constrained_layout=True)
-    grid = GridSpec(len(frames), len(titles) + 1, figure=fig, width_ratios=(*[1] * len(titles), 0.05))
+    grid = GridSpec(len(rows), len(titles) + 1, figure=fig, width_ratios=(*[1] * len(titles), 0.05))
     axes, metrics = [], {}
-    for row, (view, frame) in enumerate(frames.items()):
-        reference = np.asarray(clean[view]["pb"].data)
-        images = [reference, np.asarray(degraded[view]["pb"].data) if view in degraded else None]
-        images += [np.load(image_file(export_dir, view, "pb", frame)) for _, export_dir in args.runs]
-        norm, extent = image_norm([reference]), map_extent(clean[view]["pb"])
-        label = f"{view} (held out)" if view == args.heldout_view else view
-        metrics[view] = [image_metrics(reference, image, norm) if image is not None else None
-                         for image in images[1:]]
+    for row, (key, label, view, images, norm, cmap, colorbar_label) in enumerate(rows):
+        extent = map_extent(clean[view]["pb"])
+        metrics[key] = [image_metrics(images[0], image, norm) if image is not None else None
+                        for image in images[1:]]
         axes.append([])
         for column, image in enumerate(images):
             axis = fig.add_subplot(grid[row, column])
             axes[-1].append(axis)
             if row == 0:
-                axis.set_title(titles[column], fontsize=7)
+                axis.set_title(titles[column], fontsize=title_size(len(titles)) - 1)
             if image is None:
                 axis.text(0.5, 0.5, "held out", transform=axis.transAxes, ha="center", va="center", fontsize=7)
                 axis.set_xticks([])
                 axis.set_yticks([])
                 continue
-            artist = plot_image(axis, image, norm, extent)
+            artist = plot_image(axis, image, norm, extent) if cmap is None else plot_image(axis, image, norm,
+                                                                                          extent, cmap)
             add_sun(axis)
             label_plane_axes(axis, r"x [R$_\odot$]", f"{label}\n" + r"y [R$_\odot$]",
-                             show_x=row == len(frames) - 1, show_y=column == 0)
+                             show_x=row == len(rows) - 1, show_y=column == 0)
             if column > 0:
-                entry = metrics[view][column - 1]
+                entry = metrics[key][column - 1]
                 add_panel_metric(axis, f"PSNR {entry['psnr']:.1f} dB\nSSIM {entry['ssim']:.3f}")
-        add_colorbar(fig, artist, grid[row, -1], "pB [MSB]")
+        add_colorbar(fig, artist, grid[row, -1], colorbar_label)
     add_separators(fig, axes, args.separators)
     print(save_figure(fig, args.output_dir, "psi_images"))
     write_metrics(args.output_dir / "psi_images.txt", titles[1:], metrics)

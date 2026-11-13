@@ -3,7 +3,7 @@
 #PBS -N SuNeRF-plasma-polar-2025-10-absorption
 #PBS -A P22100000
 #PBS -q main
-#PBS -l select=1:ncpus=32:ngpus=4:mem=256gb
+#PBS -l select=1:ncpus=64:ngpus=4:mem=256gb
 #PBS -l walltime=12:00:00
 
 cd /glade/u/home/rjarolim/projects/SuNeRF

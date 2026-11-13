@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -19,7 +20,9 @@ from sunerf.data.loader.multi_instrument import GenericEUVDataset
 from sunerf.data.loader.multi_instrument import (
     MultiInstrumentDataModule,
     _load_euv_observation,
-    _observation_split_indices,
+    _cadence_indices,
+    _select_observations,
+    _time_window_indices,
 )
 
 
@@ -75,18 +78,19 @@ def test_unique_time_matching_does_not_reuse_nearest_candidate():
     }
     original = {key: list(value) for key, value in file_dict.items()}
 
-    files, dates, reference = match_prepared_channels(
+    files, dates, times = match_prepared_channels(
         file_dict, date_dict, tolerance=timedelta(minutes=1), channel_order=(171, 193)
     )
 
-    assert reference == 171
+    assert files[171].tolist() == ['r0', 'r1']
     assert files[193].tolist() == ['c0', 'c1']
     assert len(set(files[193])) == 2
     assert file_dict == original
     assert dates[171].tolist() == date_dict[171]
+    assert times.tolist() == [start + timedelta(seconds=9), start + timedelta(seconds=42)]
 
 
-def test_multi_channel_time_matching_is_globally_complete_not_pairwise_greedy():
+def test_time_matching_keeps_time_steps_with_missing_channels():
     start = datetime(2020, 1, 1)
 
     def seconds(values):
@@ -103,17 +107,128 @@ def test_multi_channel_time_matching_is_globally_complete_not_pairwise_greedy():
         'b': seconds([0, 3, 4]),
     }
 
-    files, _, reference = match_prepared_channels(
+    files, dates, times = match_prepared_channels(
         file_dict,
         date_dict,
         tolerance=timedelta(seconds=1),
         channel_order=('reference', 'a', 'b'),
     )
 
-    assert reference == 'reference'
-    assert files['reference'].tolist() == ['r0', 'r2']
-    assert files['a'].tolist() == ['a0', 'a1']
-    assert files['b'].tolist() == ['b0', 'b3']
+    # Every file is used once; a time step survives with the channels it has.
+    assert files['reference'].tolist() == ['r0', 'r1', 'r2', None]
+    assert files['a'].tolist() == ['a0', 'a1', None, 'a4']
+    assert files['b'].tolist() == ['b0', None, 'b3', 'b4']
+    assert dates['a'].tolist()[2] is None
+    assert times.tolist() == seconds([0, 1, 2.5, 4])
+
+
+def test_prepared_observation_fills_missing_channel_with_nan(tmp_path):
+    obstime = datetime(2020, 1, 1)
+    path = tmp_path / '171.fits'
+    _aia_map(171, obstime).save(path)
+
+    observation = prepare_aia_observation(
+        [str(path), None], (171, 193), source_paths=[str(path), None]
+    )
+
+    assert observation.channel_present == (True, False)
+    assert observation.valid_mask[0].all()
+    assert not observation.valid_mask[1].any()
+    assert np.isnan(observation.image[1]).all()
+    assert observation.measurement_units == ('DN / s', None)
+    assert observation.obstime == obstime
+    assert observation.metadata()['channel_times'][1] is None
+    with pytest.raises(ValueError, match='at least one present channel'):
+        prepare_aia_observation([None, None], (171, 193))
+
+
+def test_non_positive_pixels_are_invalid_per_channel(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        'sunerf.data.loader.multi_instrument.log_overview', lambda *args, **kwargs: None
+    )
+    obstime = datetime(2020, 1, 1)
+    data = {171: np.full((4, 5), 171.0, dtype=np.float32), 193: np.full((4, 5), 193.0, dtype=np.float32)}
+    data[171][0, 0] = 0.0      # one channel non-positive: pixel kept, channel masked
+    data[193][1, 1] = -3.0     # same
+    data[171][2, 2] = -1.0     # both channels invalid: pixel dropped
+    data[193][2, 2] = 0.0
+    data[193][3, 3] = np.nan   # NaN behaves like non-positive
+    file_dict, date_dict = {}, {}
+    for channel, values in data.items():
+        path = tmp_path / f'{channel}.fits'
+        _aia_map(channel, obstime, values).save(path)
+        file_dict[channel] = [str(path)]
+        date_dict[channel] = [obstime]
+
+    observation = prepare_aia_observation(
+        [file_dict[171][0], file_dict[193][0]], (171, 193)
+    )
+    assert np.isnan(observation.image[0, 0, 0]) and not observation.valid_mask[0, 0, 0]
+    assert np.isnan(observation.image[1, 1, 1]) and not observation.valid_mask[1, 1, 1]
+    assert observation.valid_mask[1, 0, 0] and observation.valid_mask[0, 1, 1]
+    assert observation.valid_mask.sum() == 2 * 20 - 5
+
+    dataset = GenericEUVDataset(
+        file_dict=file_dict, date_dict=date_dict, work_directory=tmp_path / 'cache',
+        ds_key='AIA', instrument_key='AIA', instrument_type='AIA', test=False,
+        load_workers=0, batch_size=100,
+    )
+    try:
+        image = np.load(dataset.batches_file_paths['image'])
+        valid = np.load(dataset.batches_file_paths['valid_mask']).astype(bool)
+        assert len(image) == 19  # the pixel invalid in both channels is dropped
+        assert np.isfinite(image).all()
+        assert valid.any(axis=-1).all()
+        assert np.count_nonzero(~valid[:, 0]) == 1
+        assert np.count_nonzero(~valid[:, 1]) == 2
+        assert (image[valid] > 0).all()
+        assert (image[~valid] == 0).all()
+    finally:
+        dataset.clear()
+
+
+def test_dataset_ignores_missing_channel_in_training_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        'sunerf.data.loader.multi_instrument.log_overview', lambda *args, **kwargs: None
+    )
+    start = datetime(2020, 1, 1)
+    file_dict = {171: [], 193: []}
+    date_dict = {171: [], 193: []}
+    for observation_index in range(3):
+        for channel in (171, 193):
+            if channel == 193 and observation_index == 1:
+                continue  # 193 is missing at the second time step
+            obstime = start + timedelta(hours=observation_index)
+            path = tmp_path / f'{channel}_{observation_index}.fits'
+            _aia_map(channel, obstime).save(path)
+            file_dict[channel].append(str(path))
+            date_dict[channel].append(obstime)
+
+    dataset = GenericEUVDataset(
+        file_dict=file_dict, date_dict=date_dict, work_directory=tmp_path / 'cache',
+        ds_key='AIA', instrument_key='AIA', instrument_type='AIA', test=False,
+        load_workers=0, batch_size=3, seconds_per_dt=3600,
+    )
+    try:
+        time = np.load(dataset.batches_file_paths['time'])[:, 0]
+        image = np.load(dataset.batches_file_paths['image'])
+        valid = np.load(dataset.batches_file_paths['valid_mask'])
+        assert len(time) == 3 * 20
+        assert np.isfinite(image).all()
+        missing = time == 1.0
+        assert not valid[missing, 1].any()
+        assert valid[missing, 0].all()
+        assert valid[~missing].all()
+        np.testing.assert_allclose(image[~missing, 1], 193.0)
+        assert dataset.data_config['measurement_units'] == ('DN / s', 'DN / s')
+        assert dataset.data_config['native_pixel_solid_angle_sr_by_observation'][1][1] > 0
+        observations = dataset.data_config['prepared_observations']
+        assert [metadata['channel_present'] for metadata in observations] == [
+            [True, True], [True, False], [True, True]
+        ]
+        assert observations[1]['source_paths'][1] is None
+    finally:
+        dataset.clear()
 
 
 def test_image_scaling_is_ordered_explicit_and_reversible():
@@ -195,11 +310,30 @@ def test_multi_channel_mean_time_drives_model_supervision(tmp_path):
         _aia_map(channel, start + timedelta(seconds=offset)).save(path)
         paths.append(str(path))
     record = _load_euv_observation(
-        (paths, (171, 193), 'AIA', 'AIA', 1, None, 0.25, False)
+        (paths, (171, 193), 'AIA', 'AIA', 1, None, 0.25, False, None)
     )
 
     assert record['time'] == start + timedelta(seconds=10)
     assert record['metadata']['time_offsets_seconds'] == [-10.0, 10.0]
+
+
+def test_dataset_field_of_view_is_applied_at_load_time(tmp_path):
+    path = tmp_path / '171.fits'
+    _aia_map(171, datetime(2020, 1, 1)).save(path)
+    # 1.7 arcsec at 1 AU as a line-of-sight impact parameter in solar radii.
+    max_radius_rsun = (1.7 * u.arcsec).to_value(u.rad) * (1 * u.AU).to_value(u.R_sun)
+    full = _load_euv_observation(((str(path),), (171,), 'AIA', 'AIA', 1, None, 0.25, False, None))
+    cropped = _load_euv_observation(
+        ((str(path),), (171,), 'AIA', 'AIA', 1, max_radius_rsun, 0.25, False, None)
+    )
+
+    assert np.all(np.isfinite(full['rays']))
+    # Pixel centers lie at x in {-2..2} and y in {-1.5..1.5} arcsec.
+    x, y = np.meshgrid(np.arange(5) - 2.0, np.arange(4) - 1.5)
+    inside = np.hypot(x, y) < 1.7
+    np.testing.assert_array_equal(np.all(np.isfinite(cropped['rays']), axis=(-2, -1)), inside)
+    # The image itself stays uncropped; the NaN rays drop the pixels downstream.
+    np.testing.assert_array_equal(cropped['valid_mask'], full['valid_mask'])
 
 
 def test_strict_prepared_contract_requires_calibration_metadata(tmp_path):
@@ -277,8 +411,10 @@ def test_strict_contract_combines_finite_primary_data_with_valid_mask(tmp_path):
     observation = prepare_aia_observation(
         [path], [171], strict_metadata=True, source_paths=[str(path)]
     )
-    assert observation.image[0, 1, 2] == 1
+    # Pixels masked by VALID_MASK are NaN in the observation image.
+    assert np.isnan(observation.image[0, 1, 2])
     assert not observation.valid_mask[0, 1, 2]
+    assert observation.valid_mask.sum() == 20 - 1
 
 
 def test_generic_euv_dataset_persists_masks_and_channel_order_in_physical_units(
@@ -311,6 +447,7 @@ def test_generic_euv_dataset_persists_masks_and_channel_order_in_physical_units(
         instrument_key='AIA',
         instrument_type='AIA',
         test=True,
+        time=obstime,
         load_workers=0,
         batch_size=100,
     )
@@ -322,7 +459,10 @@ def test_generic_euv_dataset_persists_masks_and_channel_order_in_physical_units(
     assert 'image_scaling' not in dataset.data_config
     assert 'image_scaling' not in batch
     assert batch['channel_ids'] == ('171', '193')
-    assert batch['image'][0, 0].item() == -10.0
+    # Non-positive values are invalid: zeroed in the cache and masked.
+    assert batch['image'][0, 0].item() == 0.0
+    assert batch['valid_mask'][0, 0].item() == 0
+    assert batch['valid_mask'][0, 1].item() == 1
     np.testing.assert_allclose(batch['image'][1:, 0].numpy(), 10.0)
     valid_second = batch['valid_mask'][:, 1].numpy().astype(bool)
     np.testing.assert_allclose(batch['image'][:, 1].numpy()[valid_second], 40.0)
@@ -334,26 +474,13 @@ def test_generic_euv_dataset_persists_masks_and_channel_order_in_physical_units(
     dataset.clear()
 
 
-def test_explicit_center_holdout_has_no_train_validation_overlap():
-    training, held_out = _observation_split_indices(
-        7, test=False, holdout={'strategy': 'center', 'count': 3}
-    )
-    validation, validation_held_out = _observation_split_indices(
-        7, test=True, holdout={'strategy': 'center', 'count': 3}
-    )
-
-    assert training.tolist() == [0, 1, 5, 6]
-    assert validation.tolist() == [2, 3, 4]
-    assert held_out.tolist() == validation_held_out.tolist() == validation.tolist()
-    assert set(training).isdisjoint(validation)
-
-
 def test_debug_selection_is_safe_for_fewer_than_twenty_observations():
-    selected, _ = _observation_split_indices(5, test=False, debug=True)
+    dates = [datetime(2025, 10, 14) + timedelta(hours=hour) for hour in range(5)]
+    selected = _select_observations(dates, [True] * 5, test=False, debug=True)
     assert selected.tolist() == [0, 1, 2, 3, 4]
 
 
-def test_holdout_sources_and_times_are_persisted_without_overlap(tmp_path, monkeypatch):
+def test_validation_selection_is_persisted(tmp_path, monkeypatch):
     monkeypatch.setattr(
         'sunerf.data.loader.multi_instrument.log_overview', lambda *args, **kwargs: None
     )
@@ -374,7 +501,6 @@ def test_holdout_sources_and_times_are_persisted_without_overlap(tmp_path, monke
         'ds_key': 'AIA-split',
         'instrument_key': 'AIA',
         'instrument_type': 'AIA',
-        'holdout': {'strategy': 'center', 'count': 1},
         'load_workers': 0,
         'batch_size': 100,
     }
@@ -382,23 +508,15 @@ def test_holdout_sources_and_times_are_persisted_without_overlap(tmp_path, monke
         work_directory=tmp_path / 'train-cache', test=False, **common
     )
     validation = GenericEUVDataset(
-        work_directory=tmp_path / 'valid-cache', test=True, **common
+        work_directory=tmp_path / 'valid-cache', test=True,
+        time='2020-01-01T00:01:10', **common
     )
 
-    training_sources = {
-        tuple(metadata['source_paths'])
-        for metadata in training.data_config['prepared_observations']
-    }
-    validation_sources = {
-        tuple(metadata['source_paths'])
-        for metadata in validation.data_config['prepared_observations']
-    }
-    assert training_sources.isdisjoint(validation_sources)
-    assert training.data_config['split']['selected_matched_indices'] == [0, 2]
+    assert training.data_config['split']['selected_matched_indices'] == [0, 1, 2]
     assert validation.data_config['split']['selected_matched_indices'] == [1]
-    held_out = training.data_config['split']['held_out_observations'][0]
-    assert held_out['source_paths'] == file_dict[171][1:2] + file_dict[193][1:2]
-    assert held_out['channel_times'][0] == date_dict[171][1].isoformat()
+    assert validation.data_config['split']['time'] == '2020-01-01T00:01:10'
+    (observation,) = validation.data_config['prepared_observations']
+    assert list(observation['source_paths']) == file_dict[171][1:2] + file_dict[193][1:2]
     training.clear()
     validation.clear()
 
@@ -441,6 +559,8 @@ def test_data_module_persists_metadata_for_distinct_validation_keys(
                 'instrument_key': 'AIA',
                 'wcs': None,
                 'image_shape': (2, 3),
+                'observers': [{'radius': 215.0, 'latitude': 0.0, 'longitude': 0.0,
+                               'time': datetime(2020, 1, 1)}],
                 'cmaps': ('sdoaia171',),
                 'channel_ids': ('171',),
                 'measurement_units': ('DN / s',),
@@ -529,3 +649,133 @@ def test_prepared_eui_map_without_pc_keys_loads(tmp_path):
     assert type(s_map).__name__ == 'EUIMap'
     np.testing.assert_allclose(s_map.rotation_matrix, np.eye(2))
     assert s_map.wcs is not None
+
+
+def test_euv_overview_uses_a_log_stretch_per_channel(monkeypatch):
+    import matplotlib
+    matplotlib.use('Agg')
+    from matplotlib.colors import LogNorm
+    from sunerf.train import callback as callback_module
+
+    captured = []
+
+    def _capture(payload):
+        for figure in payload.values():
+            captured.append([
+                axis.images[0].norm for axis in figure.axes if axis.images
+            ])
+
+    monkeypatch.setattr(callback_module.wandb, 'Image', lambda figure: figure)
+    monkeypatch.setattr(callback_module.wandb, 'log', _capture)
+
+    rng = np.random.default_rng(0)
+    images = np.stack([
+        10.0 ** rng.uniform(0.0, 3.0, size=(2, 8, 8)),  # three decades of counts
+        np.full((2, 8, 8), np.nan),  # a channel without data is skipped
+    ], axis=-1)
+    images[0, 0, 0, 0] = 0.0  # non-positive pixels are masked, not plotted
+    poses = np.tile(np.eye(4)[None], (2, 1, 1))
+    poses[:, 0, 3] = 215.0
+    callback_module.log_overview(
+        images, poses, np.array([0.0, 1.0]), ['sdoaia171', 'sdoaia193'], 86400.0, 1.0,
+        datetime(2020, 1, 1), ds_key='AIA', channel_labels=['A171', 'A193'],
+    )
+
+    assert len(captured) == 2
+    for norms in captured:
+        assert len(norms) == 1  # the empty channel has no image
+        norm = norms[0]
+        assert isinstance(norm, LogNorm)
+        assert norm.vmin > 0 and 1.0 <= norm.vmin < 10.0 and 100.0 < norm.vmax <= 1000.0
+
+
+def test_training_uses_every_observation_and_validation_the_closest_complete_one():
+    dates = [datetime(2025, 10, 14, 6) + timedelta(hours=hour) for hour in range(6)]
+    complete = [True] * 6
+    time = "2025-10-14T09:20:00"
+    assert _select_observations(dates, complete, test=False, time=time).tolist() == list(range(6))
+    assert _select_observations(dates, complete, test=True, time=time).tolist() == [3]
+    # Only observations with all channels are rendered.
+    complete = [True, True, True, False, True, True]
+    assert _select_observations(dates, complete, test=True, time=time).tolist() == [4]
+    with pytest.raises(ValueError, match="all channels"):
+        _select_observations(dates, [False] * 6, test=True, time=time)
+    # Without a time: the complete observation nearest the middle.
+    assert _select_observations(dates, complete, test=True).tolist() == [2]
+
+
+def test_time_window_selects_half_open_interval_on_reference_times():
+    dates = [datetime(2025, 10, 13, 8) + timedelta(hours=hour) for hour in range(4)]
+    window = _time_window_indices(dates, "2025-10-13T09:00:00", "2025-10-13T11:00:00")
+    assert window.tolist() == [1, 2]
+    assert _time_window_indices(dates, start="2025-10-13T10:00:00Z").tolist() == [2, 3]
+    assert _time_window_indices(dates, end=datetime(2025, 10, 13, 9)).tolist() == [0]
+    with pytest.raises(ValueError, match="No observations"):
+        _time_window_indices(dates, "2025-10-14T00:00:00", "2025-10-15T00:00:00")
+    with pytest.raises(ValueError, match="earlier than"):
+        _time_window_indices(dates, "2025-10-13T11:00:00", "2025-10-13T09:00:00")
+
+
+def test_cadence_keeps_one_observation_per_interval():
+    # Hourly background with a 12 min focus block between 02:00 and 03:00.
+    start = datetime(2025, 10, 13)
+    minutes = [0, 60, 120, 132, 144, 156, 168, 180, 240]
+    dates = [start + timedelta(minutes=value) for value in minutes]
+    complete = [True] * len(dates)
+    kept = _cadence_indices(dates, complete, 60)
+    assert [minutes[index] for index in kept] == [0, 60, 120, 180, 240]
+    assert _cadence_indices(dates, complete, 12).tolist() == list(range(len(dates)))
+
+    # An hourly sequence whose times jitter by seconds keeps every observation.
+    jitter = [0, -4, 3, -2, 5, -6]
+    dates = [start + timedelta(hours=hour, seconds=value) for hour, value in enumerate(jitter)]
+    assert _cadence_indices(dates, [True] * 6, 60).tolist() == list(range(6))
+
+    # Within one grid slot an observation with all channels is preferred.
+    dates = [start, start + timedelta(minutes=12), start + timedelta(minutes=60)]
+    assert _cadence_indices(dates, [False, True, True], 60).tolist() == [1, 2]
+
+
+def test_training_cache_interleaves_observations_and_drops_invalid_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        'sunerf.data.loader.multi_instrument.log_overview', lambda *args, **kwargs: None
+    )
+    start = datetime(2020, 1, 1)
+    file_dict = {171: [], 193: []}
+    date_dict = {171: [], 193: []}
+    for observation_index in range(3):
+        for channel in (171, 193):
+            obstime = start + timedelta(hours=observation_index)
+            data = np.full((4, 5), float(channel), dtype=np.float32)
+            data[observation_index, 0] = np.nan  # same pixel invalid in both channels
+            if channel == 193:
+                data[3, 4] = np.nan  # one channel invalid: the row is kept
+            path = tmp_path / f'{channel}_{observation_index}.fits'
+            _aia_map(channel, obstime, data).save(path)
+            file_dict[channel].append(str(path))
+            date_dict[channel].append(obstime)
+
+    dataset = GenericEUVDataset(
+        file_dict=file_dict, date_dict=date_dict, work_directory=tmp_path / 'cache',
+        ds_key='AIA', instrument_key='AIA', instrument_type='AIA', test=False,
+        load_workers=0, batch_size=3, seconds_per_dt=3600,
+    )
+    try:
+        assert sorted(path.name for path in (tmp_path / 'cache').iterdir()) == sorted(
+            os.path.basename(path) for path in dataset.batches_file_paths.values()
+        )
+        time = np.load(dataset.batches_file_paths['time'])[:, 0]
+        image = np.load(dataset.batches_file_paths['image'])
+        valid = np.load(dataset.batches_file_paths['valid_mask'])
+        assert len(time) == 3 * 19
+        assert all(sorted(group) == [0.0, 1.0, 2.0] for group in time.reshape(-1, 3))
+        assert np.isfinite(image).all()
+        assert valid.any(axis=-1).all()
+        assert np.count_nonzero(valid[:, 1] == 0) == 3
+        np.testing.assert_allclose(image[:, 0], 171.0)
+        assert dataset.data_config['image_shape'] == (4, 5)
+        assert len(dataset.data_config['prepared_observations']) == 3
+        batch = dataset[0]
+        assert sorted(batch['time'][:, 0].tolist()) == [0.0, 1.0, 2.0]
+    finally:
+        dataset.clear()

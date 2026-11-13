@@ -80,7 +80,7 @@ The supported data flow is deliberately strict:
 raw/calibrated instrument files
   -> one instrument prep adapter
   -> prepared-EUV-v2 FITS
-  -> ray construction and deterministic train/validation holdout
+  -> ray construction and deterministic validation frame selection
   -> shared plasma field + instrument response renderers
   -> weights-only-safe reconstruction artifact
 ```
@@ -159,6 +159,10 @@ python -m sunerf.data.euv.prepare eui \
   --shape 512 512 --hpc-bounds -1560 -1560 1560 1560
 ```
 
+Every product also records its peak detector DN (`PEAK_DN` extension and
+`PEAKDN` header) for the saturation mask, which the reconstruction applies at
+`instruments[].saturation_dn` (see `config/plasma/README.md`).
+
 Use the same shape and helioprojective bounds for simultaneous channels. A
 reference FITS can instead define an exact target grid with
 `--reproject-reference`. AIA refuses nonzero quality, missing exposure/unit
@@ -200,10 +204,10 @@ callbacks:
     every_n_validations: 1
     datasets:
       AIA: {channels: [171, 193, 211]}
+      EUI: {channels: [174], normalize: true}  # match prediction mean/std to the observation
     products:
       channel_comparison:
         rows: [observation, prediction, residual]
-        stretch: log
       plasma_diagnostics:
         quantities: [mean_log_temperature, column_electron_density,
                      emission_measure, emission_height, absorption_fraction]
@@ -217,15 +221,16 @@ artifacts before any logger or model is created. Callback tensor retention is
 product-aware, so disabled diagnostics are not accumulated across validation.
 Plots are logged as `euv_tomography.<dataset>.<product>`.
 
-The reconstruction state is a single `*.safe.pt` weights-only artifact. The
-evaluation loader verifies referenced response hashes and reconstructs the
-model without executing pickled Python.
+The reconstruction state is a single weights-only artifact, `save_state.snf`
+in the run directory, overwritten after every validation. The evaluation loader
+verifies referenced response hashes and reconstructs the model without
+executing pickled Python.
 
 Create an artifact-driven reconstruction movie with:
 
 ```bash
 sunerf-plasma-video \
-  --chk-path results/run/save_state.safe.pt \
+  --chk-path results/run/save_state.snf \
   --video-path results/run/video \
   --instrument-key AIA \
   --channels 171 193 211

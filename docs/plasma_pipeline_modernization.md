@@ -130,7 +130,7 @@ config/plasma/all_2012_08.yaml
        -> PreparedEUVObservation (image, mask, units, WCS)
        -> exact WCS rays + deterministic train/validation separation
   -> PlasmaSuNeRFModule
-       -> PlasmaModel (shared physical-density SIREN field)
+       -> PlasmaModel (shared physical-density MLP field)
        -> valid shell intersections + spherical/hierarchical sampling
        -> PlasmaRadiativeTransfer per immutable response artifact
        -> masked, channel-balanced loss + calibrated regularizers
@@ -156,7 +156,7 @@ contract is validated before paths, caches, loggers, or models are created.
 | Time shuffler | Train-only physical jitter, 43200 s down to 300 s |
 | Absorption | disabled |
 | Batch | 1024 training rays; 2048 validation rays |
-| Network | four inputs, three outputs, width 512, eight SIREN layers |
+| Network | four inputs, three outputs, Swish MLP of width 512 and eight layers on an isotropic positional encoding |
 | Optimizer | Adam with an explicit `1e-3 -> 1e-4` schedule over one million steps |
 | Validation/checkpoint | deterministic held-out validation and atomic artifacts |
 
@@ -170,15 +170,22 @@ product level, calibration ID, unit, and exposure. EUI accepts a validated L2
 product. Every path then uses the same geometry, mask, and FITS writer.
 
 Prepared observations are discovered directly from configured FITS paths.
-Channels are matched one-to-one within the configured tolerance; files cannot
-be reused. Shape, sampled WCS, channel order, units, schema, and calibration
-metadata are verified. Response compatibility is checked later when the loader
+Files of all channels are grouped chronologically into observations within
+the configured tolerance; files cannot be reused. A time step is kept as soon
+as one channel is present: a missing channel becomes a NaN frame with an
+all-false valid mask that the per-channel loss ignores (since 2026-10-16;
+before that only complete channel sets were used). Shape, sampled WCS,
+channel order, units, schema, and calibration metadata are verified on the
+channels present. At load time a pixel is valid in a channel only where it is
+finite and positive; a pixel enters training when any channel is valid there
+and is dropped when none is. Response compatibility is checked later when the loader
 and renderer are assembled. Prepared FITS and cached targets stay in calibrated
 units; the loss divides targets and physical predictions by one fixed
 per-channel divisor of the instrument (`instruments[].scaling.divisor`).
 
-The center holdout is selected deterministically and excluded from every
-training dataset rather than being used for both optimization and validation.
+Training uses every observation; each validation dataset renders one
+deterministically selected frame, the observation with all channels closest
+to its `time`.
 
 ### Rays and rendering
 
@@ -425,7 +432,8 @@ source_path[channel]
 
 Store prepared observations as standard multi-extension FITS. The data module
 reads this contract directly; it does not calibrate instruments. Cache
-fingerprints hash the configured FITS inputs, and calibration history remains
+fingerprints record the path, size and modification time of the configured FITS
+inputs without reading them, and calibration history remains
 in the FITS headers.
 
 ### AIA adapter
@@ -575,8 +583,10 @@ IDs to three small adapters is sufficient.
 - co-registered simultaneous channels reuse one ray bundle;
 - training requests only lean renderer outputs, while explicit diagnostics are
   produced for validation/evaluation;
-- worker budgets are capped across instrument loaders;
-- cached training arrays are memory-mapped, content-fingerprinted, and published
+- every training and validation loader uses `data.num_workers` workers, so a rank
+  runs `num_workers` times the number of loaders worker processes;
+- cached training arrays are memory-mapped, fingerprinted by input path, size and
+  modification time, written with a stratified per-observation shuffle, and published
   atomically;
 - safe artifacts contain state dictionaries and immutable metadata rather than
   requiring executable pickles.

@@ -28,7 +28,7 @@ python -m sunerf.data.download.download_cor \
 ################################################################################
 # Remove incomplete or invalid polarization triplets
 ################################################################################
-python -m sunerf.data.cor.remove_invalid_triplets \
+python -m sunerf.data.cor.split_triplets \
   --glob "${DATA_ROOT}/stereo_a_cor2/*.fts"
 
 ################################################################################
@@ -48,7 +48,7 @@ csh <<CSH
 cd /glade/u/home/rjarolim
 module load idl
 setenv SSW_INSTR "SECCHI LASCO STEREO SOHO"
-setenv SSW /glade/u/home/rjarolim/ssw
+setenv SSW /glade/work/rjarolim/ssw
 setenv NRL_LIB \$SSW/soho/lasco
 source \$SSW/gen/setup/setup.ssw
 sswidl < "${IDL_BATCH}"

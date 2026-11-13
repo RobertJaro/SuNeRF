@@ -1,4 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/bash -l
+
+#PBS -N SuNeRF
+#PBS -A P22100000
+#PBS -q main
+#PBS -l select=1:ncpus=16:mem=128gb
+#PBS -l walltime=06:00:00
+
 set -euo pipefail
 
 ################################################################################
@@ -9,26 +16,11 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 ################################################################################
 # Configuration
 ################################################################################
-DATA_ROOT="/glade/work/rjarolim/data/sunerf-cme/2025_09"
-START="2025-09-01T00:00:00"
-END="2025-10-01T00:00:00"
-DOWNLOAD_CADENCE="all"
+DATA_ROOT="/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09"
 WORKERS="16"
 
 PUNCH_PAM_RAW_DIR="${DATA_ROOT}/punch_pam"
 PREP_DIR="${DATA_ROOT}/prep"
-
-################################################################################
-# Download PUNCH PAM data
-################################################################################
-python -m sunerf.data.download.download_punch \
-  --level l3 \
-  --product PAM \
-  --ext 0l.fits \
-  --start "${START}" \
-  --end "${END}" \
-  --cadence "${DOWNLOAD_CADENCE}" \
-  --output "${PUNCH_PAM_RAW_DIR}"
 
 ################################################################################
 # Prepare total- and polarized-brightness maps
@@ -38,7 +30,8 @@ python -m sunerf.data.coronagraph.prep_punch_pam \
   --out_path "${PREP_DIR}/punch_pam" \
   --resize 512 512 \
   --num_workers "${WORKERS}" \
-  --max_radius 90
+  --max_radius 120 \
+  --overwrite
 
 ################################################################################
 # Quicklook movie

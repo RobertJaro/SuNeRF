@@ -8,6 +8,8 @@ converted to one consistent in-memory layout before rays are constructed.
 
 from __future__ import annotations
 
+import multiprocessing
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,9 +19,8 @@ import numpy as np
 from astropy import units as u
 from astropy.io import fits
 from dateutil.parser import parse
-from scipy.optimize import Bounds, LinearConstraint, milp
-from scipy.sparse import coo_matrix
 from sunpy.map import Map
+from tqdm import tqdm
 
 from sunerf.configuration import canonical_channel_id, canonical_channel_mapping
 from sunerf.response import SENSITIVITY_CONVENTIONS
@@ -30,13 +31,59 @@ PREPARED_EUV_SCHEMA = 'sunerf.prepared_euv.v2'
 
 def load_prepared_map(path: str | Path):
     """Load the primary prepared image, never the VALID_MASK image extension."""
+    return load_prepared_observation(path)[0]
+
+
+def load_prepared_observation(path: str | Path, *, required_mask=False, saturation_dn=None):
+    """Load the prepared image and its VALID_MASK extension in one file open.
+
+    Returns ``(map, valid_mask)``; the mask is all-true when the file carries
+    no mask extension and ``required_mask`` is false. Reading both HDUs here
+    avoids a second open of every file on a network file system.
+
+    With ``saturation_dn`` (detector DN, ``instruments[].saturation_dn``) the
+    pixels whose ``PEAK_DN`` reaches it, i.e. saturated native pixels with their
+    column bleed and interpolation reach, are invalid as well. A file without
+    ``PEAK_DN`` is loaded without a saturation mask.
+    """
     with fits.open(path, memmap=False) as hdul:
         data = np.array(hdul[0].data, copy=True)
         header = hdul[0].header.copy()
-    if data.ndim != 2:
-        raise ValueError(f'Prepared EUV primary HDU must be a 2D image: {path}.')
+        if data.ndim != 2:
+            raise ValueError(f'Prepared EUV primary HDU must be a 2D image: {path}.')
+        valid_mask = _valid_mask_from_hdul(hdul, path, data.shape, required=required_mask)
+        if saturation_dn is not None:
+            valid_mask = valid_mask & ~saturated_pixels(hdul, path, data.shape, saturation_dn)
     _ensure_pc_matrix(header)
-    return Map(data, header)
+    return Map(data, header), valid_mask
+
+
+PEAK_DN_EXTENSION = 'PEAK_DN'
+
+
+def saturated_pixels(hdul, path, shape, saturation_dn):
+    """Pixels whose peak detector DN (``PEAK_DN``) reach ``saturation_dn``.
+
+    A product without ``PEAK_DN`` (prepared before the layer existed, or EUVI
+    without DSATVAL) has no peak information, so none of its pixels are masked.
+    """
+    if PEAK_DN_EXTENSION not in hdul:
+        # The message names no file, so the default warning filter reports it
+        # once per process instead of once per frame.
+        warnings.warn(
+            f'Prepared EUV products without a {PEAK_DN_EXTENSION} extension are not masked for '
+            'instruments[].saturation_dn; prepare them again with python -m '
+            'sunerf.data.euv.prepare --overwrite to mask their saturated pixels.',
+            stacklevel=2,
+        )
+        return np.zeros(tuple(shape), dtype=bool)
+    peak = np.asarray(hdul[PEAK_DN_EXTENSION].data, dtype=np.float64)
+    if peak.shape != tuple(shape):
+        raise ValueError(
+            f'{PEAK_DN_EXTENSION} shape {peak.shape} does not match image shape {tuple(shape)}.'
+        )
+    with np.errstate(invalid='ignore'):
+        return np.isfinite(peak) & (peak >= float(saturation_dn))
 
 
 def _ensure_pc_matrix(header: fits.Header) -> None:
@@ -94,30 +141,45 @@ def _header_channel(header: fits.Header) -> int:
     raise ValueError('Prepared EUV FITS file is missing WAVELNTH metadata.')
 
 
+def _prepared_channel_and_time(path: str) -> tuple[int, datetime]:
+    header = fits.getheader(path)
+    return _header_channel(header), _header_time(header)
+
+
 def discover_prepared_files(
-        files: Sequence[str | Path], channel_ids: Sequence[int | str]
+        files: Sequence[str | Path], channel_ids: Sequence[int | str], *, workers: int = 0
 ) -> tuple[dict[int | str, list[str]], dict[int | str, list[datetime]]]:
     """Group prepared FITS paths by requested channel using FITS metadata.
 
     File-name parsing was historically different for every instrument and could
     silently put a file into the wrong channel. The FITS channel and time are the
-    authoritative values at this boundary.
+    authoritative values at this boundary. Each header read opens one file, so
+    ``workers`` > 1 reads them in a process pool (network file systems).
     """
     requested = tuple(channel_ids)
     requested_by_number = {_channel_number(channel): channel for channel in requested}
     if len(requested_by_number) != len(requested):
         raise ValueError(f'Channel identifiers are not unique: {requested!r}.')
 
+    paths = [str(path) for path in files]
+    description = 'Reading prepared FITS headers'
+    if workers > 1 and len(paths) > 1:
+        with multiprocessing.Pool(min(workers, len(paths))) as pool:
+            headers = list(tqdm(
+                pool.imap(_prepared_channel_and_time, paths, chunksize=16),
+                total=len(paths), desc=description,
+            ))
+    else:
+        headers = [_prepared_channel_and_time(path) for path in tqdm(paths, desc=description)]
+
     file_dict = {channel: [] for channel in requested}
     date_dict = {channel: [] for channel in requested}
-    for path_value in files:
-        path = str(path_value)
-        header = fits.getheader(path)
-        channel = requested_by_number.get(_header_channel(header))
+    for path, (number, time) in zip(paths, headers):
+        channel = requested_by_number.get(number)
         if channel is None:
             continue
         file_dict[channel].append(path)
-        date_dict[channel].append(_header_time(header))
+        date_dict[channel].append(time)
 
     missing = [channel for channel in requested if not file_dict[channel]]
     if missing:
@@ -134,20 +196,24 @@ def _fits_valid_mask(path, shape, *, required):
             )
         return np.ones(shape, dtype=bool)
     with fits.open(path, memmap=False) as hdul:
-        extension_name = str(hdul[0].header.get('MASKEXT', '')).strip()
-        if required and extension_name != 'VALID_MASK':
-            raise ValueError(
-                f'Prepared-v2 FITS {path} must declare MASKEXT=VALID_MASK.'
-            )
-        if not extension_name and 'VALID_MASK' in hdul:
-            extension_name = 'VALID_MASK'
-        if not extension_name:
-            return np.ones(shape, dtype=bool)
-        if extension_name not in hdul:
-            raise ValueError(
-                f'Prepared FITS {path} declares missing mask extension {extension_name!r}.'
-            )
-        values = np.asarray(hdul[extension_name].data)
+        return _valid_mask_from_hdul(hdul, path, shape, required=required)
+
+
+def _valid_mask_from_hdul(hdul, path, shape, *, required):
+    extension_name = str(hdul[0].header.get('MASKEXT', '')).strip()
+    if required and extension_name != 'VALID_MASK':
+        raise ValueError(
+            f'Prepared-v2 FITS {path} must declare MASKEXT=VALID_MASK.'
+        )
+    if not extension_name and 'VALID_MASK' in hdul:
+        extension_name = 'VALID_MASK'
+    if not extension_name:
+        return np.ones(shape, dtype=bool)
+    if extension_name not in hdul:
+        raise ValueError(
+            f'Prepared FITS {path} declares missing mask extension {extension_name!r}.'
+        )
+    values = np.asarray(hdul[extension_name].data)
     if values.shape != tuple(shape):
         raise ValueError(
             f'VALID_MASK shape {values.shape} does not match image shape {tuple(shape)}.'
@@ -157,281 +223,92 @@ def _fits_valid_mask(path, shape, *, required):
     return values.astype(bool)
 
 
-def _is_better(candidate_count, candidate_cost, count, cost):
-    return candidate_count > count or (
-        candidate_count == count and candidate_cost < cost - 1e-12
-    )
-
-
-def _optimal_unique_time_matches(reference_dates, candidate_dates, tolerance_seconds):
-    """Maximum-cardinality, minimum-offset ordered one-to-one time matching."""
-    reference_seconds = np.array([
-        (value - reference_dates[0]).total_seconds() for value in reference_dates
-    ], dtype=np.float64)
-    candidate_seconds = np.array([
-        (value - reference_dates[0]).total_seconds() for value in candidate_dates
-    ], dtype=np.float64)
-    n_reference = len(reference_seconds)
-    n_candidate = len(candidate_seconds)
-
-    # The exact dynamic program is intentionally bounded. Very large archives
-    # should be cadence-filtered before ingestion; the linear fallback still
-    # guarantees unique, chronological, tolerance-respecting matches.
-    if n_reference * n_candidate > 4_000_000:
-        matches = {}
-        candidate_index = 0
-        for reference_index, reference_time in enumerate(reference_seconds):
-            while (
-                candidate_index < n_candidate
-                and candidate_seconds[candidate_index] < reference_time - tolerance_seconds
-            ):
-                candidate_index += 1
-            if (
-                candidate_index < n_candidate
-                and candidate_seconds[candidate_index] <= reference_time + tolerance_seconds
-            ):
-                matches[reference_index] = candidate_index
-                candidate_index += 1
-        return matches
-
-    counts = np.zeros((n_reference + 1, n_candidate + 1), dtype=np.int32)
-    costs = np.zeros((n_reference + 1, n_candidate + 1), dtype=np.float64)
-    directions = np.zeros((n_reference + 1, n_candidate + 1), dtype=np.uint8)
-    # directions: 1=skip reference, 2=skip candidate, 3=match
-    for reference_index in range(1, n_reference + 1):
-        for candidate_index in range(1, n_candidate + 1):
-            count = counts[reference_index - 1, candidate_index]
-            cost = costs[reference_index - 1, candidate_index]
-            direction = 1
-
-            left_count = counts[reference_index, candidate_index - 1]
-            left_cost = costs[reference_index, candidate_index - 1]
-            if _is_better(left_count, left_cost, count, cost):
-                count, cost, direction = left_count, left_cost, 2
-
-            offset = abs(
-                reference_seconds[reference_index - 1]
-                - candidate_seconds[candidate_index - 1]
-            )
-            if offset <= tolerance_seconds:
-                match_count = counts[reference_index - 1, candidate_index - 1] + 1
-                match_cost = costs[reference_index - 1, candidate_index - 1] + offset
-                if _is_better(match_count, match_cost, count, cost):
-                    count, cost, direction = match_count, match_cost, 3
-
-            counts[reference_index, candidate_index] = count
-            costs[reference_index, candidate_index] = cost
-            directions[reference_index, candidate_index] = direction
-
-    matches = {}
-    reference_index, candidate_index = n_reference, n_candidate
-    while reference_index and candidate_index:
-        direction = directions[reference_index, candidate_index]
-        if direction == 3:
-            matches[reference_index - 1] = candidate_index - 1
-            reference_index -= 1
-            candidate_index -= 1
-        elif direction == 2:
-            candidate_index -= 1
-        else:
-            reference_index -= 1
-    return matches
-
-
-def _global_unique_time_matches(reference_dates, candidate_dates, tolerance_seconds):
-    """Select complete tuples with maximum cardinality and minimum total offset.
-
-    Each non-reference channel receives its own one-to-one assignment, while a
-    shared binary variable decides whether a reference row is retained.  This
-    avoids the order-dependent data loss caused by sequential pairwise
-    matching.  The sparse mixed-integer problem is only needed when at least
-    one channel cannot match every reference row; the common complete-cadence
-    case stays on the faster ordered dynamic program.
-    """
-    channels = tuple(candidate_dates)
-    n_reference = len(reference_dates)
-    full_matches = {
-        channel: _optimal_unique_time_matches(
-            reference_dates, candidate_dates[channel], tolerance_seconds
-        )
-        for channel in channels
-    }
-    if all(len(matches) == n_reference for matches in full_matches.values()):
-        return np.arange(n_reference, dtype=np.int64), full_matches
-
-    origin = reference_dates[0]
-    reference_seconds = np.asarray(
-        [(value - origin).total_seconds() for value in reference_dates],
-        dtype=np.float64,
-    )
-    candidate_seconds = {
-        channel: np.asarray(
-            [(value - origin).total_seconds() for value in candidate_dates[channel]],
-            dtype=np.float64,
-        )
-        for channel in channels
-    }
-
-    # Variables are the retained-reference indicators followed by all eligible
-    # channel/reference/candidate edges.  Scaling the total edge cost below one
-    # makes cardinality the strict primary objective without a second solve.
-    edges = []
-    denominator = max(float(tolerance_seconds), 1.0) * max(
-        (n_reference + 1) * len(channels), 1
-    )
-    for channel_index, channel in enumerate(channels):
-        for reference_index, reference_time in enumerate(reference_seconds):
-            candidate_indices = np.flatnonzero(
-                np.abs(candidate_seconds[channel] - reference_time)
-                <= tolerance_seconds
-            )
-            for candidate_index in candidate_indices:
-                offset = abs(
-                    reference_time - candidate_seconds[channel][candidate_index]
-                )
-                edges.append(
-                    (
-                        channel_index,
-                        reference_index,
-                        int(candidate_index),
-                        float(offset),
-                    )
-                )
-
-    n_variables = n_reference + len(edges)
-    objective = np.zeros(n_variables, dtype=np.float64)
-    objective[:n_reference] = -1.0
-    for edge_index, (*_, offset) in enumerate(edges, start=n_reference):
-        objective[edge_index] = offset / denominator
-
-    equality_rows = len(channels) * n_reference
-    candidate_row_offsets = {}
-    row_count = equality_rows
-    for channel_index, channel in enumerate(channels):
-        for candidate_index in range(len(candidate_seconds[channel])):
-            candidate_row_offsets[(channel_index, candidate_index)] = row_count
-            row_count += 1
-
-    rows = []
-    columns = []
-    values = []
-    for channel_index in range(len(channels)):
-        for reference_index in range(n_reference):
-            rows.append(channel_index * n_reference + reference_index)
-            columns.append(reference_index)
-            values.append(-1.0)
-    for variable_index, (channel_index, reference_index, candidate_index, _) in enumerate(
-        edges, start=n_reference
-    ):
-        rows.extend(
-            [
-                channel_index * n_reference + reference_index,
-                candidate_row_offsets[(channel_index, candidate_index)],
-            ]
-        )
-        columns.extend([variable_index, variable_index])
-        values.extend([1.0, 1.0])
-
-    matrix = coo_matrix(
-        (values, (rows, columns)), shape=(row_count, n_variables), dtype=np.float64
-    ).tocsr()
-    lower = np.concatenate(
-        [np.zeros(equality_rows), np.full(row_count - equality_rows, -np.inf)]
-    )
-    upper = np.concatenate(
-        [np.zeros(equality_rows), np.ones(row_count - equality_rows)]
-    )
-    result = milp(
-        objective,
-        integrality=np.ones(n_variables, dtype=np.uint8),
-        bounds=Bounds(np.zeros(n_variables), np.ones(n_variables)),
-        constraints=LinearConstraint(matrix, lower, upper),
-        options={'presolve': True},
-    )
-    if not result.success or result.x is None:
-        raise RuntimeError(f'Global EUV time matching failed: {result.message}')
-
-    selected = np.flatnonzero(result.x[:n_reference] > 0.5).astype(np.int64)
-    assignments = {channel: {} for channel in channels}
-    for variable_index, (channel_index, reference_index, candidate_index, _) in enumerate(
-        edges, start=n_reference
-    ):
-        if result.x[variable_index] > 0.5:
-            assignments[channels[channel_index]][reference_index] = candidate_index
-    if any(set(matches) != set(selected) for matches in assignments.values()):
-        raise RuntimeError('Global EUV time matching returned an incomplete assignment.')
-    return selected, assignments
-
-
 def match_prepared_channels(
         file_dict: Mapping[Any, Sequence[str]],
         date_dict: Mapping[Any, Sequence[datetime]],
         *,
         tolerance: timedelta = timedelta(minutes=2),
         channel_order: Sequence[Any] | None = None,
-) -> tuple[dict[Any, np.ndarray], dict[Any, np.ndarray], Any]:
-    """Create complete, unique multi-channel observations.
+) -> tuple[dict[Any, np.ndarray], dict[Any, np.ndarray], np.ndarray]:
+    """Group prepared files of one instrument into multi-channel observations.
 
-    The least-populated channel is used as the reference. Every input file can
-    appear in at most one output observation, and incomplete reference times are
-    removed. Inputs are copied and never reordered or mutated in place.
+    Files of all channels are walked in time order. A file joins the current
+    observation when its channel is still free there and it lies within
+    ``tolerance`` of the observation's first file; otherwise it starts a new
+    observation. Every input file is used at most once, and an observation is
+    kept as soon as one channel is present: channels without a file within
+    the tolerance are ``None`` in the returned per-channel arrays and are
+    loaded as fully invalid (NaN) frames that the loss ignores.
+
+    Returns ``(matched_files, matched_dates, observation_times)``; the
+    observation time is the mean time of the channels present.
     """
     channels = tuple(file_dict) if channel_order is None else tuple(channel_order)
     if not channels or len(set(channels)) != len(channels):
         raise ValueError('channel_order must contain at least one unique channel.')
     if set(channels) != set(file_dict) or set(channels) != set(date_dict):
         raise ValueError('file_dict, date_dict, and channel_order must contain identical channels.')
-
-    sorted_files = {}
-    sorted_dates = {}
-    for channel in channels:
-        paths = np.asarray(file_dict[channel], dtype=object)
-        dates = np.asarray([_utc_naive(value) for value in date_dict[channel]], dtype=object)
-        if len(paths) != len(dates):
-            raise ValueError(f'Channel {channel!r} has different file and date counts.')
-        if len(paths) == 0:
-            raise ValueError(f'Channel {channel!r} has no observations.')
-        if len(set(map(str, paths))) != len(paths):
-            raise ValueError(f'Channel {channel!r} contains duplicate source paths.')
-        order = np.argsort(dates, kind='stable')
-        sorted_files[channel] = paths[order]
-        sorted_dates[channel] = dates[order]
-
-    reference_channel = min(channels, key=lambda channel: len(sorted_dates[channel]))
-    remaining_channels = tuple(
-        channel for channel in channels if channel != reference_channel
-    )
     tolerance_seconds = float(tolerance.total_seconds())
     if tolerance_seconds < 0:
         raise ValueError('Matching tolerance must be non-negative.')
-    active_reference_indices, candidate_assignments = _global_unique_time_matches(
-        sorted_dates[reference_channel],
-        {channel: sorted_dates[channel] for channel in remaining_channels},
-        tolerance_seconds,
-    )
-    if not len(active_reference_indices):
-        raise ValueError(f'No complete observations remain within {tolerance}.')
-    assignments = {reference_channel: active_reference_indices}
-    assignments.update({
-        channel: np.asarray(
-            [matches[int(index)] for index in active_reference_indices],
-            dtype=np.int64,
-        )
-        for channel, matches in candidate_assignments.items()
-    })
+
+    entries = []
+    for channel_index, channel in enumerate(channels):
+        paths = [str(value) for value in file_dict[channel]]
+        dates = [_utc_naive(value) for value in date_dict[channel]]
+        if len(paths) != len(dates):
+            raise ValueError(f'Channel {channel!r} has different file and date counts.')
+        if len(set(paths)) != len(paths):
+            raise ValueError(f'Channel {channel!r} contains duplicate source paths.')
+        entries.extend(zip(dates, [channel_index] * len(paths), paths))
+    if not entries:
+        raise ValueError('No prepared files to match.')
+    entries.sort(key=lambda entry: (entry[0], entry[1]))
+
+    groups = []
+    anchor = None
+    current = None
+    for date, channel_index, path in entries:
+        if (
+            current is None
+            or (date - anchor).total_seconds() > tolerance_seconds
+            or current[channel_index] is not None
+        ):
+            anchor = date
+            current = [None] * len(channels)
+            groups.append(current)
+        current[channel_index] = (path, date)
 
     matched_files = {
-        channel: sorted_files[channel][assignments[channel]].copy()
-        for channel in channels
+        channel: np.array(
+            [None if group[index] is None else group[index][0] for group in groups],
+            dtype=object,
+        )
+        for index, channel in enumerate(channels)
     }
     matched_dates = {
-        channel: sorted_dates[channel][assignments[channel]].copy()
-        for channel in channels
+        channel: np.array(
+            [None if group[index] is None else group[index][1] for group in groups],
+            dtype=object,
+        )
+        for index, channel in enumerate(channels)
     }
-    for channel in channels:
-        if len(set(map(str, matched_files[channel]))) != len(matched_files[channel]):
-            raise RuntimeError(f'Internal error: channel {channel!r} reused an input file.')
-    return matched_files, matched_dates, reference_channel
+    observation_times = np.array(
+        [observation_time([entry[1] for entry in group if entry is not None]) for group in groups],
+        dtype=object,
+    )
+    return matched_files, matched_dates, observation_times
+
+
+def observation_time(channel_times: Sequence[datetime | None]) -> datetime:
+    """Mean UTC-naive time of the channels present in one observation."""
+    present = [_utc_naive(value) for value in channel_times if value is not None]
+    if not present:
+        raise ValueError('An observation needs at least one channel time.')
+    origin = present[0]
+    offset = float(np.mean([(value - origin).total_seconds() for value in present]))
+    return origin + timedelta(seconds=offset)
+
 
 
 def normalize_image_scaling(
@@ -698,6 +575,10 @@ class PreparedEUVObservation:
     Images remain in their calibrated instrument-native units. Machine-learning
     normalization is represented separately by ``image_scaling`` at dataset
     construction time.
+
+    A channel without a prepared file at this time step is still part of the
+    observation: its image is NaN, its valid mask is false and its per-channel
+    metadata (``wcs``, ``channel_times``, units, ...) is ``None``.
     """
 
     instrument_id: str
@@ -741,7 +622,7 @@ class PreparedEUVObservation:
         if not np.all(np.isfinite(image[valid_mask])):
             raise ValueError('Valid EUV pixels must contain finite measurements.')
         if any(
-            not np.isfinite(value) or value <= 0
+            value is not None and (not np.isfinite(value) or value <= 0)
             for values in (
                 self.pixel_solid_angle_sr,
                 self.native_pixel_solid_angle_sr,
@@ -749,30 +630,51 @@ class PreparedEUVObservation:
             for value in values
         ):
             raise ValueError('Pixel solid angles must be finite and positive per channel.')
+        if all(value is None for value in self.channel_times):
+            raise ValueError('An observation needs at least one present channel.')
+        if any(
+            (value is None) != (time is None)
+            for values in (
+                self.wcs, self.measurement_units, self.pixel_solid_angle_sr,
+                self.native_pixel_solid_angle_sr, self.source_paths,
+            )
+            for value, time in zip(values, self.channel_times)
+        ):
+            raise ValueError('Per-channel metadata must be None exactly for missing channels.')
+        if np.any(valid_mask[[time is None for time in self.channel_times]]):
+            raise ValueError('Missing channels cannot have valid pixels.')
         object.__setattr__(self, 'image', image)
         object.__setattr__(self, 'valid_mask', valid_mask)
         object.__setattr__(
-            self, 'channel_times', tuple(_utc_naive(value) for value in self.channel_times)
+            self, 'channel_times',
+            tuple(None if value is None else _utc_naive(value) for value in self.channel_times),
         )
 
     @property
-    def obstime(self) -> datetime:
-        timestamps = np.array([
-            value.replace(tzinfo=timezone.utc).timestamp() for value in self.channel_times
-        ])
-        return datetime.fromtimestamp(float(np.mean(timestamps)), tz=timezone.utc).replace(tzinfo=None)
+    def channel_present(self) -> tuple[bool, ...]:
+        return tuple(value is not None for value in self.channel_times)
 
     @property
-    def time_offsets_seconds(self) -> tuple[float, ...]:
+    def obstime(self) -> datetime:
+        return observation_time(self.channel_times)
+
+    @property
+    def time_offsets_seconds(self) -> tuple[float | None, ...]:
         center = self.obstime
-        return tuple((value - center).total_seconds() for value in self.channel_times)
+        return tuple(
+            None if value is None else (value - center).total_seconds()
+            for value in self.channel_times
+        )
 
     def metadata(self) -> dict[str, Any]:
         return {
             'schema': 'sunerf.prepared_euv_observation.v1',
             'instrument_id': self.instrument_id,
             'channel_ids': list(self.channel_ids),
-            'channel_times': [value.isoformat() for value in self.channel_times],
+            'channel_present': list(self.channel_present),
+            'channel_times': [
+                None if value is None else value.isoformat() for value in self.channel_times
+            ],
             'time_offsets_seconds': list(self.time_offsets_seconds),
             'measurement_units': list(self.measurement_units),
             'pixel_solid_angle_sr': list(self.pixel_solid_angle_sr),
@@ -835,23 +737,44 @@ class PreparedEUVAdapter:
             source_paths: Sequence[str] | None = None,
             alignment_tolerance_arcsec: float = 0.25,
             strict_metadata: bool = False,
+            valid_masks: Sequence[np.ndarray] | None = None,
     ) -> PreparedEUVObservation:
+        """Validate the channel maps and assemble one observation.
+
+        ``valid_masks`` are the VALID_MASK extensions already read together
+        with the maps (``load_prepared_observation``); without them every
+        source file is opened again for its mask. A ``None`` map is a channel
+        without a prepared file at this time step; it becomes a NaN frame with
+        an all-false valid mask. At least one channel must be present.
+
+        Pixels that are not finite or not positive are invalid: they are NaN
+        in the returned image and false in the valid mask. Which pixels of an
+        observation are supervised is decided per channel downstream, so a
+        pixel stays in training as long as one channel is valid there.
+        """
         if len(maps) != len(channel_ids) or not maps:
             raise ValueError('maps and channel_ids must have the same non-zero length.')
+        if valid_masks is not None and len(valid_masks) != len(maps):
+            raise ValueError('valid_masks must have one entry per channel.')
         prepared_maps = [
-            value if hasattr(value, 'wcs') else load_prepared_map(value)
+            None if value is None else (value if hasattr(value, 'wcs') else load_prepared_map(value))
             for value in maps
         ]
-        source_paths = tuple(
-            str(value) for value in (
-                source_paths if source_paths is not None else ['unknown'] * len(prepared_maps)
-            )
-        )
+        if all(s_map is None for s_map in prepared_maps):
+            raise ValueError('An observation needs at least one present channel.')
+        if source_paths is None:
+            source_paths = ['unknown'] * len(prepared_maps)
         if len(source_paths) != len(prepared_maps):
             raise ValueError('source_paths must have one entry per channel.')
+        source_paths = tuple(
+            None if s_map is None else str(value)
+            for value, s_map in zip(source_paths, prepared_maps)
+        )
 
-        reference_map = prepared_maps[0]
+        reference_map = next(s_map for s_map in prepared_maps if s_map is not None)
         for channel, s_map in zip(channel_ids, prepared_maps):
+            if s_map is None:
+                continue
             self.validate_map(s_map, strict_metadata=strict_metadata)
             actual_channel = _channel_number(s_map.wavelength)
             expected_channel = _channel_number(channel)
@@ -864,36 +787,55 @@ class PreparedEUVAdapter:
                 reference_map, s_map, tolerance_arcsec=alignment_tolerance_arcsec
             )
 
+        shape = reference_map.data.shape
         image = np.stack([
-            np.asarray(s_map.data, dtype=np.float32) for s_map in prepared_maps
+            np.full(shape, np.nan, dtype=np.float32) if s_map is None
+            else np.asarray(s_map.data, dtype=np.float32)
+            for s_map in prepared_maps
         ], axis=0)
-        valid_mask = np.isfinite(image)
+        # Non-positive EUV values carry no emission information for the
+        # optically thin forward model (zero or negative after calibration,
+        # saturation bleed, or fill values) and are treated as invalid.
+        with np.errstate(invalid='ignore'):
+            valid_mask = np.isfinite(image) & (image > 0)
         for channel_index, (s_map, source_path) in enumerate(
                 zip(prepared_maps, source_paths)
         ):
-            valid_mask[channel_index] &= _fits_valid_mask(
-                source_path, s_map.data.shape, required=strict_metadata
-            )
+            if s_map is None:
+                continue
+            if valid_masks is not None:
+                file_mask = np.asarray(valid_masks[channel_index], dtype=bool)
+                if file_mask.shape != s_map.data.shape:
+                    raise ValueError(
+                        f'VALID_MASK shape {file_mask.shape} does not match image shape '
+                        f'{s_map.data.shape}.'
+                    )
+            else:
+                file_mask = _fits_valid_mask(
+                    source_path, s_map.data.shape, required=strict_metadata
+                )
+            valid_mask[channel_index] &= file_mask
+
+        image = np.where(valid_mask, image, np.nan)
+
+        def per_channel(function):
+            return tuple(None if s_map is None else function(s_map) for s_map in prepared_maps)
+
         return PreparedEUVObservation(
             instrument_id=self.instrument_id if instrument_id is None else str(instrument_id),
             channel_ids=tuple(str(channel) for channel in channel_ids),
             image=image,
             valid_mask=valid_mask,
-            wcs=tuple(s_map.wcs for s_map in prepared_maps),
-            channel_times=tuple(_utc_naive(s_map.date) for s_map in prepared_maps),
-            measurement_units=tuple(_map_unit(s_map) for s_map in prepared_maps),
-            pixel_solid_angle_sr=tuple(_pixel_solid_angle(s_map) for s_map in prepared_maps),
-            native_pixel_solid_angle_sr=tuple(
-                float(s_map.meta.get('NATPXSR', _pixel_solid_angle(s_map)))
-                for s_map in prepared_maps
+            wcs=per_channel(lambda s_map: s_map.wcs),
+            channel_times=per_channel(lambda s_map: _utc_naive(s_map.date)),
+            measurement_units=per_channel(_map_unit),
+            pixel_solid_angle_sr=per_channel(_pixel_solid_angle),
+            native_pixel_solid_angle_sr=per_channel(
+                lambda s_map: float(s_map.meta.get('NATPXSR', _pixel_solid_angle(s_map)))
             ),
-            measurement_semantics=tuple(
-                s_map.meta.get('RADSEM') for s_map in prepared_maps
-            ),
+            measurement_semantics=per_channel(lambda s_map: s_map.meta.get('RADSEM')),
             source_paths=source_paths,
-            sensitivity_conventions=tuple(
-                s_map.meta.get('SENSCON') for s_map in prepared_maps
-            ),
+            sensitivity_conventions=per_channel(lambda s_map: s_map.meta.get('SENSCON')),
             calibration={
                 'prepared_contract': 'sunerf.prepared_euv_observation.v1',
                 'strict_metadata': bool(strict_metadata),

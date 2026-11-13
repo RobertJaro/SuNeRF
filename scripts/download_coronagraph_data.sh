@@ -20,9 +20,9 @@ python -m sunerf.data.download.download_punch  --start 2025-09-01  --end 2025-09
 
 
 # clean up COR triplets
-python -m sunerf.data.cor.remove_invalid_triplets \
+python -m sunerf.data.cor.split_triplets \
   --glob "/glade/work/rjarolim/data/sunerf-cme/2024_10/cor/COR1/*.fts" --dry-run
-python -m sunerf.data.cor.remove_invalid_triplets \
+python -m sunerf.data.cor.split_triplets \
   --glob "/glade/work/rjarolim/data/sunerf-cme/2024_10/cor/COR2/*.fts" --dry-run
 
 # fix LASCO headers and basic prep
@@ -38,7 +38,7 @@ cd /glade/u/home/rjarolim
 module load idl
 
 setenv SSW_INSTR "SECCHI LASCO STEREO SOHO"
-setenv SSW /glade/u/home/rjarolim/ssw
+setenv SSW /glade/work/rjarolim/ssw
 setenv NRL_LIB $SSW/soho/lasco
 source $SSW/gen/setup/setup.ssw
 sswidl

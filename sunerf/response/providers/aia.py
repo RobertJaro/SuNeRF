@@ -30,7 +30,9 @@ AIA_PROVIDER_VERSION = "aiapy-0.12.1-aia-v8-v10-reference"
 AIA_REFERENCE_EPOCH = "2010-03-24T00:00:00Z"
 AIA_EVE_ABSOLUTE_REFERENCE_DATE = "2010-05-01"
 AIA_CALIBRATION_VERSION = 10
-AIA_CHANNEL_WAVELENGTHS = (94, 131, 171, 193, 211, 335)
+# A304 is packaged like every other band; a run folds or renders only the
+# channels its configuration lists.
+AIA_CHANNEL_WAVELENGTHS = (94, 131, 171, 193, 211, 304, 335)
 AIA_CHANNELS = tuple(f"A{channel}" for channel in AIA_CHANNEL_WAVELENGTHS)
 AIA_NATIVE_PIXEL_SOLID_ANGLE_RELATIVE_TOLERANCE = 0.02
 # SolarSoft folds the AIA temperature responses over 25-413 Angstrom only
@@ -134,7 +136,7 @@ def _source_provenance(source: SourceFile) -> dict[str, object]:
 
 
 def export_aia_throughput(raw_dir: str | Path, output: str | Path) -> InstrumentThroughput:
-    """Export the reference-epoch throughput for the six modeled AIA EUV bands.
+    """Export the reference-epoch throughput for the seven AIA EUV bands.
 
     Images prepared by :func:`aiapy.calibrate.correct_degradation` are divided
     by sensitivity relative to 2010-03-24.  This exporter consequently

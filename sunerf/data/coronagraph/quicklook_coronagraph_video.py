@@ -113,8 +113,8 @@ def main():
     if not a.tb and not a.pb:
         raise SystemExit("Provide --tb and/or --pb")
 
-    tb_files = sorted(glob.glob(a.tb)) if a.tb else []
-    pb_files = sorted(glob.glob(a.pb)) if a.pb else []
+    tb_files = sorted(f for f in glob.glob(a.tb) if os.path.isfile(f)) if a.tb else []
+    pb_files = sorted(f for f in glob.glob(a.pb) if os.path.isfile(f)) if a.pb else []
     correction_by_kind = {
         "tb": load_correction(a.tb_correction),
         "pb": load_correction(a.pb_correction),

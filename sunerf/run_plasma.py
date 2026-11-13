@@ -8,13 +8,19 @@ from astropy import units as u
 from lightning.pytorch.callbacks import LambdaCallback, ModelCheckpoint
 from lightning.pytorch.utilities.rank_zero import rank_zero_only
 
-from sunerf.configuration import canonical_channel_id, validate_plasma_config
+from sunerf.configuration import (
+    apply_instrument_saturation,
+    canonical_channel_id,
+    validate_plasma_config,
+)
 from sunerf.data.euv.estimate_scaling import resolve_instrument_scaling
 from sunerf.data.loader.multi_instrument import MultiInstrumentDataModule
 from sunerf.model.plasma import PlasmaSuNeRFModule, save_plasma_sunerf
 from sunerf.response import SENSITIVITY_CONVENTIONS, load_response_artifact
 from sunerf.train.callback import AbsorptionCallback
+from sunerf.data.date_util import normalize_datetime
 from sunerf.train.euv_callback import EUVTomographyCallback
+from sunerf.train.pole_callback import NorthPoleViewCallback, north_pole_view_geometry
 from sunerf.train.runtime import (
     build_data_cache_fingerprint,
     build_trainer,
@@ -330,6 +336,43 @@ def validate_plasma_runtime_contract(sunerf, data_module, data_config, instrumen
     return True
 
 
+def _north_pole_view_callback(pole_config, euv_callback_config, sunerf, data_module,
+                              *, batch_size):
+    """North-pole view at the time, distance and field of view of the first
+    held-out frame of ``pole_config['dataset']``."""
+    ds_key = pole_config['dataset']
+    if ds_key not in set(data_module.validation_dataset_mapping.values()):
+        raise ValueError(
+            f"North-pole view dataset {ds_key!r} is not present in the prepared "
+            "validation data module."
+        )
+    dataset_config = data_module.config[ds_key]
+    observer = dataset_config['observers'][0]
+    geometry = north_pole_view_geometry(
+        dataset_config['wcs'],
+        dataset_config['image_shape'],
+        observer,
+        data_module.Rs_per_ds,
+    )
+    instrument_key = dataset_config['instrument_key']
+    channel_metadata = copy.deepcopy(sunerf.instrument_metadata[instrument_key]['channels'])
+    for channel, cmap in zip(channel_metadata, dataset_config.get('cmaps') or ()):
+        channel['cmap'] = str(cmap)
+    return NorthPoleViewCallback(
+        ds_key=ds_key,
+        instrument_key=instrument_key,
+        channel_metadata=channel_metadata,
+        selected_channels=pole_config['channels'],
+        geometry=geometry,
+        normalized_time=normalize_datetime(
+            dataset_config['times'][0], data_module.seconds_per_dt, data_module.ref_date
+        ),
+        every_n_validations=euv_callback_config['every_n_validations'],
+        figure_dpi=euv_callback_config['figure_dpi'],
+        batch_size=batch_size,
+    )
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, required=True)
@@ -351,7 +394,8 @@ def main(argv=None):
     os.makedirs(work_directory, exist_ok=True)
 
     instruments_config = config['instruments']
-    data_config = config['data']
+    # instruments[].saturation_dn masks saturated pixels while the data load.
+    data_config = apply_instrument_saturation(config)
     model_config = config.get('model', {})
     sampling_config = config.get('sampling', {})
     hierarchical_sampling_config = config.get('hierarchical_sampling', {})
@@ -420,7 +464,9 @@ def main(argv=None):
         save_last=True,
         every_n_train_steps=log_every_n_steps,
     )
-    save_path = os.path.join(base_path, 'save_state.safe.pt')
+    # Weights-only save state, overwritten atomically after every validation and at
+    # the end of training; the evaluation tools load model and data configuration from it.
+    save_path = os.path.join(base_path, 'save_state.snf')
     save_callback = LambdaCallback(
         on_validation_end=lambda *unused: _save_plasma_sunerf_rank_zero(
             sunerf, data_module, save_path
@@ -477,7 +523,18 @@ def main(argv=None):
                 products=euv_callback_config['products'],
                 every_n_validations=euv_callback_config['every_n_validations'],
                 figure_dpi=euv_callback_config['figure_dpi'],
+                normalize=dataset_plot_config.get('normalize', False),
             ))
+
+    north_pole_config = config['callbacks']['north_pole_view']
+    if north_pole_config['enabled']:
+        callbacks.append(_north_pole_view_callback(
+            north_pole_config,
+            euv_callback_config,
+            sunerf,
+            data_module,
+            batch_size=data_config.get('validation_batch_size', 512),
+        ))
 
     trainer = build_trainer(
         logger=logger,

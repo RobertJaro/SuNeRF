@@ -6,6 +6,9 @@ For each matched pB/%P pair:
 1) Loads pB and percent-polarization maps.
 2) Computes tB = pB / (%P / 100).
 3) Applies the shared coronagraph preprocessing to tB and pB.
+   Frames that REDUCE_LEVEL_1 turned by 180 deg for a SOHO keyhole roll
+   (RECTIFY ~ 180) are turned back after the Sun-centered crop, so the
+   occulter and pylon stay on the same pixels for the correction mask.
 4) Saves outputs to:
    - <out_path>/tB/<basename>.fits
    - <out_path>/pB/<basename>.fits
@@ -23,7 +26,7 @@ import numpy as np
 from astropy import units as u
 from astropy.io import fits
 from astropy.time import Time
-from sunpy.coordinates.ephemeris import get_horizons_coord
+from sunerf.data.horizons import get_horizons_coord
 from sunpy.map import Map
 from sunpy.sun import constants
 from tqdm import tqdm
@@ -138,10 +141,20 @@ def load_lasco_maps(pb_path: str, percent_path: str, observer: dict):
 
 def load_clear_lasco_map(clear_path: str, observer: dict):
     try:
-        data = np.array(fits.getdata(clear_path), dtype=np.float32, copy=True)
-        header = normalize_lasco_header(fits.getheader(clear_path), observer)
+        with fits.open(clear_path, do_not_scale_image_data=True) as hdul:
+            raw = np.array(hdul[0].data, copy=True)
+            raw_header = hdul[0].header.copy()
+        header = normalize_lasco_header(raw_header, observer)
     except Exception as exc:
         raise RuntimeError(f"Error loading LASCO clear file {clear_path}: {exc}")
+    data = raw.astype(np.float32) * raw_header.get("BSCALE", 1.0) + raw_header.get("BZERO", 0.0)
+    if np.issubdtype(raw.dtype, np.integer):
+        # REDUCE_LEVEL_1 stores masked pixels (occulter, pylon, outside the field)
+        # as integer 0, which BZERO maps to a bright positive value.
+        invalid = raw == 0
+        if "BLANK" in raw_header:
+            invalid |= raw == raw_header["BLANK"]
+        data[invalid] = np.nan
     return Map(data, header)
 
 
@@ -158,6 +171,48 @@ def normalize_lasco_header(header, observer):
     header["HGLT_OBS"] = observer["HGLT_OBS"]
     header["DSUN_OBS"] = observer["DSUN_OBS"]
     return header
+
+
+def keyhole_rectified(meta):
+    """Whether REDUCE_LEVEL_1 turned the frame by 180 deg for a SOHO keyhole roll.
+
+    RECTIFY is the angle by which the level-1 image was turned away from the
+    detector frame: 180 deg plus the residual roll correction (a few deg) for an
+    inverted spacecraft, the residual alone otherwise.
+    """
+    rectify = float(meta.get("rectify", 0.0))
+    return abs((rectify + 180.0) % 360.0 - 180.0) > 90.0
+
+
+def rotate_180(s_map):
+    """Turn the map by 180 deg in pixel space and update the WCS to match.
+
+    Reversing both axes maps FITS pixel X to N + 1 - X, so the WCS is unchanged
+    on the sky with PC -> -PC and CRPIX -> N + 1 - CRPIX. No interpolation. For a
+    Sun-centered frame the detector-fixed occulter, pylon and stray light of a
+    keyhole-rectified frame return to their pixels in the other frames.
+    """
+    data = np.ascontiguousarray(np.asarray(s_map.data)[::-1, ::-1])
+    pc = -np.asarray(s_map.rotation_matrix, dtype=float)
+    meta = s_map.meta.copy()
+    for key in ("crota", "crota1", "crota2", "cd1_1", "cd1_2", "cd2_1", "cd2_2"):
+        meta.pop(key, None)
+    for i in range(2):
+        for j in range(2):
+            meta[f"pc{i + 1}_{j + 1}"] = pc[i, j]
+    ny, nx = data.shape
+    meta["crpix1"] = nx + 1 - float(meta["crpix1"])
+    meta["crpix2"] = ny + 1 - float(meta["crpix2"])
+    # RECTIFY - 180 deg, wrapped to [-180, 180).
+    meta["rectify"] = float(meta.get("rectify", 0.0)) % 360.0 - 180.0
+    history = str(meta.get("history", "")).strip()
+    meta["history"] = f"{history}\nTurned by 180 deg (data[::-1, ::-1], PC -> -PC, CRPIX -> N + 1 - CRPIX).".strip()
+    return Map(data, meta)
+
+
+def to_detector_orientation(s_map):
+    """Undo the 180 deg keyhole rectification of a prepared, Sun-centered map."""
+    return rotate_180(s_map) if keyhole_rectified(s_map.meta) else s_map
 
 
 class LascoPrep:
@@ -179,8 +234,8 @@ class LascoPrep:
 
         try:
             tb_map, pb_map = load_lasco_maps(pb_path, percent_path, observer)
-            tb_map = self.map_preprocessor.prepare_map(tb_map)
-            pb_map = self.map_preprocessor.prepare_map(pb_map)
+            tb_map = to_detector_orientation(self.map_preprocessor.prepare_map(tb_map))
+            pb_map = to_detector_orientation(self.map_preprocessor.prepare_map(pb_map))
             if write_tb:
                 tb_map.save(tb_out, overwrite=self.overwrite)
             if write_pb:
@@ -208,7 +263,7 @@ class LascoClearPrep:
 
         try:
             tb_map = load_clear_lasco_map(clear_path, observer)
-            tb_map = self.map_preprocessor.prepare_map(tb_map)
+            tb_map = to_detector_orientation(self.map_preprocessor.prepare_map(tb_map))
             tb_map.save(tb_out, overwrite=self.overwrite)
         except Exception as exc:
             print(f"[{os.getpid()}] ERROR in {normalize_name(clear_path)}: {exc}", flush=True)

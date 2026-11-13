@@ -191,12 +191,6 @@ def add_common_prep_arguments(parser, *, include_max_radius=False):
         help="Optional resize to (width height) in pixels.",
     )
     parser.add_argument(
-        "--value_min",
-        type=float,
-        default=None,
-        help="Optional minimum allowed data value; smaller values are set to NaN.",
-    )
-    parser.add_argument(
         "--value_max",
         type=float,
         default=None,
@@ -271,7 +265,6 @@ def common_kwargs_from_args(args):
             else None
         ),
         "resize": args.resize,
-        "value_min": getattr(args, "value_min", None),
         "value_max": getattr(args, "value_max", None),
         "filter_bright_objects": args.filter_bright_objects,
         "bright_object_threshold": args.bright_object_threshold,
@@ -304,7 +297,6 @@ class MapPreprocessor:
         occ_max=None,
         max_radius=None,
         resize=None,
-        value_min=None,
         value_max=None,
         filter_bright_objects=False,
         bright_object_threshold=10.0,
@@ -317,7 +309,6 @@ class MapPreprocessor:
         self.occ_max = occ_max
         self.max_radius = max_radius
         self.resize = resize
-        self.value_min = value_min
         self.value_max = value_max
         self.filter_bright_objects = filter_bright_objects
         self.bright_object_threshold = bright_object_threshold
@@ -343,8 +334,9 @@ class MapPreprocessor:
                 object_mask_radius=self.solar_system_object_mask_radius,
                 moon_mask_radius=self.moon_mask_radius,
             )
-        if self.value_min is not None:
-            s_map.data[s_map.data < self.value_min] = np.nan
+        # Non-positive brightness is a missing measurement (zero-filled blocks,
+        # negative noise); faint positive values are kept for the asinh scaling.
+        s_map.data[s_map.data <= 0] = np.nan
         if self.value_max is not None:
             s_map.data[s_map.data > self.value_max] = np.nan
         # Masking first, then cropping, then resampling: the invalid pixels are
@@ -430,18 +422,77 @@ def field_limit_angle(s_map, occ_min=None, occ_max=None, max_radius=None):
     return limit
 
 
-def crop_to_field_limit(s_map, limit):
-    """Cut the map down to the square that encloses the retained field.
+# Radial distance from the reference point, in units of the pixel scale at the
+# reference point, of a direction at native colatitude ``theta`` (radians) for
+# the zenithal FITS projections.
+ZENITHAL_RADIUS = {
+    "ARC": lambda theta: theta,
+    "TAN": np.tan,
+    "SIN": np.sin,
+    "STG": lambda theta: 2 * np.tan(0.5 * theta),
+    "ZEA": lambda theta: 2 * np.sin(0.5 * theta),
+}
 
-    The angular separation from Sun center is maximal along ``Tx`` and ``Ty``,
-    so the circle of radius ``limit`` is exactly bounded by the box spanning
-    +/- ``limit`` in both helioprojective angles.  ``submap`` clips the request
-    to the array, which leaves frames smaller than the limit untouched.
+
+def crop_to_field_limit(s_map, limit):
+    """Cut the map to the Sun-centered square that encloses the retained field.
+
+    In a zenithal projection the circle of angular radius ``limit`` around the
+    reference point is a circle in the image, with a radius that follows
+    analytically from the projection and the pixel scale.  The crop is the
+    smallest square of whole pixels around Sun center that contains this
+    circle, independent of the image content and of the roll angle.  The box
+    spanning +/- ``limit`` in the helioprojective angles is not equivalent: at
+    wide angles it cuts off the sides of the field along ``Tx``.
+
+    The crop always has the same number of pixels along both axes, so
+    resampling it to a square grid keeps the ratio of the angular pixel scales.
+    A frame that does not cover the square is clipped to its own extent and, if
+    that leaves a rectangle, padded with NaN on the clipped sides of the short
+    axis.
     """
-    frame = s_map.coordinate_frame
-    bottom_left = SkyCoord(-limit, -limit, frame=frame)
-    top_right = SkyCoord(limit, limit, frame=frame)
-    return s_map.submap(bottom_left, top_right=top_right)
+    projection = s_map.wcs.wcs.ctype[0][-3:]
+    if projection not in ZENITHAL_RADIUS:
+        raise NotImplementedError(f"No analytic field extent for the {projection} projection.")
+    radius = ZENITHAL_RADIUS[projection](u.Quantity(limit).to_value(u.rad)) * u.rad
+    radius = max((radius / scale).to_value(u.pixel) for scale in s_map.scale)
+
+    sun_center = SkyCoord(0 * u.arcsec, 0 * u.arcsec, frame=s_map.coordinate_frame)
+    sun = np.array([float(value) for value in s_map.wcs.world_to_pixel(sun_center)])
+    # A square with an odd side is centered on a pixel, one with an even side
+    # between pixels. Take the smaller of the two that contains the circle; the
+    # remaining offset of Sun center from the middle is added to the radius.
+    squares = []
+    for shift in (0.0, 0.5):
+        center = np.round(sun - shift) + shift
+        offset = np.abs(sun - center).max()
+        side = int(np.ceil(2 * (radius + offset) + 1 - 1e-9))
+        side += (side % 2) != (shift == 0.0)
+        squares.append((side, offset, center))
+    side, _, center = min(squares, key=lambda square: square[:2])
+    low = np.round(center - (side - 1) / 2).astype(int)
+    high = low + side - 1
+
+    shape = np.array(s_map.data.shape[::-1])
+    clip_low, clip_high = np.maximum(-low, 0), np.maximum(high - (shape - 1), 0)
+    cropped = s_map.submap(
+        (low + clip_low) * u.pixel, top_right=(high - clip_high) * u.pixel
+    )
+    size = side - clip_low - clip_high
+    deficit = size.max() - size
+    pad_low = np.minimum(deficit, clip_low)
+    pad_high = deficit - pad_low
+    if not deficit.any():
+        return cropped
+    data = np.pad(
+        np.asarray(cropped.data, dtype=float),
+        ((pad_low[1], pad_high[1]), (pad_low[0], pad_high[0])),
+        constant_values=np.nan,
+    )
+    meta = cropped.meta.copy()
+    meta["crpix1"] += pad_low[0]
+    meta["crpix2"] += pad_low[1]
+    return Map(data, meta)
 
 
 def prep_coronagraph_map(

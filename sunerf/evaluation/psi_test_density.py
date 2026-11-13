@@ -314,7 +314,7 @@ def main() -> None:
 
     # This file is produced locally by save_thomson_sunerf and contains pickled
     # PyTorch modules, including the learned detector-degradation corrections.
-    loader = ThomsonSuNeRFLoader(args.sunerf_path, trusted=True)
+    loader = ThomsonSuNeRFLoader(args.sunerf_path)
     density, radius, theta, phi = read_density(args.density_path)
     reference_map = Map(args.reference_tb_path)
     evaluation_time = reference_map.date.datetime

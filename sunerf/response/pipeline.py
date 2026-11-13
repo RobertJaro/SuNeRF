@@ -28,6 +28,7 @@ from sunerf.response.builder import (
 from sunerf.response.providers.aia import export_aia_throughput, fetch_aia_sources
 from sunerf.response.providers.eui import export_eui_throughput, fetch_eui_sources
 from sunerf.response.providers.secchi import (
+    CHANNELS as EUVI_CHANNELS,
     export_secchi_euvi_throughput,
     fetch_secchi_sources,
 )
@@ -111,6 +112,7 @@ def export_throughputs(
                 paths["secchi_sources"],
                 products[instrument],
                 spacecraft=spacecraft,
+                channels=EUVI_CHANNELS,
                 secchi_prep_normalized_to_open=False,
             )
     if "eui_fsi" in selected:

@@ -110,7 +110,7 @@ def test_learned_degradation_round_trips_through_thomson_loader(tmp_path):
     save_thomson_sunerf(
         model, data_module, artifact, msb_norm=1.0e-9, msb=1.0, sigma_ne=1.0
     )
-    loader = ThomsonSuNeRFLoader(artifact, device="cpu", trusted=True)
+    loader = ThomsonSuNeRFLoader(artifact, device="cpu")
 
     assert set(loader.correction_modules) == {"L4"}
     loaded_state = loader.correction_modules["L4"].state_dict()

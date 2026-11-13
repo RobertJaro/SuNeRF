@@ -2,9 +2,9 @@ from typing import Iterable
 
 import numpy as np
 import torch
+from astropy import constants as const
 from astropy import units as u
 from torch import nn
-from torch.distributions import Normal
 from torch.nn.functional import linear
 
 from sunerf.train.coordinate_transformation import to_carrington_rotation_frame
@@ -204,7 +204,7 @@ class SirenNet(nn.Module):
 class MLPModel(nn.Module):
 
     def __init__(self, in_dim, out_dim, dim=512, n_layers=8, encoding='positional', activation='swish',
-                 num_frequencies=10, min_frequencies=0, max_frequencies=6):
+                 num_frequencies=10, min_frequencies=0, max_frequencies=6, scale=1.0):
         super().__init__()
         if encoding is None or encoding == 'none':
             self.d_in = nn.Linear(in_dim, dim)
@@ -214,7 +214,15 @@ class MLPModel(nn.Module):
             d_in = nn.Linear(posenc.d_output, dim)
             self.d_in = nn.Sequential(posenc, d_in)
         elif encoding == 'gaussian':
-            posenc = GaussianPositionalEncoding(in_dim)
+            # random Fourier features: num_frequencies is the number of rows of B, scale is sigma
+            assert not isinstance(num_frequencies, Iterable), 'gaussian encoding takes a scalar num_frequencies'
+            posenc = GaussianPositionalEncoding(in_dim, num_frequencies, scale)
+            d_in = nn.Linear(posenc.d_output, dim)
+            self.d_in = nn.Sequential(posenc, d_in)
+        elif encoding == 'positional_isotropic':
+            # one log-spaced ladder of random-direction spatial wave vectors, time per axis;
+            # frequency settings take one entry for the spatial block and one per remaining axis
+            posenc = IsotropicPositionalEncoding(in_dim, num_frequencies, min_frequencies, max_frequencies)
             d_in = nn.Linear(posenc.d_output, dim)
             self.d_in = nn.Sequential(posenc, d_in)
         else:
@@ -252,7 +260,14 @@ def _plasma_temperature_bounds(log_T, initial_log_T):
     return log_T, float(np.log(fraction / (1.0 - fraction)))
 
 
-DENSITY_PROFILE_TYPES = ("power_law", "hydrostatic")
+DENSITY_PROFILE_TYPES = ("power_law", "hydrostatic", "hydrostatic_thermal")
+
+# Hydrostatic scale height of a 1 MK fully ionized plasma with mean particle
+# mass 0.6 m_p at the solar surface, H = k_B T / (mu m_p g_sun): 0.072 R_sun.
+HYDROSTATIC_SCALE_HEIGHT_RSUN_PER_MK = float(
+    (const.k_B * 1e6 * u.K / (0.6 * const.m_p * const.GM_sun / const.R_sun ** 2))
+    .to_value(u.R_sun)
+)
 
 
 def _validated_density_profile(density_profile):
@@ -262,10 +277,14 @@ def _validated_density_profile(density_profile):
     conservation of a constant-speed wind; it is the right shape several solar
     radii out. ``{"type": "hydrostatic", "scale_height_rsun": H0}`` is the
     isothermal stratification ``n ~ exp[-(1 / H0) * (1 - 1 / r)]`` with gravity
-    falling as ``r**-2``; ``H0 = kT / (mu m_H g_sun)`` is about 0.068 R_sun per
-    MK, so 0.1 R_sun corresponds to a 1.5 MK corona. Radii are in model units,
-    which schema-v2 fixes to solar radii. The network learns the deviation from
-    the baseline, so the profile is a prior shape and not a constraint.
+    falling as ``r**-2``; ``H0 = kT / (mu m_H g_sun)`` is about 0.072 R_sun per
+    MK, so 0.1 R_sun corresponds to a 1.4 MK corona. ``{"type":
+    "hydrostatic_thermal"}`` has no parameter: the scale height is that of the
+    temperature the network predicts at each point, so a hot solution must be
+    extended in height and a steep off-limb falloff asks for cool plasma. Radii
+    are in model units, which schema-v2 fixes to solar radii. The network learns
+    the deviation from the baseline, so the profile is a prior shape and not a
+    constraint.
     """
     profile = {"type": "power_law", "exponent": 2.0} if density_profile is None else dict(density_profile)
     profile_type = profile.get("type")
@@ -273,6 +292,10 @@ def _validated_density_profile(density_profile):
         allowed, key, default = {"type", "exponent"}, "exponent", 2.0
     elif profile_type == "hydrostatic":
         allowed, key, default = {"type", "scale_height_rsun"}, "scale_height_rsun", None
+    elif profile_type == "hydrostatic_thermal":
+        if set(profile) - {"type"}:
+            raise ValueError("density_profile hydrostatic_thermal takes no parameters")
+        return profile_type, None
     else:
         raise ValueError(f"density_profile.type must be one of {DENSITY_PROFILE_TYPES}")
     if set(profile) - allowed:
@@ -285,11 +308,17 @@ def _validated_density_profile(density_profile):
     return profile_type, float(value)
 
 
-def _log10_density_baseline(radius, profile_type, value):
-    """Base-10 logarithm of the radial density baseline, zero at ``r = 1``."""
+def _log10_density_baseline(radius, profile_type, value, log_T=None):
+    """Base-10 logarithm of the radial density baseline, zero at ``r = 1``.
+
+    ``log_T`` is the predicted temperature at each point and is only used by the
+    ``hydrostatic_thermal`` profile, whose local scale height follows it.
+    """
     radius = radius.clamp_min(1e-6)
     if profile_type == "power_law":
         return -value * torch.log10(radius)
+    if profile_type == "hydrostatic_thermal":
+        value = HYDROSTATIC_SCALE_HEIGHT_RSUN_PER_MK * torch.pow(10.0, log_T - 6.0)
     return -(1.0 - 1.0 / radius) / (value * np.log(10.0))
 
 
@@ -301,18 +330,24 @@ def _validated_cool_offset(cool_absorber, cool_density_offset_log10_cm3):
     return (3 if cool_absorber else 2), offset
 
 
-def _pointwise_plasma_state(raw, T_range, temperature_logit_offset, total_log_ne,
-                            cool_density_offset_log10_cm3=None):
-    """Map raw network outputs to one bounded temperature and density per point.
-
-    A third output is the hydrogen density of a separate cool absorber. It
-    never emits, so it does not have to cross the temperature range in which a
-    dense emitting point is bright, and it starts optically negligible.
-    """
-    log_T = (
+def _bounded_log_temperature(raw, T_range, temperature_logit_offset):
+    """Sigmoid-bounded log10 temperature from the first network output."""
+    return (
         torch.sigmoid(raw[..., 0:1] + temperature_logit_offset)
         * (T_range[1] - T_range[0]) + T_range[0]
     )
+
+
+def _pointwise_plasma_state(raw, T_range, temperature_logit_offset, total_log_ne,
+                            cool_log_density=None):
+    """Map raw network outputs to one bounded temperature and density per point.
+
+    ``cool_log_density`` is the log10 hydrogen density of a separate cool
+    absorber. It never emits, so it does not have to cross the temperature
+    range in which a dense emitting point is bright, and it starts optically
+    negligible.
+    """
+    log_T = _bounded_log_temperature(raw, T_range, temperature_logit_offset)
     # Squaring a float32 density above 1e19 overflows; the lower bound keeps
     # logarithmic diagnostics finite.
     total_log_ne = total_log_ne.clamp(-30.0, 18.0)
@@ -321,10 +356,22 @@ def _pointwise_plasma_state(raw, T_range, temperature_logit_offset, total_log_ne
         "total_log_ne": total_log_ne,
         "mean_log_T": log_T,
     }
-    if cool_density_offset_log10_cm3 is not None:
-        log_cool = (raw[..., 2:3] + cool_density_offset_log10_cm3).clamp(-30.0, 18.0)
+    if cool_log_density is not None:
+        log_cool = cool_log_density.clamp(-30.0, 18.0)
         state["cool_hydrogen_density"] = torch.pow(10.0, log_cool)
     return state
+
+
+def _deviation_taper(radius, taper):
+    """Smooth window: 1 inside the supervised radius, 0 at the shell edge.
+
+    ``taper`` is ``(supervised_radius, shell_radius)``. Between the two the
+    window is the cubic smoothstep ``1 - (3 s**2 - 2 s**3)``, which has zero
+    slope at both ends so the network output joins the baseline smoothly.
+    """
+    start, end = taper[0], taper[1]
+    s = ((radius - start) / (end - start)).clamp(0.0, 1.0)
+    return 1.0 - s * s * (3.0 - 2.0 * s)
 
 
 PLASMA_BACKENDS = {'siren': SirenModel, 'mlp': MLPModel}
@@ -336,14 +383,28 @@ class PlasmaModel(nn.Module):
     ``backend`` selects the network (``siren`` or ``mlp``); all remaining
     keywords are passed to it. The network learns the temperature logit and the
     deviation of the density from the radial baseline.
+
+    ``deviation_taper=(supervised_radius, shell_radius)`` scales every network
+    output by a smooth window that is 1 inside the radius the observations
+    cover and 0 at the edge of the sampling shell. Beyond the data the plasma
+    then relaxes to the baseline at the initial temperature instead of taking
+    whatever value the unsupervised network happens to produce.
     """
 
     def __init__(self, log_T, density_offset_log10_cm3, backend='siren',
                  initial_log_T=None, cool_absorber=False,
-                 cool_density_offset_log10_cm3=7.0, density_profile=None, **backend_kwargs):
+                 cool_density_offset_log10_cm3=7.0, density_profile=None,
+                 deviation_taper=None, **backend_kwargs):
         super().__init__()
         if backend not in PLASMA_BACKENDS:
             raise ValueError(f"Unknown plasma backend {backend!r}; expected one of {sorted(PLASMA_BACKENDS)}")
+        if deviation_taper is not None:
+            start, end = (float(value) for value in deviation_taper)
+            if not (np.isfinite(start) and np.isfinite(end) and 0.0 < start < end):
+                raise ValueError('deviation_taper must be (supervised_radius, shell_radius) with 0 < supervised_radius < shell_radius')
+            self.register_buffer('deviation_taper', torch.tensor([start, end], dtype=torch.float32))
+        else:
+            self.deviation_taper = None
         out_dim, cool_offset = _validated_cool_offset(
             cool_absorber, cool_density_offset_log10_cm3
         )
@@ -369,19 +430,35 @@ class PlasmaModel(nn.Module):
     def forward(self, x):
         radius = torch.norm(x[..., :3], dim=-1, keepdim=True)
         raw = self.backend(x)
-        total_log_ne = raw[..., 1:2] + self.density_offset_log10_cm3
-
-        # The network output is the deviation from the radial density baseline.
-        total_log_ne = total_log_ne + _log10_density_baseline(radius, *self.density_profile)
+        if self.deviation_taper is not None:
+            raw = raw * _deviation_taper(radius, self.deviation_taper)
+        # The network outputs are deviations from the radial density baseline,
+        # whose scale height may follow the predicted temperature.
+        log_T = _bounded_log_temperature(raw, self.T_range, self.temperature_logit_offset)
+        total_log_ne = (
+            raw[..., 1:2] + self.density_offset_log10_cm3
+            + _log10_density_baseline(radius, *self.density_profile, log_T=log_T)
+        )
+        cool_log_density = None
+        if self.cool_absorber:
+            # The cool absorber has no temperature of its own. It follows the
+            # base profile, the baseline at the initial temperature, so dense
+            # cool material stays low and the absorber cannot steer log T.
+            initial_log_T = _bounded_log_temperature(
+                torch.zeros_like(radius), self.T_range, self.temperature_logit_offset
+            )
+            cool_log_density = (
+                raw[..., 2:3] + self.cool_density_offset_log10_cm3
+                + _log10_density_baseline(radius, *self.density_profile, log_T=initial_log_T)
+            )
         return _pointwise_plasma_state(
-            raw, self.T_range, self.temperature_logit_offset, total_log_ne,
-            self.cool_density_offset_log10_cm3 if self.cool_absorber else None,
+            raw, self.T_range, self.temperature_logit_offset, total_log_ne, cool_log_density,
         )
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
         # Earlier models subclassed the network, so its weights had no backend prefix.
         own = {'density_offset_log10_cm3', 'temperature_logit_offset', 'T_range',
-               'cool_density_offset_log10_cm3'}
+               'cool_density_offset_log10_cm3', 'deviation_taper'}
         for key in [k for k in state_dict if k.startswith(prefix)]:
             name = key[len(prefix):]
             if name not in own and not name.startswith('backend.'):
@@ -585,20 +662,80 @@ class PositionalEncoding(nn.Module):
         return encoded
 
 
-class GaussianPositionalEncoding(nn.Module):
+class IsotropicPositionalEncoding(nn.Module):
+    """Positional encoding whose spatial wave vectors point in random directions.
 
-    def __init__(self, d_input, num_freqs=32, scale=4):
+    The first ``spatial_dim`` input axes form one block with M log-spaced
+    magnitudes f_m = 2 ** linspace(min, max, M) * pi, each paired with a unit
+    direction drawn uniformly on the sphere, so the spatial features are
+    sin(b_m . p) and cos(b_m . p) with b_m = f_m d_m. The kernel induced by the
+    features is then isotropic instead of being widest along the coordinate
+    axes. The remaining axes (time) are encoded per axis as in
+    ``PositionalEncoding``, so static structure stays representable by spatial
+    features alone. ``num_frequencies``, ``min_frequencies`` and
+    ``max_frequencies`` take one entry for the spatial block followed by one per
+    remaining axis. The directions are sampled once and stored with the model.
+    """
+
+    # Drawn at construction, not derived from the configuration: a reloaded model must take
+    # these from its saved state instead of comparing them against a fresh draw.
+    randomly_initialized = ('B',)
+
+    def __init__(self, in_dim, num_frequencies=32, min_frequencies=0, max_frequencies=6, spatial_dim=3):
         super().__init__()
-        dist = Normal(loc=0, scale=scale)
-        frequencies = dist.sample([num_freqs, d_input])
-        self.frequencies = nn.Parameter(2 * torch.pi * frequencies, requires_grad=False)
-        self.d_output = d_input * (num_freqs * 2 + 1)
+        assert in_dim >= spatial_dim, 'in_dim must contain the spatial axes'
+        n_blocks = 1 + in_dim - spatial_dim
+        num_frequencies = [num_frequencies] * n_blocks if not isinstance(num_frequencies, Iterable) else list(num_frequencies)
+        min_frequencies = [min_frequencies] * n_blocks if not isinstance(min_frequencies, Iterable) else list(min_frequencies)
+        max_frequencies = [max_frequencies] * n_blocks if not isinstance(max_frequencies, Iterable) else list(max_frequencies)
+        assert len(num_frequencies) == len(min_frequencies) == len(max_frequencies) == n_blocks, \
+            f'frequency settings take one entry for the spatial block and one per remaining axis ({n_blocks} entries)'
+
+        self.spatial_dim = spatial_dim
+        num_spatial = num_frequencies[0]
+        magnitudes = 2 ** torch.linspace(min_frequencies[0], max_frequencies[0], num_spatial) * torch.pi
+        directions = torch.randn(num_spatial, spatial_dim)
+        directions = directions / directions.norm(dim=-1, keepdim=True)
+        self.B = nn.Parameter(magnitudes[:, None] * directions, requires_grad=False)
+
+        self.other = None
+        if in_dim > spatial_dim:
+            self.other = PositionalEncoding(in_dim - spatial_dim, num_frequencies[1:],
+                                            min_frequencies[1:], max_frequencies[1:])
+        self.d_output = 2 * num_spatial + (self.other.d_output if self.other is not None else 0)
 
     def forward(self, x):
-        encoded = torch.einsum('...j,ij->...ij', x, self.frequencies)
-        encoded = encoded.reshape(*x.shape[:-1], -1)
-        encoded = torch.cat([x, torch.sin(encoded), torch.cos(encoded)], -1)
-        return encoded
+        projected = linear(x[..., :self.spatial_dim], self.B)
+        encoded = [torch.sin(projected), torch.cos(projected)]
+        if self.other is not None:
+            encoded.append(self.other(x[..., self.spatial_dim:]))
+        return torch.cat(encoded, -1)
+
+
+class GaussianPositionalEncoding(nn.Module):
+    """Gaussian random Fourier features (Tancik et al., 2020).
+
+    gamma(v) = [sin(2 pi B v), cos(2 pi B v)] with B in R^{m x d}, B_ij ~ N(0, sigma^2).
+    The projection matrix is sampled once and kept fixed. ``scale`` is sigma; a
+    per-axis list rescales the columns of B, which is equivalent to rescaling the
+    corresponding input coordinates.
+    """
+
+    randomly_initialized = ('B',)
+
+    def __init__(self, in_dim, num_frequencies=256, scale=1.0):
+        super().__init__()
+        scale = torch.as_tensor(scale, dtype=torch.float32)
+        if scale.ndim == 0:
+            scale = scale.expand(in_dim)
+        assert scale.shape == (in_dim,), 'scale must be a scalar or one value per input axis (in_dim)'
+        B = torch.randn(num_frequencies, in_dim) * scale[None, :]
+        self.B = nn.Parameter(B, requires_grad=False)
+        self.d_output = 2 * num_frequencies
+
+    def forward(self, x):
+        projected = 2 * torch.pi * linear(x, self.B)
+        return torch.cat([torch.sin(projected), torch.cos(projected)], -1)
 
 
 class TimeSplitEncoding(nn.Module):

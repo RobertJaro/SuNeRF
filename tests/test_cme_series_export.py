@@ -174,3 +174,58 @@ def test_kinematic_fits_recover_constant_acceleration():
     assert inner.sum() > 30 and not inner[0] and not inner[-1] and not inner[5]
     assert np.allclose(speed[inner], speed_kms + acceleration_ms2 * 1e-3 * times[inner], rtol=1e-6)
     assert np.allclose(local_acceleration[inner], acceleration_ms2, rtol=1e-5)
+
+
+def test_track_outward_is_monotonic_and_stops_at_the_outer_limit():
+    from sunerf.evaluation.psi.common import track_outward
+
+    radius = np.arange(3.0, 30.0 + 1e-6, 0.25)
+    times = np.arange(0, 120)
+    center = 2.0 + 0.4 * times  # the body leaves the grid after about 70 steps
+    background = 1.0 + 0.5 * np.exp(-0.5 * ((radius - 10.0) / 1.0) ** 2)  # static bump of the ambient corona
+    body = 2.0 * np.exp(-0.5 * ((radius[None] - center[:, None]) / 2.0) ** 2)
+    # the corona behind the CME stays enhanced by 30 % below 6 R_sun: a feature to fall back on
+    wake = 0.3 * (radius[None] < 6.0) * (times[:, None] > 30)
+    profiles = background[None] * (1.0 + body + wake)
+    profiles[0] = background
+
+    tracks = track_outward(profiles, radius)
+
+    for name, track in tracks.items():
+        finite = np.isfinite(track)
+        assert finite.sum() > 20, name
+        assert np.all(np.diff(track[finite]) >= 0), name
+        # after the feature has reached the top it is not picked up again in the wake
+        assert not finite[np.flatnonzero(finite)[-1] + 1:].any(), name
+        assert not finite[-20:].any(), name
+    inside = np.isfinite(tracks["body_peak"]) & (center > 5.0) & (center < 28.0)
+    assert np.abs(tracks["body_peak"][inside] - center[inside]).max() < 0.3
+    # the edge runs ahead of the peak and therefore reaches the outer limit first
+    edge = inside & np.isfinite(tracks["body_edge"])
+    assert edge.sum() > 20
+    assert np.all(tracks["body_edge"][edge] > tracks["body_peak"][edge])
+    both = edge & np.isfinite(tracks["leading_edge"])
+    assert np.all(tracks["leading_edge"][both] > tracks["body_edge"][both])
+
+
+def test_latitude_cut_follows_the_shell_and_does_not_depend_on_the_mesh():
+    from sunerf.evaluation.cme.export_cme_series import cut_latitudes, latitude_cut
+
+    target = np.deg2rad(-20.0), np.deg2rad(245.0)
+    cut = latitude_cut(_shell_frame(15.0, *target), *target)
+    latitude = cut_latitudes(target[0])
+    assert cut.shape == (latitude.size, RADIUS_GRID.size)
+    inside = np.abs(latitude - target[0]) < np.deg2rad(20.0)
+    assert np.all(np.abs(RADIUS_GRID[np.argmax(cut[inside], axis=1)] - 15.0) < 0.5)
+
+    fine, coarse = _analytic_frame(251, 368), _analytic_frame(142, 231)
+    assert np.allclose(latitude_cut(fine, *target), latitude_cut(coarse, *target), rtol=0.01)
+
+
+def test_keep_outward_drops_samples_behind_the_track():
+    from sunerf.evaluation.psi.common import keep_outward
+
+    track = np.array([np.nan, 5.0, 6.0, 5.8, 7.0, 3.0, np.nan, 9.0, 4.0, 4.5])
+    kept = keep_outward(track, tolerance=0.5)
+
+    assert np.allclose(kept, [np.nan, 5.0, 6.0, 6.0, 7.0, np.nan, np.nan, 9.0, np.nan, np.nan], equal_nan=True)

@@ -91,6 +91,9 @@ def test_validation_end_releases_callback_tensors():
 def test_thomson_instrument_validation_does_not_return_los_diagnostics():
     class _FakeModule:
         scaling_modules = {"instrument": nn.Identity()}
+        correction_modules = {}
+        background_modules = {}
+        calibration_modules = {}
         ratio_range = (0.0, 3.0)
         ratio_epsilon = 1.0e-6
         _polarization_ratio = ThomsonSuNeRFModule._polarization_ratio
@@ -132,6 +135,15 @@ def test_thomson_instrument_validation_does_not_return_los_diagnostics():
     assert "distance" not in output
     assert "distance_from_sun" not in output
     assert "distance_from_obs" not in output
+
+    # Without reference pB, the model ratio is still returned.
+    batch = {
+        "instrument": "instrument",
+        "image": torch.tensor([[1.0, float("nan")]] * 3),
+    }
+    output = ThomsonSuNeRFModule._val_instrument(_FakeModule(), batch, "image")
+    assert torch.isnan(output["target_ratio"]).all()
+    assert torch.isfinite(output["model_ratio"]).all()
 
 
 def test_fixed_viewpoint_cache_preserves_pixel_order_and_full_hpc_coordinates(tmp_path):

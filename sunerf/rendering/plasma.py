@@ -1,3 +1,4 @@
+import logging
 import copy
 
 import numpy as np
@@ -9,6 +10,8 @@ from sunerf.absorption.torch import PhotoionizationOpacity
 from sunerf.physics.euv import R_SUN_CM, torch_trapezoid_node_weights
 from sunerf.configuration import canonical_channel_id
 from sunerf.response import load_response_artifact
+
+logger = logging.getLogger(__name__)
 
 
 class PlasmaRadiativeTransfer(nn.Module):
@@ -75,7 +78,7 @@ class PlasmaRadiativeTransfer(nn.Module):
         )
 
         self.absorption = absorption_model is not None
-        print('Using absorption:', self.absorption)
+        logger.debug('Using absorption: %s', self.absorption)
 
         learnable = bool(temperature_response_config.get('learnable', False))
         self.learnable = learnable
@@ -447,6 +450,8 @@ class PlasmaRadiativeTransfer(nn.Module):
             'weights': weights,
             'mean_absorption': mean_absorption,
             'em': local_emission_measure_density,
+            'log_T': mean_log_T,
+            'node_dl_cm': node_dl_cm,
             'distance': distance,
             'calibration_regularization': self.calibration_regularization(),
             'instrument_gain_delta_dex': self.instrument_gain_delta_dex,
@@ -469,19 +474,16 @@ class PlasmaRadiativeTransfer(nn.Module):
         ).clamp_min(0.0)
         density_path_weight = electron_density * node_dl_cm[..., None]
         column_electron_density = density_path_weight.sum(dim=1)
-        local_temperature = self._safe_pow10(mean_log_T)
-        mean_temperature = (
-            (local_temperature * density_path_weight).sum(dim=1)
-            / column_electron_density.clamp_min(
-                torch.finfo(column_electron_density.dtype).tiny
-            )
-        )
-        mean_log_temperature = torch.log10(
-            mean_temperature.clamp_min(torch.finfo(mean_temperature.dtype).tiny)
-        )
         height_map = (weights * distance).sum(-1)
         emission_measure_along_ray = local_emission_measure_density * node_dl_cm
         emission_measure = emission_measure_along_ray.sum(dim=1)
+        # Emission-measure weighted mean of log T: the temperature of the plasma
+        # that produces the observed emission. A linear mean of T would let a
+        # few hot, tenuous nodes on a long chord dominate the whole ray.
+        mean_log_temperature = (
+            (mean_log_T * emission_measure_along_ray[..., None]).sum(dim=1)
+            / emission_measure[..., None].clamp_min(torch.finfo(emission_measure.dtype).tiny)
+        )
         # With one temperature per point the DEM is the LOS distribution of
         # n_e^2 dl over temperature, deposited on the diagnostic nodes.
         emission_measure_per_temperature_bin = self._emission_measure_histogram(

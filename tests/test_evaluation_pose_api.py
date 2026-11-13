@@ -35,6 +35,24 @@ def test_pose_spherical_returns_numpy_camera_matrix():
     assert pose.shape == (4, 4)
 
 
+def test_pose_spherical_keeps_solar_north_up_through_the_poles():
+    longitude = np.radians(185.6)
+    previous = None
+    for latitude in np.radians(np.linspace(-90.0, 90.0, 721)):
+        pose = pose_spherical(longitude, latitude, 215.0)
+        rotation = pose[:3, :3]
+        np.testing.assert_allclose(rotation.T @ rotation, np.eye(3), atol=1e-5)
+        assert np.isclose(np.linalg.det(rotation), 1.0, atol=1e-5)
+        north = np.array([-np.sin(latitude) * np.cos(longitude),
+                          -np.sin(latitude) * np.sin(longitude),
+                          np.cos(latitude)])
+        np.testing.assert_allclose(rotation[:, 1], north, atol=1e-5)
+        if previous is not None:
+            # 0.25 deg latitude steps change the image x axis only continuously
+            assert rotation[:, 0] @ previous[:, 0] > 0.999
+        previous = rotation
+
+
 def test_hci_evaluation_observer_is_transformed_to_training_carrington_frame():
     obstime = datetime(2025, 1, 1)
     observer = SkyCoord(

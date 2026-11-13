@@ -3,10 +3,13 @@
 
 The top row shows the mass per unit radius as a function of radius and time for
 GT and every run.  The ambient wind is nearly constant in this quantity, so the
-CME is the ridge.  The lines mark the leading edge (outermost radius where the
-mass per radius exceeds its value in the first frame by 10 %), the outer edge of
-the dense body and its peak; white lines belong to the shown density, black
-lines repeat GT.  The bottom row shows the mass inside fixed shells over time
+CME is the ridge.  The lines track the CME in the shown quantity relative to its
+first frame: the leading edge (outermost radius where the mass per radius exceeds
+the first frame by 10 %), the body peak (maximum of the ratio to the first frame)
+and the body edge (where the excess beyond the peak has dropped to half).  Every
+feature is tracked from its previous position outward and ends when it reaches
+the outer limit, so that the tracks do not fall back onto the background after
+the CME has left.  White lines belong to the shown density, black lines repeat GT.  The bottom row shows the mass inside fixed shells over time
 with the correlation coefficient of every run with GT.  A fully ionized
 hydrogen plasma converts electrons to mass.
 
@@ -25,12 +28,12 @@ from sunerf.evaluation.cme.export_layout import labelled_path
 from sunerf.evaluation.cme.mass_transport import PROTON_MASS_G
 from sunerf.evaluation.psi.common import (
     FIGURE_WIDTH, RUN_COLORS, TRUTH_COLOR, TRUTH_TITLE, add_colorbar, format_time_axis, load_series, save_figure,
-    series_leading_edge,
+    title_size, track_outward,
 )
 
 SHELLS = ((3.0, 15.0), (15.0, 30.0))
-# track of the series, label, line style
-TRACKS = ((None, "leading edge", "-"), ("body_edge_apex", "body edge", "--"), ("body_peak_median", "body peak", ":"))
+# feature of common.track_outward, label, line style
+TRACKS = (("leading_edge", "leading edge", "-"), ("body_edge", "body edge", "--"), ("body_peak", "body peak", ":"))
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,9 +52,10 @@ def shell_mass(entry, shell):
 
 
 def plot_tracks(axis, entry, color, labelled):
+    tracks = track_outward(entry["mass_per_radius"], entry["radius"])
     for key, label, style in TRACKS:
-        track = series_leading_edge(entry, "mass_per_radius") if key is None else entry[key]
-        axis.plot(entry["times"], track, style, color=color, linewidth=0.7, label=label if labelled else None)
+        axis.plot(entry["times"], tracks[key], style, color=color, linewidth=0.7,
+                  label=label if labelled else None)
 
 
 def correlation(reference, values):
@@ -80,7 +84,7 @@ def main() -> None:
         if column > 0:
             plot_tracks(axis, psi, "black", labelled=False)
         plot_tracks(axis, entry, "white", labelled=column == 0)
-        axis.set_title(label, fontsize=8)
+        axis.set_title(label, fontsize=title_size(len(series)))
         axis.set_xlabel("Time [UT]", fontsize=7)
         if column == 0:
             axis.set_ylabel(r"Radius [R$_\odot$]", fontsize=7)

@@ -11,17 +11,18 @@ def pose_spherical(longitude, latitude, r):
     ], dtype=np.float32)
 
     f = -p / (np.linalg.norm(p) + 1e-8)  # forward to origin
-    up0 = np.array([0, 0, 1], dtype=np.float32)
-    # Avoid degeneracy near poles where f becomes parallel to the nominal up vector.
-
-    if np.abs(np.dot(f, up0)) > 0.999:
-        up0 = np.array([0, 1, 0], dtype=np.float32)
+    # Image up is the local solar north at the observer (the projection of +z
+    # onto the image plane). The closed form stays continuous at the poles,
+    # where it takes the limit along the given longitude.
+    uvec = np.array([
+        -np.sin(latitude) * np.cos(longitude),
+        -np.sin(latitude) * np.sin(longitude),
+        np.cos(latitude)
+    ], dtype=np.float32)
 
     # Right-handed camera frame: r x u = -f
-    rvec = np.cross(f, up0)
+    rvec = np.cross(f, uvec)
     rvec /= (np.linalg.norm(rvec) + 1e-8)
-
-    uvec = np.cross(rvec, f)
 
     # camera looks along -z_cam => +z_cam = -f
     R = np.stack([rvec, uvec, -f], axis=1)  # columns are camera axes in world

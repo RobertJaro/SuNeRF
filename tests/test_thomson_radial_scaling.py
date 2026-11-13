@@ -114,6 +114,19 @@ def test_scaling_mask_normalization_preserves_negative_values():
     torch.testing.assert_close(adjusted, torch.tensor([[-1.0], [0.0], [2.0]]))
 
 
+def test_r2_mask_compensates_inverse_square_falloff():
+    projected_radius = np.array([[[2.0, 4.0], [8.0, np.nan]]], dtype=np.float32)
+    image_stack = np.stack([projected_radius ** -2, 0.5 * projected_radius ** -2], axis=-1)
+
+    mask = create_scaling_mask(projected_radius, {"type": "r2"})
+
+    assert mask.shape == image_stack.shape
+    adjusted = image_stack / mask
+    np.testing.assert_allclose(adjusted[0, :, :, 0].ravel()[:3], 1.0)
+    np.testing.assert_allclose(adjusted[0, :, :, 1].ravel()[:3], 0.5)
+    assert np.isnan(mask[0, 1, 1]).all()
+
+
 def test_radial_mad_requires_image_stack():
     with pytest.raises(ValueError, match="require image_stack"):
         create_scaling_mask(np.ones((1, 4, 4)), {"type": "radial_mad"})

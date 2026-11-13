@@ -40,14 +40,22 @@ class TimeShuffler(nn.Module):
 
 
 class NormalTimeShuffler(nn.Module):
-    """Gaussian time jitter whose width decays linearly from start to end."""
+    """Gaussian time jitter whose width decays linearly from start to end.
 
-    def __init__(self, start=50, end=0.0, iterations=1e5, instruments=None, seconds_per_dt=None):
+    The width stays at ``start`` for the first ``cold_iterations`` steps, then
+    decays over ``iterations`` steps to ``end`` and stays there.
+    """
+
+    def __init__(self, start=50, end=0.0, iterations=1e5, cold_iterations=0,
+                 instruments=None, seconds_per_dt=None):
         super().__init__()
+        self.start = float(start)
         self.end = end
+        self.cold_iterations = int(cold_iterations)
+        if self.cold_iterations < 0:
+            raise ValueError('cold_iterations must be non-negative.')
         self.scaling = nn.Parameter(torch.tensor(start, dtype=torch.float32), requires_grad=False)
-        # Width removed per training step; the schedule reaches ``end`` after
-        # ``iterations`` steps and stays there.
+        # Width removed per training step after the cold phase.
         self.gamma = torch.tensor((start - end) / iterations, dtype=torch.float32)
         self.instruments = instruments
         # Conversion from normalized model time to seconds; enables logging the
@@ -65,8 +73,19 @@ class NormalTimeShuffler(nn.Module):
     def _shuffle_times(self, time):
         time += torch.randn_like(time) * self.scaling
 
-    def on_train_batch_end(self, *args, **kwargs):
-        self.scaling.copy_((self.scaling - self.gamma).clamp_min(self.end))
+    def set_step(self, global_step):
+        """Set the width from the absolute optimizer step (resume-safe)."""
+        decay_steps = max(0, int(global_step) - self.cold_iterations)
+        width = max(self.start - float(self.gamma) * decay_steps, float(self.end))
+        self.scaling.fill_(width)
+
+    def on_train_batch_end(self, *args, global_step=None, **kwargs):
+        if global_step is not None:
+            self.set_step(global_step)
+        elif self.cold_iterations:
+            raise ValueError('cold_iterations requires the global step.')
+        else:
+            self.scaling.copy_((self.scaling - self.gamma).clamp_min(self.end))
         @rank_zero_only
         def _log():
             scaling = float(self.scaling.detach().cpu())

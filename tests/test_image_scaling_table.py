@@ -92,7 +92,7 @@ def test_config_tables_pool_training_datasets_and_are_reused(tmp_path):
     table_path = tmp_path / 'image_scaling.yaml'
     config = {
         'instruments': [_instrument(str(table_path))],
-        'data': {'train_datasets': datasets, 'holdout': None},
+        'data': {'train_datasets': datasets},
     }
 
     estimate_config_scaling(config, datasets={'background'}, percentile=100, workers=1)
@@ -110,6 +110,34 @@ def test_config_tables_pool_training_datasets_and_are_reused(tmp_path):
     entry = load_scaling_table(table_path)['instruments']['AIA']
     assert entry['divisor'] == [25.0, 100.0]
     assert entry['source']['datasets'] == ['background', 'event']
+
+
+def test_config_tables_use_the_dataset_field_of_view(tmp_path):
+    import astropy.units as u
+
+    for channel in (171, 193):
+        data = np.full((4, 5), 10.0, dtype=np.float32)
+        data[0, 0] = 1000.0  # corner pixel, 2.5 arcsec from disk center
+        _aia_map(
+            channel, datetime(2020, 1, 1), data, prepared_schema='sunerf.prepared_euv.v2',
+            sensitivity_convention='reference_epoch',
+        ).save(tmp_path / f'{channel}.prepared.fits')
+    dataset = {
+        'type': 'AIA', 'key': 'aia', 'instrument_key': 'AIA',
+        'data_path': str(tmp_path / '*.prepared.fits'), 'wavelengths': [171, 193],
+    }
+    table_path = tmp_path / 'image_scaling.yaml'
+    config = {
+        'instruments': [_instrument(str(table_path))],
+        'data': {'train_datasets': [dataset]},
+    }
+
+    estimate_config_scaling(config, percentile=100, workers=1)
+    assert load_scaling_table(table_path)['instruments']['AIA']['divisor'] == [1000.0, 1000.0]
+
+    dataset['max_radius_rsun'] = (1.7 * u.arcsec).to_value(u.rad) * (1 * u.AU).to_value(u.R_sun)
+    estimate_config_scaling(config, percentile=100, workers=1, overwrite=True)
+    assert load_scaling_table(table_path)['instruments']['AIA']['divisor'] == [10.0, 10.0]
 
 
 def test_packaged_table_reference_resolves_like_a_path(tmp_path, monkeypatch):

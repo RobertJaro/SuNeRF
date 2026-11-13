@@ -6,11 +6,11 @@ import math
 
 import numpy as np
 import wandb
-from astropy.visualization import AsinhStretch, ImageNormalize
 from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from matplotlib import pyplot as plt
 from matplotlib.colors import LogNorm, Normalize, TwoSlopeNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from skimage.metrics import structural_similarity
 
 from sunerf.configuration import canonical_channel_id
 from sunerf.train.callback import BaseCallback
@@ -49,6 +49,23 @@ _DIAGNOSTIC_FIELDS = {
         "log",
     ),
 }
+
+
+# Mean temperature and emission height are only meaningful where plasma
+# emits: pixels whose emission measure is below this fraction of the image's
+# 99th percentile are masked in those two panels.
+_EMISSION_MEASURE_FLOOR = 1.0e-3
+_EMISSION_WEIGHTED_DIAGNOSTICS = ("mean_log_temperature", "emission_height")
+
+
+def _emission_measure_mask(emission_measure, image_mask):
+    """Pixels with enough emission measure for emission-weighted diagnostics."""
+    values = _finite_values(emission_measure, image_mask, positive=True)
+    if values.size == 0:
+        return image_mask
+    floor = _EMISSION_MEASURE_FLOOR * np.percentile(values, 99.0)
+    with np.errstate(invalid="ignore"):
+        return image_mask & (np.nan_to_num(emission_measure, nan=0.0) >= floor)
 
 
 def _available_diagnostics(quantities, outputs, renderer):
@@ -103,6 +120,48 @@ def _positive_log_norm(values, mask=None, percentile=99.5):
     return LogNorm(vmin=low, vmax=high)
 
 
+def _match_mean_and_std(values, reference):
+    """Affine-rescale ``values`` so its mean and std over finite pixels match
+    ``reference``; a constant input is shifted to the reference mean."""
+    finite = np.isfinite(values) & np.isfinite(reference)
+    if not finite.any():
+        return values
+    mean = float(np.mean(values[finite]))
+    std = float(np.std(values[finite]))
+    reference_mean = float(np.mean(reference[finite]))
+    reference_std = float(np.std(reference[finite]))
+    scale = reference_std / std if std > 0 else 1.0
+    return (values - mean) * scale + reference_mean
+
+
+# Smallest image side for the default 7x7 SSIM window.
+_SSIM_MIN_SIDE = 7
+
+
+def _image_metrics(observed, predicted, mask):
+    """MSE, PSNR [dB] and SSIM of one full channel image over ``mask``.
+
+    Images are in loss space (instrument scaling maps them to [0, 1]), so the
+    data range is 1 and the PSNR matches ``train/psnr``. SSIM is computed on
+    the full image with masked pixels zeroed and averaged over ``mask``.
+    """
+    mask = mask & np.isfinite(observed) & np.isfinite(predicted)
+    if not mask.any():
+        return None
+    mse = float(np.mean((predicted[mask] - observed[mask]) ** 2))
+    psnr = -10.0 * math.log10(mse) if mse > 0 else math.inf
+    ssim = math.nan
+    if min(observed.shape) >= _SSIM_MIN_SIDE:
+        _, ssim_map = structural_similarity(
+            np.where(mask, observed, 0.0),
+            np.where(mask, predicted, 0.0),
+            data_range=1.0,
+            full=True,
+        )
+        ssim = float(np.mean(ssim_map[mask]))
+    return {"loss": mse, "psnr": psnr, "ssim": ssim}
+
+
 def _channel_cmap(channel):
     try:
         return plt.get_cmap(channel.get("cmap", "gray"))
@@ -124,9 +183,11 @@ class EUVTomographyCallback(BaseCallback):
         *,
         every_n_validations=1,
         figure_dpi=150,
+        normalize=False,
     ):
         super().__init__(ds_key)
         self.instrument_key = str(instrument_key)
+        self.normalize = bool(normalize)
         self.image_shape = tuple(int(value) for value in image_shape)
         self.products = products
         self.every_n_validations = int(every_n_validations)
@@ -152,15 +213,15 @@ class EUVTomographyCallback(BaseCallback):
             selected_metadata.append(channel)
         self.channel_indices = tuple(indices)
         self.channel_metadata = tuple(selected_metadata)
+        self.channel_ids = tuple(str(channel["id"]) for channel in channel_metadata)
 
-        requirements = {"valid_mask"}
-        if products["channel_comparison"]["enabled"]:
-            requirements.update({"target_image", "pred_image"})
+        # Images are always needed for the validation metrics.
+        requirements = {"valid_mask", "target_image", "pred_image"}
         if products["plasma_diagnostics"]["enabled"]:
-            requirements.update(
-                _DIAGNOSTIC_FIELDS[quantity][0]
-                for quantity in products["plasma_diagnostics"]["quantities"]
-            )
+            quantities = products["plasma_diagnostics"]["quantities"]
+            requirements.update(_DIAGNOSTIC_FIELDS[quantity][0] for quantity in quantities)
+            if any(quantity in _EMISSION_WEIGHTED_DIAGNOSTICS for quantity in quantities):
+                requirements.add(_DIAGNOSTIC_FIELDS["emission_measure"][0])
         if products["thermal_distribution"]["enabled"]:
             requirements.add("differential_emission_measure_cm5_per_dex")
         if products["ray_sampling"]["enabled"]:
@@ -215,22 +276,15 @@ class EUVTomographyCallback(BaseCallback):
             channel_mask = valid_mask[..., channel_index]
             observed = np.where(channel_mask, target[..., channel_index], np.nan)
             predicted = np.where(channel_mask, prediction[..., channel_index], np.nan)
+            if self.normalize:
+                predicted = _match_mean_and_std(predicted, observed)
+            # Both images arrive in loss space (the instrument scaling already
+            # applied), so they are shown on a shared linear scale exactly as
+            # the training loss compares them.
             intensity_norm = _linear_norm(
                 np.concatenate([observed.ravel(), predicted.ravel()]),
                 percentile=settings["intensity_percentile"],
             )
-            if settings["stretch"] == "log":
-                intensity_norm = _positive_log_norm(
-                    np.concatenate([observed.ravel(), predicted.ravel()]),
-                    percentile=settings["intensity_percentile"],
-                )
-            elif settings["stretch"] == "asinh":
-                intensity_norm = ImageNormalize(
-                    vmin=intensity_norm.vmin,
-                    vmax=intensity_norm.vmax,
-                    stretch=AsinhStretch(0.02),
-                    clip=True,
-                )
             residual = predicted - observed
             finite_residual = _finite_values(np.abs(residual))
             residual_limit = (
@@ -264,7 +318,10 @@ class EUVTomographyCallback(BaseCallback):
                 values, cmap, norm = row_values[row_name]
                 axis = axes[row_index, column]
                 image = axis.imshow(values, origin="lower", cmap=cmap, norm=norm)
-                axis.set_title(f"{metadata['id']} — {row_name.replace('_', ' ')}")
+                title = f"{metadata['id']} — {row_name.replace('_', ' ')}"
+                if self.normalize and row_name != "observation":
+                    title += " (normalized)"
+                axis.set_title(title)
                 axis.set_axis_off()
                 _append_colorbar(figure, axis, image)
         figure.tight_layout()
@@ -277,6 +334,11 @@ class EUVTomographyCallback(BaseCallback):
             return None
         valid_mask = outputs["valid_mask"].astype(bool)
         image_mask = np.any(valid_mask, axis=-1) if valid_mask.ndim == 3 else valid_mask
+        emission_mask = image_mask
+        if any(quantity in _EMISSION_WEIGHTED_DIAGNOSTICS for quantity in quantities):
+            emission_mask = _emission_measure_mask(
+                np.squeeze(outputs[_DIAGNOSTIC_FIELDS["emission_measure"][0]]), image_mask
+            )
         figure, axes = plt.subplots(
             1,
             len(quantities),
@@ -287,7 +349,8 @@ class EUVTomographyCallback(BaseCallback):
         for axis, quantity in zip(axes[0], quantities):
             field, title, cmap, norm_kind = _DIAGNOSTIC_FIELDS[quantity]
             values = np.squeeze(outputs[field])
-            values = np.where(image_mask, values, np.nan)
+            mask = emission_mask if quantity in _EMISSION_WEIGHTED_DIAGNOSTICS else image_mask
+            values = np.where(mask, values, np.nan)
             if norm_kind == "log":
                 norm = _positive_log_norm(values)
             elif norm_kind == "fraction":
@@ -424,15 +487,53 @@ class EUVTomographyCallback(BaseCallback):
         figure.tight_layout()
         return figure
 
+    def _compute_metrics(self, outputs):
+        """Loss, PSNR and SSIM per channel and averaged over all channels."""
+        target = outputs["target_image"]
+        prediction = outputs["pred_image"]
+        valid_mask = outputs["valid_mask"].astype(bool)
+        if valid_mask.shape != target.shape:
+            valid_mask = np.broadcast_to(valid_mask, target.shape)
+        metrics = {}
+        per_channel = []
+        for channel_index, channel_id in enumerate(self.channel_ids):
+            mask = valid_mask[..., channel_index]
+            observed = np.where(mask, target[..., channel_index], np.nan)
+            predicted = np.where(mask, prediction[..., channel_index], np.nan)
+            if self.normalize:
+                predicted = _match_mean_and_std(predicted, observed)
+            channel_metrics = _image_metrics(observed, predicted, mask)
+            if channel_metrics is None:
+                continue
+            per_channel.append(channel_metrics)
+            for name, value in channel_metrics.items():
+                metrics[f"validation/{name}.{self.ds_key}.{channel_id}"] = value
+        if per_channel:
+            loss = float(np.mean([entry["loss"] for entry in per_channel]))
+            metrics[f"validation/loss.{self.ds_key}"] = loss
+            metrics[f"validation/psnr.{self.ds_key}"] = (
+                -10.0 * math.log10(loss) if loss > 0 else math.inf
+            )
+            metrics[f"validation/ssim.{self.ds_key}"] = float(
+                np.mean([entry["ssim"] for entry in per_channel])
+            )
+        return metrics
+
     @rank_zero_only
     def on_validation_end(self, trainer, pl_module):
         self._validation_count += 1
-        if self._validation_count % self.every_n_validations:
-            return
+        plot_figures = self._validation_count % self.every_n_validations == 0
         raw_outputs = self.get_validation_outputs(pl_module)
         if raw_outputs is None:
             return
         outputs = self._reshape_outputs(raw_outputs)
+        # Metrics are cheap and logged at every validation; figures follow
+        # every_n_validations.
+        metrics = self._compute_metrics(outputs)
+        if metrics:
+            wandb.log(metrics)
+        if not plot_figures:
+            return
         renderer = pl_module.rendering.rendering_modules[self.instrument_key]
 
         if self.products["channel_comparison"]["enabled"]:

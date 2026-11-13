@@ -1,4 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/bash -l
+
+#PBS -N SuNeRF
+#PBS -A P22100000
+#PBS -q main
+#PBS -l select=1:ncpus=16:mem=128gb
+#PBS -l walltime=06:00:00
+
 set -euo pipefail
 
 ################################################################################
@@ -11,9 +18,7 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 ################################################################################
 REPO_DIR="/glade/u/home/rjarolim/projects/SuNeRF"
 DATA_ROOT="/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09"
-START="2025-09-01T00:00:00"
-END="2025-10-01T00:00:00"
-WORKERS="10"
+WORKERS="16"
 
 COR_RAW_DIR="${DATA_ROOT}/cor"
 COR_PREP_DIR="${DATA_ROOT}/cor_prep"
@@ -26,33 +31,14 @@ MASK_SMOOTH_ANGLE_DEG=60
 MASK_SMOOTH_FRACTION=0.02
 
 ################################################################################
-# Download STEREO-A COR2 polarized triplets
-################################################################################
-python -m sunerf.data.download.download_cor \
-  --start "${START}" \
-  --end "${END}" \
-  --output "${COR_RAW_DIR}" \
-  --detector COR2
-
-################################################################################
-# Remove incomplete or invalid polarization triplets
-################################################################################
-python -m sunerf.data.cor.remove_invalid_triplets \
-  --glob "${COR_RAW_DIR}/*.fts" \
-  --clear-dir "${COR_CLEAR_RAW_DIR}"
-
-################################################################################
 # Run SECCHI_PREP through SolarSoft/IDL
 ################################################################################
 # Produces total-brightness, polarized-brightness, and clear FITS products.
-export SECCHI_INPUT_GLOB="${COR_RAW_DIR}/*.fts"
-export SECCHI_TB_OUT="${COR_PREP_DIR}/tB"
-export SECCHI_PB_OUT="${COR_PREP_DIR}/pB"
-csh "${REPO_DIR}/scripts/secchi_prep_triplets.csh"
+csh "${REPO_DIR}/scripts/secchi_prep_triplets.csh" \
+  "${COR_RAW_DIR}/*.fts" "${COR_PREP_DIR}/tB" "${COR_PREP_DIR}/pB"
 
-export SECCHI_CLEAR_INPUT_GLOB="${COR_CLEAR_RAW_DIR}/*.fts"
-export SECCHI_CLEAR_OUT="${COR_PREP_DIR}/clear"
-csh "${REPO_DIR}/scripts/secchi_prep_clear.csh"
+csh "${REPO_DIR}/scripts/secchi_prep_clear.csh" \
+  "${COR_CLEAR_RAW_DIR}/*.fts" "${COR_PREP_DIR}/clear"
 
 ################################################################################
 # Prepare total- and polarized-brightness maps
@@ -75,6 +61,7 @@ python -m sunerf.data.coronagraph.prep_coronagraph \
   --occ_min 4000 \
   --occ_max 15000 \
   --resize 512 512 \
+  --n_images 3 6 \
   --num_workers "${WORKERS}"
 
 ################################################################################

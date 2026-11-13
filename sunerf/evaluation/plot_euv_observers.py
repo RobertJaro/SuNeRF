@@ -33,7 +33,7 @@ from astropy import units as u
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.io.fits.verify import VerifyWarning
-from matplotlib.colors import Normalize
+from matplotlib.colors import LogNorm, Normalize
 from matplotlib.gridspec import GridSpec
 from sunpy.coordinates import frames
 from tqdm import tqdm
@@ -228,10 +228,11 @@ def plot_coverage(ax, cax, grouped: dict[str, list[Observation]]):
     edges, width_hours = time_bin_edges(np.concatenate(list(times.values())))
     counts = np.array([np.histogram(times[label], bins=edges)[0] for label in grouped])
 
-    maximum = max(1, int(counts.max()))
+    maximum = max(2, int(counts.max()))
+    # Empty bins are masked, so the log scale starts at one observation.
     image = ax.pcolormesh(edges, np.arange(len(grouped) + 1) - 0.5,
                           np.ma.masked_equal(counts, 0), cmap=COUNT_COLOR_MAP,
-                          vmin=0.5, vmax=maximum + 0.5)
+                          norm=LogNorm(vmin=1, vmax=maximum))
     ax.set_yticks(np.arange(len(grouped)))
     ax.set_yticklabels([f'{label}  ({len(grouped[label])})' for label in grouped])
     ax.set_ylim(-0.5, len(grouped) - 0.5)
@@ -243,9 +244,11 @@ def plot_coverage(ax, cax, grouped: dict[str, list[Observation]]):
     ax.set_title(f'Observation coverage ({format_bin_width(width_hours)} bins)')
     ax.grid(axis='x', alpha=0.25)
     ax.set_axisbelow(True)
-    ticks = np.arange(1, maximum + 1) if maximum <= 10 else None
-    plt.colorbar(image, cax=cax, ticks=ticks,
-                 label=f'Observations per {format_bin_width(width_hours)}')
+    colorbar = plt.colorbar(image, cax=cax,
+                            label=f'Observations per {format_bin_width(width_hours)}')
+    if maximum <= 10:
+        colorbar.set_ticks(np.arange(1, maximum + 1))
+        colorbar.set_ticklabels([str(tick) for tick in range(1, maximum + 1)])
 
 
 def plot_overview(grouped: dict[str, list[Observation]], output: Path):

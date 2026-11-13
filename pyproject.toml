@@ -75,6 +75,7 @@ include = ["sunerf*"]
 
 [tool.setuptools.package-data]
 "sunerf.resources" = ["manifest.json", "LICENSES.md", "*/*"]
+"sunerf.evaluation.cme" = ["punch_tau.csv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

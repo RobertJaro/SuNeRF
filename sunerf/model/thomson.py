@@ -124,6 +124,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                  continuity_reference_length_rsun=10.0,
                  velocity_min_kms=100.0,
                  velocity_max_kms=None,
+                 correction_schedule=None,
                  **kwargs):
         # setup rendering
         sampling_config = sampling_config if sampling_config is not None else {}
@@ -175,6 +176,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
                 correction_trainable = correction_config.pop('trainable', True)
                 correction_module = CorrectionModule(**correction_config)
                 correction_module.requires_grad_(correction_trainable)
+                correction_module.trainable = bool(correction_trainable)
                 correction_modules[instrument_key] = correction_module
             # calibration module
             if calibration:
@@ -237,6 +239,13 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
 
         self.correction_modules = nn.ModuleDict(correction_modules)
         self.calibration_modules = nn.ModuleDict(calibration_modules)
+        # Optional schedule for the image-plane corrections: ``'cold'`` learns
+        # them only while the dynamic branch is inactive (the cold phase) and
+        # freezes them afterwards, so the dynamic branch cannot push the static
+        # corona into the correction masks.
+        if correction_schedule not in (None, 'cold'):
+            raise ValueError(f"Unknown correction_schedule: {correction_schedule!r} (expected None or 'cold')")
+        self.correction_schedule = correction_schedule
         self.scaling_modules = nn.ModuleDict(scaling_modules)
         self.alignment_modules = nn.ModuleDict(alignment_modules)
         self.background_modules = nn.ModuleDict(background_modules)
@@ -419,7 +428,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
     def training_step(self, batch, batch_nb):
         insitu_batch = {
             k: v for k, v in batch.items()
-            if k != 'random' and isinstance(v, dict) and 'query_points' in v and 'density' in v
+            if not k.startswith('random') and isinstance(v, dict) and 'query_points' in v and 'density' in v
         }
         insitu_query_points = {
             k: self._jitter_insitu_query_points(v['query_points'])
@@ -427,7 +436,7 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         }
         dataset_batch = {
             k: v for k, v in batch.items()
-            if k != 'random' and k not in insitu_batch
+            if not k.startswith('random') and k not in insitu_batch
         }
         device = self.drop_off_distance.device
 
@@ -556,8 +565,10 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         has_active_physics_loss = any(active_physics.values())
         train_step = self.global_step + 1
         should_update_physics = train_step % self.physics_update_interval == 0
-        if 'random' in batch and has_active_physics_loss and should_update_physics:
-            query_points = batch['random']['coords']
+        # Several random samplers (e.g. background and CME window) are pooled.
+        random_keys = [k for k in batch if k.startswith('random')]
+        if random_keys and has_active_physics_loss and should_update_physics:
+            query_points = torch.cat([batch[k]['coords'] for k in random_keys], dim=0)
             query_points.requires_grad_(True)
 
             random_points = query_points
@@ -833,14 +844,25 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         rendering_out = self.rendering({dataset_key: batch})
         model_out = rendering_out["model_out"][dataset_key]
         model_image = model_out["image"]
+        # Forward-rendered image without star background and correction mask;
+        # only the scalar calibration gain is kept so it shares the model scale.
+        clean_image = None
+        if instrument_key in self.correction_modules or instrument_key in self.background_modules:
+            clean_image = model_image
+            if instrument_key in self.calibration_modules:
+                clean_image = self.calibration_modules[instrument_key](clean_image)
         model_image, aux = self._apply_image_modules(batch, model_image)
 
-        # ratios (safe for NaNs); same range and masking as the training loss
+        # ratios (safe for NaNs); same range as the training loss. Each ratio is
+        # masked independently so the model ratio is shown without reference pB.
         target_ratio, target_ratio_mask = self._polarization_ratio(image)
         model_ratio, model_ratio_mask = self._polarization_ratio(model_image)
-        valid_ratio = (target_ratio_mask & model_ratio_mask)[..., None]
-        target_ratio = torch.where(valid_ratio, target_ratio[..., None], torch.nan)
-        model_ratio = torch.where(valid_ratio, model_ratio[..., None], torch.nan)
+        target_ratio = torch.where(target_ratio_mask[..., None], target_ratio[..., None], torch.nan)
+        model_ratio = torch.where(model_ratio_mask[..., None], model_ratio[..., None], torch.nan)
+        clean_ratio = None
+        if clean_image is not None:
+            clean_ratio, clean_ratio_mask = self._polarization_ratio(clean_image)
+            clean_ratio = torch.where(clean_ratio_mask[..., None], clean_ratio[..., None], torch.nan)
 
         # scale images consistently
         image_scaling = self.scaling_modules[instrument_key]
@@ -848,10 +870,14 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
         model_image = self._normalize_with_scaling_mask(model_image, batch)
         target_image = image_scaling(image)
         model_image = image_scaling(model_image)
+        if clean_image is not None:
+            clean_image = image_scaling(self._normalize_with_scaling_mask(clean_image, batch))
 
         result = {
             "target_image": target_image,
             "model_image": model_image,
+            "clean_image": clean_image,
+            "clean_ratio": clean_ratio,
             "model_ratio": model_ratio,
             "target_ratio": target_ratio,
             "scaling_mask": batch.get("scaling_mask", None),
@@ -966,9 +992,25 @@ class ThomsonSuNeRFModule(BaseSuNeRFModule):
             state_dict.pop('velocity_max', None)
         super().on_load_checkpoint(checkpoint)
 
+    def _set_correction_schedule_step(self, global_step):
+        if self.correction_schedule != 'cold':
+            return
+        temporal_model = getattr(self.model, 'model', None)
+        cold_steps = getattr(temporal_model, 'cold_steps', None)
+        if cold_steps is None:
+            raise RuntimeError("correction_schedule 'cold' requires a model with a cold phase (split_temporal).")
+        in_cold_phase = int(global_step) < int(cold_steps.item())
+        for module in self.correction_modules.values():
+            module.requires_grad_(in_cold_phase and module.trainable)
+
+    def on_train_start(self):
+        # Resumed runs start past the cold phase; freeze before the first update.
+        self._set_correction_schedule_step(self.global_step)
+
     def on_train_batch_end(self, *args, **kwargs):
         self.model.step(self.global_step)
         self._set_lambda_schedule_step(self.global_step)
+        self._set_correction_schedule_step(self.global_step)
         for key, schedule in self.lambdas.items():
             if schedule['type'] != 'constant':
                 self.log(f'lambda_{key}', schedule['value'], sync_dist=True)

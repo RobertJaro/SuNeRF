@@ -45,7 +45,7 @@ python -m sunerf.data.download.download_cor \
   --detector COR2
 
 echo "Checking COR2 triplets"
-python -m sunerf.data.cor.remove_invalid_triplets \
+python -m sunerf.data.cor.split_triplets \
   --glob "${COR_RAW_DIR}/*.fts" \
   --clear-dir "${COR_RAW_DIR}/clear"
 
@@ -60,17 +60,12 @@ python -m sunerf.data.download.download_punch \
   --output "${PUNCH_PAM_RAW_DIR}"
 
 echo "Running SECCHI_PREP for COR2"
-export SECCHI_INPUT_GLOB="${COR_RAW_DIR}/*.fts"
-export SECCHI_TB_OUT="${COR_PREP_DIR}/tB"
-export SECCHI_PB_OUT="${COR_PREP_DIR}/pB"
-
-csh "${REPO_DIR}/scripts/secchi_prep_triplets.csh"
+csh "${REPO_DIR}/scripts/secchi_prep_triplets.csh" \
+  "${COR_RAW_DIR}/*.fts" "${COR_PREP_DIR}/tB" "${COR_PREP_DIR}/pB"
 
 echo "Running SECCHI_PREP for COR2 clear data"
-export SECCHI_CLEAR_INPUT_GLOB="${COR_CLEAR_RAW_DIR}/*.fts"
-export SECCHI_CLEAR_OUT="${COR_PREP_DIR}/clear"
-
-csh "${REPO_DIR}/scripts/secchi_prep_clear.csh"
+csh "${REPO_DIR}/scripts/secchi_prep_clear.csh" \
+  "${COR_CLEAR_RAW_DIR}/*.fts" "${COR_PREP_DIR}/clear"
 
 echo "Prepping COR2"
 python -m sunerf.data.coronagraph.prep_stereo_cor \

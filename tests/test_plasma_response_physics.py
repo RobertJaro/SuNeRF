@@ -86,6 +86,29 @@ def test_renderer_uses_cm_path_quadrature_and_dl_weighted_diagnostics(tmp_path):
     torch.testing.assert_close(output["dem"].sum(-1), output["emission_measure_cm5"])
 
 
+def test_mean_log_temperature_is_emission_measure_weighted(tmp_path):
+    path = tmp_path / "response.npz"
+    _write_response(path)
+    renderer = PlasmaRadiativeTransfer(
+        {"artifact": str(path), "channels": ["A"], "model_length_unit_cm": 1.0},
+        np.array([5.0, 6.0, 7.0], dtype=np.float32),
+    ).eval()
+    state = _ray_state((5.0, 6.0, 7.0), z_vals=(0.0, 1.0, 2.0))
+    # Equal path weights; a tenuous hot node next to dense cool ones.
+    state["total_ne"] = torch.tensor([[[3.0], [3.0], [0.3]]])
+    state["total_log_ne"] = torch.log10(state["total_ne"])
+    state["mean_log_T"] = torch.tensor([[[6.0], [6.0], [7.0]]])
+
+    output = renderer(**state)
+
+    # Weights n_e^2 dl: 4.5, 9, 0.045 (the trapezoid ends carry half a step), so
+    # the hot node barely moves the mean. A linear mean of T weighted by n_e
+    # would have given log10 of about 1.5 MK.
+    expected = (6.0 * 13.5 + 7.0 * 0.045) / 13.545
+    torch.testing.assert_close(output["mean_log_T"], torch.tensor([[expected]]), rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(output["mean_T"], output["mean_log_T"])
+
+
 def test_invalid_shell_ray_uses_safe_quadrature_until_outer_mask(tmp_path):
     path = tmp_path / "response.npz"
     _write_response(path)
@@ -402,6 +425,8 @@ def test_training_output_is_lean_unless_diagnostics_are_requested(tmp_path):
         "weights",
         "mean_absorption",
         "em",
+        "log_T",
+        "node_dl_cm",
         "distance",
         "calibration_regularization",
         "instrument_gain_delta_dex",

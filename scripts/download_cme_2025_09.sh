@@ -16,7 +16,7 @@ python -m sunerf.data.download.download_ccor \
 python -m sunerf.data.download.download_cor --start 2025-09-10T00:00:00  --end 2025-09-20T00:00:00 --output /glade/work/rjarolim/data/sunerf-cme/2025_09/cor --detector COR2
 
 # clean up COR triplets
-python -m sunerf.data.cor.remove_invalid_triplets \
+python -m sunerf.data.cor.split_triplets \
   --glob "/glade/work/rjarolim/data/sunerf-cme/2025_09/cor/*.fts" --dry-run
 
 # download PUNCH NFI data
@@ -73,7 +73,7 @@ cd /glade/u/home/rjarolim
 module load idl
 
 setenv SSW_INSTR "SECCHI STEREO"
-setenv SSW /glade/u/home/rjarolim/ssw
+setenv SSW /glade/work/rjarolim/ssw
 source $SSW/gen/setup/setup.ssw
 sswidl <<'IDL'
 

@@ -128,8 +128,8 @@ def plot_profiles(path, radius, truth, reconstruction):
 
     figure, axes = plt.subplots(1, 2, figsize=(10, 4))
     for axis, true_field, field, label in (
-        (axes[0], truth[0], reconstruction[0], r"$\\log_{10} n_e$ [cm$^{-3}$]"),
-        (axes[1], truth[1], reconstruction[1], r"$\\log_{10} T$ [K]"),
+        (axes[0], truth[0], reconstruction[0], r"$\log_{10} n_e$ [cm$^{-3}$]"),
+        (axes[1], truth[1], reconstruction[1], r"$\log_{10} T$ [K]"),
     ):
         for values, name, style in ((true_field, "PSI/MAS", "k-"), (field, "SuNeRF", "C1--")):
             flat = np.where(np.isfinite(values), values, np.nan).reshape(radius.size, -1)
@@ -138,7 +138,7 @@ def plot_profiles(path, radius, truth, reconstruction):
                 radius, np.nanpercentile(flat, 16, axis=1), np.nanpercentile(flat, 84, axis=1),
                 color="k" if name == "PSI/MAS" else "C1", alpha=0.15,
             )
-        axis.set_xlabel(r"$r$ [$R_\\odot$]")
+        axis.set_xlabel(r"$r$ [$R_\odot$]")
         axis.set_ylabel(label)
         axis.legend()
     figure.tight_layout()

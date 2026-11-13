@@ -12,7 +12,7 @@ from sunpy.coordinates import frames, get_earth
 from sunpy.map import Map, all_coordinates_from_map
 from sunpy.map.header_helper import make_fitswcs_header
 
-from sunerf.data.coronagraph import prep_punch_pam, prep_stereo_cor
+from sunerf.data.coronagraph import prep_lasco, prep_punch_pam, prep_stereo_cor
 from sunerf.data.coronagraph.prep_ccor import CCORPrep
 from sunerf.data.coronagraph import prep_common
 from sunerf.data.coronagraph.prep_common import (
@@ -124,7 +124,7 @@ def test_common_preprocessor_preserves_nonpositive_values_by_default():
     np.testing.assert_array_equal(result.data, source_map.data)
 
 
-def test_common_preprocessor_masks_only_explicit_value_limits():
+def test_common_preprocessor_masks_nonpositive_and_explicit_maximum():
     source_map = type(
         "MapLike",
         (),
@@ -133,13 +133,12 @@ def test_common_preprocessor_masks_only_explicit_value_limits():
 
     result = MapPreprocessor(
         remove_solar_system_objects=False,
-        value_min=0.0,
         value_max=2.0,
     ).prepare_map(source_map)
 
     np.testing.assert_array_equal(
         result.data,
-        np.array([[np.nan, 0.0, 1.0, np.nan]]),
+        np.array([[np.nan, np.nan, 1.0, np.nan]]),
     )
 
 
@@ -447,3 +446,133 @@ def test_all_common_kwargs_consumers_are_covered():
         for prep_class in PREP_CLASSES
     }
     assert detected_consumers == covered_consumers
+
+
+def _wide_field_map(projection, cdelt, shape=(600, 600), sun_pixel=(299.5, 299.5), roll=0.0):
+    header = {
+        "CTYPE1": f"HPLN-{projection}", "CTYPE2": f"HPLT-{projection}",
+        "CUNIT1": "deg", "CUNIT2": "deg",
+        "CDELT1": cdelt, "CDELT2": cdelt,
+        "CRPIX1": sun_pixel[0] + 1, "CRPIX2": sun_pixel[1] + 1,
+        "CRVAL1": 0.0, "CRVAL2": 0.0, "CROTA2": roll,
+        "DATE-OBS": "2025-09-22T08:00:00", "DSUN_OBS": 1.5e11,
+        "HGLN_OBS": 0.0, "HGLT_OBS": 7.0, "RSUN_REF": 6.957e8,
+    }
+    return Map(np.ones(shape), header)
+
+
+@pytest.mark.parametrize(
+    "projection, cdelt, sun_pixel, roll",
+    [
+        ("ARC", 0.15, (299.5, 299.5), 0.0),   # Sun between pixels
+        ("ARC", 0.15, (300.0, 300.0), 0.0),   # Sun on a pixel
+        ("ARC", 0.15, (310.3, 285.0), 17.0),  # off-center and rolled
+        ("TAN", 0.02, (299.5, 299.5), 0.0),
+        ("TAN", 0.02, (310.3, 285.0), 17.0),
+    ],
+)
+def test_crop_is_the_analytic_sun_centered_square(projection, cdelt, sun_pixel, roll):
+    source_map = _wide_field_map(projection, cdelt, sun_pixel=sun_pixel, roll=roll)
+    max_radius = (120 if projection == "ARC" else 15) * u.solRad
+    masked = prep_common.prep_coronagraph_map(source_map, max_radius=max_radius)
+    limit = prep_common.field_limit_angle(masked, max_radius=max_radius)
+
+    cropped = prep_common.crop_to_field_limit(masked, limit)
+
+    # Extent from the projection alone: radius of the limit circle in pixels.
+    radial = {"ARC": lambda t: t, "TAN": np.tan}[projection]
+    radius = np.degrees(radial(limit.to_value(u.rad))) / cdelt
+    side = cropped.data.shape[0]
+    assert cropped.data.shape == (side, side)
+    assert 2 * radius + 1 <= side + 1e-9 < 2 * radius + 4
+
+    # Sun center sits within half a pixel of the middle of the square, exactly
+    # in the middle when it lies on a pixel or between pixels.
+    center = cropped.wcs.world_to_pixel(
+        SkyCoord(0 * u.arcsec, 0 * u.arcsec, frame=cropped.coordinate_frame)
+    )
+    exact = all(float(2 * value).is_integer() for value in sun_pixel)
+    np.testing.assert_allclose(center, (side - 1) / 2, atol=1e-6 if exact else 0.5)
+
+    # Every valid pixel of the masked frame is kept.
+    assert np.isfinite(cropped.data).sum() == np.isfinite(masked.data).sum()
+
+    # Resizing keeps equal angular pixel scales and the coordinates.
+    resized = cropped.resample([128, 128] * u.pixel)
+    np.testing.assert_allclose(
+        resized.scale.axis1.to_value(u.deg / u.pixel),
+        resized.scale.axis2.to_value(u.deg / u.pixel),
+        rtol=1e-12,
+    )
+    np.testing.assert_allclose(
+        resized.wcs.world_to_pixel(
+            SkyCoord(0 * u.arcsec, 0 * u.arcsec, frame=resized.coordinate_frame)
+        ),
+        (np.asarray(center) + 0.5) * 128 / side - 0.5,
+        atol=1e-6,
+    )
+
+
+def test_crop_of_a_frame_that_misses_part_of_the_field_stays_square():
+    # The field runs off the left edge only: the crop is clipped there and
+    # padded back with NaN, so it keeps the same side along both axes.
+    source_map = _wide_field_map("ARC", 0.15, sun_pixel=(140.0, 300.0))
+    max_radius = 120 * u.solRad
+    masked = prep_common.prep_coronagraph_map(source_map, max_radius=max_radius)
+    limit = prep_common.field_limit_angle(masked, max_radius=max_radius)
+
+    cropped = prep_common.crop_to_field_limit(masked, limit)
+
+    assert cropped.data.shape[0] == cropped.data.shape[1]
+    assert np.isfinite(cropped.data).sum() == np.isfinite(masked.data).sum()
+    # The valid data are unchanged at their coordinates.
+    probe = SkyCoord(10 * u.deg, -5 * u.deg, frame=masked.coordinate_frame)
+    x0, y0 = (int(round(float(v))) for v in masked.wcs.world_to_pixel(probe))
+    x1, y1 = (int(round(float(v))) for v in cropped.wcs.world_to_pixel(
+        SkyCoord(probe.Tx, probe.Ty, frame=cropped.coordinate_frame)))
+    assert (x0 - x1, y0 - y1) == (0 - int(cropped.meta["crpix1"] - masked.meta["crpix1"]),
+                                  0 - int(cropped.meta["crpix2"] - masked.meta["crpix2"]))
+    resized = cropped.resample([128, 128] * u.pixel)
+    np.testing.assert_allclose(
+        resized.scale.axis1.to_value(u.deg / u.pixel),
+        resized.scale.axis2.to_value(u.deg / u.pixel),
+        rtol=1e-12,
+    )
+
+
+def test_crop_rejects_projections_without_an_analytic_extent():
+    source_map = _wide_field_map("CAR", 0.15)
+    with pytest.raises(NotImplementedError):
+        prep_common.crop_to_field_limit(source_map, 30 * u.deg)
+
+
+@pytest.mark.parametrize("rectify, expected", [
+    (180.0, True), (183.5, True), (-177.0, True), (0.0, False), (4.2, False), (None, False),
+])
+def test_keyhole_rectification_is_read_from_rectify(rectify, expected):
+    meta = {} if rectify is None else {"rectify": rectify}
+    assert prep_lasco.keyhole_rectified(meta) is expected
+
+
+@pytest.mark.parametrize("roll, sun_pixel", [(0.0, (299.5, 299.5)), (183.0, (300.0, 299.5))])
+def test_rotate_180_is_exact_on_the_sky(roll, sun_pixel, tmp_path):
+    s_map = _wide_field_map("TAN", 0.02, sun_pixel=sun_pixel, roll=roll)
+    s_map = Map(np.arange(600 * 600, dtype=float).reshape(600, 600), s_map.meta)
+    s_map.meta["rectify"] = 180.0
+
+    turned = prep_lasco.to_detector_orientation(s_map)
+    turned.save(tmp_path / "turned.fits")
+    turned = Map(tmp_path / "turned.fits")
+
+    np.testing.assert_array_equal(turned.data, s_map.data[::-1, ::-1])
+    assert not prep_lasco.keyhole_rectified(turned.meta)
+    original = all_coordinates_from_map(s_map)
+    flipped = all_coordinates_from_map(turned)[::-1, ::-1]
+    np.testing.assert_allclose(flipped.Tx.to_value(u.arcsec), original.Tx.to_value(u.arcsec), atol=1e-6)
+    np.testing.assert_allclose(flipped.Ty.to_value(u.arcsec), original.Ty.to_value(u.arcsec), atol=1e-6)
+
+
+def test_frames_without_keyhole_rectification_are_unchanged():
+    s_map = _wide_field_map("TAN", 0.02)
+    s_map.meta["rectify"] = 3.0
+    assert prep_lasco.to_detector_orientation(s_map) is s_map

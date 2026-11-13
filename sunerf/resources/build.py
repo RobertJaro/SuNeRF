@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,6 +31,8 @@ INSTRUMENTS = ("aia", "euvi_a", "euvi_b", "eui_fsi")
 # Instrument calibration inputs that the data pipeline reads directly, shipped
 # unchanged next to the derived physics tables.
 AIA_CORRECTION_TABLE_NAME = "aia_correction_table"
+IMAGE_SCALING_NAME = "image_scaling"
+IMAGE_SCALING_RELATIVE_PATH = "calibration/image_scaling.yaml"
 ABSORPTION_NAME = "h_he_photoionization"
 IONIZATION_NAME = "h_he_chianti"
 VERNER_NAME = "verner96_h_he.dat"
@@ -103,7 +106,6 @@ def build_resources(
         export_throughputs,
         fetch_instrument_inputs,
         pipeline_paths,
-        resolve_throughput_paths,
     )
     from sunerf.response.providers.aia import AIA_CORRECTION_SOURCE, fetch_aia_sources
     from sunerf.response.providers.chianti import (
@@ -122,10 +124,10 @@ def build_resources(
     )
     spectral = load_spectral_emissivity(spectral_path)
 
-    throughputs = resolve_throughput_paths(root, INSTRUMENTS)
-    if fetch or not all(path.is_file() for path in throughputs.values()):
-        fetch_instrument_inputs(root, instruments=INSTRUMENTS, force=fetch)
-        throughputs = export_throughputs(root, instruments=INSTRUMENTS)
+    # Cached calibration sources are reused; the throughputs are always
+    # re-exported so they follow the current provider channel lists.
+    fetch_instrument_inputs(root, instruments=INSTRUMENTS, force=fetch)
+    throughputs = export_throughputs(root, instruments=INSTRUMENTS)
     correction_table = (
         pipeline_paths(root)["aia_sources"] / AIA_CORRECTION_SOURCE.filename
     )
@@ -207,6 +209,15 @@ def install_resources(products: dict[str, Path], destination=None) -> Path:
         layout[f"throughput/{key}.throughput.npz"] = products[f"throughput/{key}"]
         layout[f"response/{key}.sunerf.npz"] = products[f"response/{key}"]
         aliases[key] = f"response/{key}.sunerf.npz"
+    # The image scaling table is estimated from observations
+    # (sunerf.data.euv.estimate_scaling), not built here; keep the installed one.
+    image_scaling = destination / IMAGE_SCALING_RELATIVE_PATH
+    staged_image_scaling = None
+    if image_scaling.is_file():
+        staged_image_scaling = Path(tempfile.mkdtemp()) / image_scaling.name
+        shutil.copyfile(image_scaling, staged_image_scaling)
+        layout[IMAGE_SCALING_RELATIVE_PATH] = staged_image_scaling
+        aliases[IMAGE_SCALING_NAME] = IMAGE_SCALING_RELATIVE_PATH
 
     for folder in {Path(relative).parts[0] for relative in layout}:
         shutil.rmtree(destination / folder, ignore_errors=True)

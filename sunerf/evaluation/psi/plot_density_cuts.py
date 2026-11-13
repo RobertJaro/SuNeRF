@@ -17,7 +17,7 @@ from sunpy.coordinates import sun
 from sunerf.evaluation.cme.export_layout import labelled_path
 from sunerf.evaluation.psi.common import (
     DENSITY_LABEL, FIGURE_WIDTH, TRUTH_TITLE, add_colorbar, cme_longitude_index, density_norm, load_densities,
-    plot_carrington, plot_equatorial, plot_meridional, save_figure,
+    plot_carrington, plot_equatorial, plot_meridional, save_figure, title_size,
 )
 
 
@@ -58,7 +58,7 @@ def main() -> None:
     for column, (cube, title) in enumerate(zip([truth, *cubes], titles)):
         axes = [fig.add_subplot(grid[0, column])] + [
             fig.add_subplot(grid[row, column], projection="polar") for row in (1, 2)]
-        axes[0].set_title(title, fontsize=8)
+        axes[0].set_title(title, fontsize=title_size(n_columns))
         map_artist = plot_carrington(axes[0], cube, radius, theta, phi, args.map_radius, map_norm)
         cut_artist = plot_meridional(axes[1], cube, radius, theta, cme_index, norm)
         plot_equatorial(axes[2], cube, radius, theta, phi, earth_longitude, norm, phi[cme_index],

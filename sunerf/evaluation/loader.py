@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Tuple, Iterable
 import hashlib
+import logging
 import os
 import pickle
 import re
@@ -18,7 +19,7 @@ from tqdm import tqdm
 
 from sunerf.data.date_util import normalize_datetime, unnormalize_datetime
 from sunerf.data.loader.base_loader import MapDataLoader
-from sunerf.data.ray_sampling import get_rays, hpc_impact_parameter
+from sunerf.data.ray_sampling import get_rays, hpc_angular_separation, hpc_impact_parameter
 from sunerf.data.utils import get_azimuthal_equidistant_coordinates
 from sunerf.evaluation.util import convert_spherical_to_cartesian
 from sunerf.model.plasma import (
@@ -33,6 +34,8 @@ from sunerf.rendering.base_tracing import BasicRenderingModule, MultiResolutionR
 from sunerf.rendering.plasma import PlasmaRadiativeTransfer
 from sunerf.rendering.thomson import ThomsonScattering
 from sunerf.train.coordinate_transformation import pose_spherical, spherical_to_cartesian
+
+logger = logging.getLogger(__name__)
 
 
 _SAFE_TYPE_KEY = '__sunerf_safe_type__'
@@ -105,14 +108,26 @@ def _sha256_file(path):
 
 
 def _safe_plasma_candidate(state_path):
+    """Weights-only artifact next to a save-state path: a ``.safe.pt`` sidecar, or ``save_state.safe.pt``
+    for the ``save_state.snf`` of runs older than 2026-10. The path itself is tried by the caller when no
+    sidecar exists (the plasma run writes the weights-only state as ``save_state.snf``)."""
     state_path = os.path.abspath(os.fspath(state_path))
     if state_path.endswith(PLASMA_SAFE_ARTIFACT_SUFFIX):
         return state_path
-    candidate = f'{state_path}{PLASMA_SAFE_ARTIFACT_SUFFIX}'
-    return candidate if os.path.isfile(candidate) else None
+    candidates = [f'{state_path}{PLASMA_SAFE_ARTIFACT_SUFFIX}']
+    stem, extension = os.path.splitext(state_path)
+    if extension == '.snf':
+        candidates.append(f'{stem}{PLASMA_SAFE_ARTIFACT_SUFFIX}')
+    return next((c for c in candidates if os.path.isfile(c)), None)
 
 
 def _verify_response_reference(instrument_key, response, configured_response):
+    """Check that the saved response reference resolves to the configured file.
+
+    The file hash is provenance, not a load condition: a rebuilt artifact may add
+    channels the run never used. What the run actually used is verified on the
+    renderer buffers in :func:`_verify_immutable_plasma_state`.
+    """
     reference_path = response.get('path')
     if reference_path is None:
         raise ValueError(
@@ -132,70 +147,104 @@ def _verify_response_reference(instrument_key, response, configured_response):
             f"Safe artifact requires response file for '{instrument_key}': {path}"
         )
     actual_hash = _sha256_file(path)
-    if actual_hash != response['sha256']:
-        raise ValueError(
-            f"Response artifact hash mismatch for '{instrument_key}': expected "
-            f"{response['sha256']}, got {actual_hash}."
+    if actual_hash != response.get('sha256'):
+        logger.info(
+            "Response artifact for '%s' was rebuilt since training (sha256 %s, now %s); "
+            'the channels the run uses are checked against its saved renderer state.',
+            instrument_key, response.get('sha256'), actual_hash,
         )
 
 
-def _verify_immutable_plasma_state(module, saved_state):
-    """Prevent saved weights from replacing artifact/config-derived physics."""
-    fresh_state = module.state_dict()
-    immutable_names = set()
-    for instrument_key, renderer in module.rendering.rendering_modules.items():
-        prefix = f'rendering.rendering_modules.{instrument_key}.'
-        immutable_names.update(prefix + name for name, _ in renderer.named_buffers())
-        immutable_names.update(
-            prefix + name
+# Rebuilt tables pass through float64 -> float32 conversions and log10 in
+# whatever numpy/torch version evaluates them; agreement to this relative
+# tolerance is the same physics.
+_IMMUTABLE_STATE_RTOL = 1e-6
+
+
+def _same_immutable_tensor(saved, expected):
+    if not isinstance(saved, torch.Tensor):
+        return False
+    saved = saved.detach().cpu()
+    expected = expected.detach().cpu()
+    if saved.shape != expected.shape or saved.dtype != expected.dtype:
+        return False
+    if not saved.is_floating_point():
+        return torch.equal(saved, expected)
+    return torch.allclose(saved, expected, rtol=_IMMUTABLE_STATE_RTOL, atol=0.0, equal_nan=True)
+
+
+def _renderer_immutable_names(rendering_modules, prefix):
+    names = set()
+    for instrument_key, renderer in rendering_modules.items():
+        renderer_prefix = f'{prefix}{instrument_key}.'
+        names.update(renderer_prefix + name for name, _ in renderer.named_buffers())
+        names.update(
+            renderer_prefix + name
             for name, parameter in renderer.named_parameters()
             if not parameter.requires_grad
         )
+    return names
 
-    model = module.rendering.model
-    immutable_names.update(
-        f'rendering.model.{name}' for name, _ in model.named_buffers()
-    )
-    immutable_names.update(
-        f'rendering.model.{name}'
-        for name, parameter in model.named_parameters()
-        if not parameter.requires_grad
-    )
 
+def _verify_immutable_plasma_state(module, saved_state):
+    """Prevent saved weights from replacing artifact/config-derived physics.
+
+    Only the renderers carry physics derived from the response and absorption
+    artifacts (response tables, cross sections, fixed gains); those must match
+    the freshly constructed renderers. Frozen state of the network itself
+    (encoding frequencies, annealing counters) is part of the trained weights
+    and is taken from the saved state.
+    """
+    fresh_state = module.state_dict()
+    immutable_names = _renderer_immutable_names(
+        module.rendering.rendering_modules, 'rendering.rendering_modules.'
+    )
     for name in sorted(immutable_names):
         if name not in saved_state or name not in fresh_state:
             continue  # strict load below reports missing or unexpected state.
-        saved = saved_state[name]
-        expected = fresh_state[name]
-        if not isinstance(saved, torch.Tensor) or not torch.equal(
-            saved.detach().cpu(), expected.detach().cpu()
-        ):
+        if not _same_immutable_tensor(saved_state[name], fresh_state[name]):
             raise ValueError(
                 f"Safe artifact immutable physics state {name!r} disagrees with "
                 "the verified response/configuration."
             )
 
+    model = module.rendering.model
+    frozen_model_names = {
+        f'rendering.model.{name}' for name, _ in model.named_buffers()
+    } | {
+        f'rendering.model.{name}'
+        for name, parameter in model.named_parameters()
+        if not parameter.requires_grad
+    }
+    # Positional-encoding directions are drawn at random on construction.
+    for module_name, submodule in model.named_modules():
+        for attribute in getattr(submodule, 'randomly_initialized', ()):
+            frozen_model_names.discard(
+                f'rendering.model.{module_name}.{attribute}' if module_name
+                else f'rendering.model.{attribute}'
+            )
+    differing = [
+        name for name in sorted(frozen_model_names)
+        if name in saved_state and name in fresh_state
+        and not _same_immutable_tensor(saved_state[name], fresh_state[name])
+    ]
+    if differing:
+        logger.info(
+            'Using saved frozen model state that differs from a fresh construction: %s',
+            ', '.join(differing),
+        )
+
 
 def _verify_immutable_grid_rendering_state(rendering, saved_state):
     """Protect grid-artifact response and fixed-gain buffers before state load."""
     fresh_state = rendering.state_dict()
-    immutable_names = set()
-    for instrument_key, renderer in rendering.rendering_modules.items():
-        prefix = f'rendering_modules.{instrument_key}.'
-        immutable_names.update(prefix + name for name, _ in renderer.named_buffers())
-        immutable_names.update(
-            prefix + name
-            for name, parameter in renderer.named_parameters()
-            if not parameter.requires_grad
-        )
+    immutable_names = _renderer_immutable_names(
+        rendering.rendering_modules, 'rendering_modules.'
+    )
     for name in sorted(immutable_names):
         if name not in saved_state or name not in fresh_state:
             continue
-        saved = saved_state[name]
-        expected = fresh_state[name]
-        if not isinstance(saved, torch.Tensor) or not torch.equal(
-            saved.detach().cpu(), expected.detach().cpu()
-        ):
+        if not _same_immutable_tensor(saved_state[name], fresh_state[name]):
             raise ValueError(
                 f"Safe grid artifact immutable physics state {name!r} disagrees "
                 "with the verified response/configuration."
@@ -380,7 +429,11 @@ def _load_safe_artifact(state_path, state=None):
 
 class SuNeRFLoader:
 
-    def __init__(self, state_path, device=None, trusted=False):
+    # Save states without a weights-only-safe artifact are pickles of the rendering modules.
+    # The plasma loader accepts only the safe artifact.
+    allow_pickle = True
+
+    def __init__(self, state_path, device=None):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if device is None else torch.device(device)
         self.device = device
 
@@ -411,11 +464,10 @@ class SuNeRFLoader:
                 safe_path, state=restricted_state
             )
         else:
-            if trusted is not True:
+            if not self.allow_pickle:
                 raise ValueError(
-                    "This SuNeRF .snf artifact has no weights-only-safe sidecar and "
-                    "contains executable pickled Python modules. Load only a trusted "
-                    "local artifact and pass trusted=True."
+                    f"{type(self).__name__} needs a weights-only-safe artifact; "
+                    f"{requested_path} is a pickled save state without one."
                 )
             state = torch.load(state_path, map_location=device, weights_only=False)
         self.state = state
@@ -524,24 +576,23 @@ class SuNeRFLoader:
                     raise ValueError(
                         f"Artifact has missing response IDs for '{instrument_key}'."
                     )
-                response_metadata = metadata[instrument_key].get('response', {})
-                response_provenance = response_metadata.get('provenance', {})
-                expected_response_id = getattr(rendering_module, 'response_id', None)
-                expected_response_id = expected_response_id or response_provenance.get(
-                    'source_response_id', response_metadata.get(
-                        'response_id', response_provenance.get('response_id')
+                # The channel IDs record the artifact the run was trained with; a
+                # rebuilt artifact (e.g. one more channel) gets a new ID while the
+                # channels in use, checked on the renderer state, are unchanged.
+                if response is not None and len(set(channel_response_ids)) != 1:
+                    raise ValueError(
+                        f"Artifact response IDs {channel_response_ids} for "
+                        f"'{instrument_key}' do not share one response identity."
                     )
-                )
-                if expected_response_id is not None:
-                    expected_response_ids = (str(expected_response_id).strip(),) * len(
-                        channels
+                current_response_id = getattr(rendering_module, 'response_id', None)
+                if (
+                    current_response_id is not None and channel_response_ids
+                    and channel_response_ids[0] != str(current_response_id).strip()
+                ):
+                    logger.info(
+                        "Response artifact for '%s' changed since training (%s, now %s).",
+                        instrument_key, channel_response_ids[0], current_response_id,
                     )
-                    if channel_response_ids != expected_response_ids:
-                        raise ValueError(
-                            f"Artifact response IDs {channel_response_ids} for "
-                            f"'{instrument_key}' do not match renderer response identity "
-                            f'{expected_response_ids}.'
-                        )
 
                 calibration = metadata[instrument_key].get('calibration')
                 if (
@@ -678,7 +729,7 @@ class SuNeRFLoader:
                         )
             return metadata
 
-        # One-way compatibility for trusted legacy pickles: reconstruct channel
+        # One-way compatibility for legacy pickles: reconstruct channel
         # identity from their stored data configuration, never from an instrument
         # name or a hard-coded channel table.
         reconstructed = {}
@@ -1064,8 +1115,8 @@ class SuNeRFLoader:
 
 class ThomsonSuNeRFLoader(SuNeRFLoader):
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, state_path, device=None):
+        super().__init__(state_path, device=device)
         if 'thomson_normalization' not in self.state:
             raise KeyError("Missing 'thomson_normalization' in saved Thomson state.")
 
@@ -1244,29 +1295,41 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
                                      map_data['observer']['latitude'].to_value(u.rad),
                                      map_data['observer']['radius'].to_value(u.solRad) / self.Rs_per_ds)
         # load image coordinates
-        img_coords = all_coordinates_from_map(ref_map)
-        img_coords = np.stack([img_coords.Tx, img_coords.Ty], -1)
+        hpc_coords = all_coordinates_from_map(ref_map)
+        img_coords = np.stack([hpc_coords.Tx, hpc_coords.Ty], -1)
 
         # occulter mask
         if filter_occ:
             mask = np.isnan(ref_map.data)
             img_coords[mask] = np.nan
 
-        # render only the valid pixels; masked pixels are zero
+        # render only the valid pixels; masked pixels are NaN
         valid = ~np.isnan(img_coords).any(-1)
         pose_out = self.load_pose(img_coords[valid][:, None], target_pose, map_data['observer']['time'],
-                                  model_outputs=['image', 'density'], **kwargs)
-        image = np.zeros(valid.shape + (2,), dtype=pose_out['image'].dtype)
+                                  model_outputs=['image', 'density', 'distance_from_sun', 'distance_from_obs'],
+                                  **kwargs)
+        image = np.full(valid.shape + (2,), np.nan, dtype=np.float32)
         image[valid] = pose_out['image'][:, 0]
-        density = np.zeros(valid.shape, dtype=pose_out['density'].dtype)
+        density = np.full(valid.shape, np.nan, dtype=np.float32)
         density[valid] = pose_out['density'][:, 0]
+        # density-weighted mean position of the electrons along the line of sight: distance from the
+        # Sun, and offset from the plane of the sky (positive behind it, away from the observer) [R_sun]
+        distance = np.full(valid.shape, np.nan, dtype=np.float32)
+        distance[valid] = pose_out['distance_from_sun'][:, 0] * float(self.Rs_per_ds)
+        plane_of_sky = (ref_map.dsun.to_value(u.R_sun)
+                        * np.cos(hpc_angular_separation(hpc_coords.Tx, hpc_coords.Ty).to_value(u.rad)))
+        offset = np.full(valid.shape, np.nan, dtype=np.float32)
+        offset[valid] = pose_out['distance_from_obs'][:, 0] * float(self.Rs_per_ds) - plane_of_sky[valid]
 
         # create maps
         tB_map = Map(image[..., 0], ref_map.meta)
         pB_map = Map(image[..., 1], ref_map.meta)
         density_map = Map(density, ref_map.meta)
+        distance_map = Map(distance, ref_map.meta)
+        offset_map = Map(offset, ref_map.meta)
         #
-        return {'tB_map': tB_map, 'pB_map': pB_map, 'density_map': density_map}
+        return {'tB_map': tB_map, 'pB_map': pB_map, 'density_map': density_map, 'distance_map': distance_map,
+                'plane_of_sky_offset_map': offset_map}
 
     def load_spherical_cube(self, radius, latitude, longitude, time, **kwargs):
         spherical_coords = np.stack(np.meshgrid(
@@ -1453,8 +1516,10 @@ class ThomsonSuNeRFLoader(SuNeRFLoader):
 
 class PlasmaSuNeRFLoader(SuNeRFLoader):
 
+    allow_pickle = False
+
     def __init__(self, state_path, *args, **kwargs):
-        super().__init__(state_path, *args, trusted=False, **kwargs)
+        super().__init__(state_path, *args, **kwargs)
         if self.log_T_range is None:
             raise KeyError("Plasma artifact is missing 'log_T_range'.")
 
