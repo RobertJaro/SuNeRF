@@ -41,6 +41,22 @@ channel from the FITS header (``OBSRVTRY``, ``DETECTOR``/``INSTRUME``/``TELESCOP
 ``WAVELNTH``/``FILTER``), reads raw, calibrated and SuNeRF-prepared EUV products
 (including the ``VALID_MASK`` extension), and works for any 2D image sequence.
 
+For coronagraph images, scan with --cme. Painting or duplicating a region
+saves a boolean NumPy file under masks/ named after the FITS file, with True
+at excluded pixels in FITS array order. By default, brush edits, copies and
+clears apply to both files of a tB/pB observation. Uncheck "Apply to both tB
+and pB" to edit one channel. Press M to enable editing and copy the most
+recent earlier mask on the same grid, when available. Sync masks/ alongside the
+separate decisions CSV. Applying the review directory installs the masks in
+.review-masks/ beside the observations. Training loads them by filename and
+applies them in memory. Applying a CSV directly moves whole-frame rejects only.
+
+CME quality scores use the measured brightness. For tB previews, the scan
+subtracts the pixelwise minimum of UTC daily mean brightness on each detector
+grid. Only automatically kept frames contribute (including warnings), and
+invalid or manually masked pixels are omitted from the means. The same
+background is used to display rejected frames for reassessment.
+
 Saturation is counted from the data when they are detector counts (``BUNIT``
 without a per-second unit) and the detector saturation level is known
 (AIA, SECCHI) or given with ``--saturation-dn``; otherwise from the header
@@ -75,13 +91,18 @@ import re
 import shutil
 import socket
 import sys
-from concurrent.futures import ProcessPoolExecutor
+from tempfile import NamedTemporaryFile
+from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote, unquote
 
 import numpy as np
 from astropy.io import fits
 from astropy.time import Time
+
+from sunerf.data.review_masks import decode_brush, mask_path, preview_png, read_mask, write_mask
 
 REJECTED_DIRECTORY = 'rejected'
 REJECTED_LOG = 'rejected.log'
@@ -444,6 +465,7 @@ def scan_file(path, source_dir=None, saturation_dn=None):
         with np.errstate(invalid='ignore', divide='ignore'):
             thumb = np.where(reduced > 0, np.log10(reduced), np.nan)
         record['thumb'] = thumb.astype(np.float16)
+        record['thumb_invalid'] = _block_any(~valid, factor)
         record['thumb_saturated'] = None if saturated is None else _block_any(saturated, factor)
         record['cmap'] = _colormap_name(header, data)
     except Exception as error:  # a defective file is a finding, not a failure
@@ -487,6 +509,149 @@ def _colormap_name(header, data):
             return Map(data, header).cmap.name
     except Exception:
         return 'gray'
+
+
+def _read_cme_image(path):
+    with fits.open(path, memmap=False) as hdul:
+        image, valid_mask = _image_hdu(hdul)
+        data = np.array(image.data, dtype=np.float32, copy=True)
+        if valid_mask is not None:
+            data[~valid_mask] = np.nan
+        return data, image.header
+
+
+# Match the September CME overview and input-data plots.
+CME_COLORMAPS = {
+    'cor2': 'soholasco2',
+    'cor2_clear': 'soholasco2',
+    'lasco_c2': 'soholasco2',
+    'lasco_c3': 'soholasco3',
+    'ccor': 'Blues_r',
+    'punch': 'punch',
+    'punch_pam': 'punch',
+}
+
+
+def _set_cme_thumbnail(record, brightness, valid):
+    reduced, factor = _block_reduce(brightness, valid, THUMBNAIL_SIZE)
+    record['thumb'] = reduced.astype(np.float16)
+    record['thumb_invalid'] = _block_any(~valid, factor)
+
+
+def _preview_rgb(scaled, cmap, invalid):
+    rgb = cmap(np.clip(np.nan_to_num(scaled, nan=0.0), 0, 1), bytes=True)[..., :3]
+    rgb[invalid] = INVALID_RGB
+    return rgb
+
+
+def _write_cme_preview(path, brightness, valid, low, peak, cmap_name):
+    from PIL import Image
+
+    scaled = (brightness - low) / max(peak - low, 1e-12)
+    rgb = _preview_rgb(scaled, _colormap(cmap_name), ~valid)
+    Image.fromarray(rgb[::-1]).save(path, quality=90, subsampling=0)
+
+
+def _scan_cme_file(task):
+    """Measure calibrated MSB for classification before rendering the previews."""
+    from sunerf.data.coronagraph.detect_outliers import measure_image
+
+    path, number = task
+    source = Path(path)
+    paired = source.parent.name in ('tB', 'pB')
+    record = dict(path=path, name=source.name, error='', unix=math.nan, time='',
+                  instrument=source.parent.parent.name if paired else source.parent.name,
+                  channel=source.parent.name if paired else 'tB', thumb=None,
+                  thumb_saturated=None, cmap='gray')
+    try:
+        data, header = _read_cme_image(path)
+        record['cmap'] = CME_COLORMAPS.get(record['instrument'].lower()) or _colormap_name(header, data)
+        time = _parse_time(header)
+        record.update(time=time.isot, unix=float(time.unix), quality=header.get('QUALITY'))
+        measure_image(record, data, header)
+        valid = np.isfinite(data)
+        # A fixed asinh scale retains negative brightness and faint outer-corona detail.
+        if record.get('std') == 0:
+            record['error'] = 'constant brightness across all finite pixels'
+        brightness = np.arcsinh(data.astype(np.float64) / 1e-12)
+        if valid.any():
+            values = brightness[valid]
+            low, level, high, peak = np.percentile(values, [1, 50, 99, 99.9])
+            record.update(low=low, level=level, high=high, peak=peak, maximum=values.max())
+        record.update(height=data.shape[0], width=data.shape[1])
+        _set_cme_thumbnail(record, brightness, valid)
+        name = f'{number:06d}.jpg'
+    except Exception as error:
+        record.update(error=f'unreadable: {type(error).__name__}: {error}', thumb=None)
+        return record
+    record['preview'] = 'previews/' + name
+    return record
+
+
+def _render_cme_previews(members, review_dir, workers, cmap_name):
+    from sunerf.data.coronagraph.compute_correction import minimum_daily_mean
+
+    # Members are time-sorted and belong to one instrument/channel. Grid
+    # sizes can differ between observing modes, even in the same directory.
+    grids = defaultdict(list)
+    for frame in members:
+        if frame['channel'] == 'tB' and frame.get('preview'):
+            grids[(frame['height'], frame['width'])].append(frame)
+
+    def reference_images(frames):
+        for frame in frames:
+            if frame['status'] == 'reject':
+                continue
+            data, _ = _read_cme_image(frame['path'])
+            mask = review_dir / 'masks' / frame['mask_file']
+            if mask.is_file():
+                data[read_mask(mask, data.shape)] = np.nan
+            yield frame['time'][:10], data
+
+    backgrounds = {}
+
+    def brightness_for(frame):
+        data, _ = _read_cme_image(frame['path'])
+        background = backgrounds.get(data.shape)
+        residual = data if background is None else data - background
+        return np.arcsinh(residual.astype(np.float64) / 1e-12)
+
+    def update_thumbnail(frame):
+        brightness = brightness_for(frame)
+        _set_cme_thumbnail(frame, brightness, np.isfinite(brightness))
+
+    def render(frame):
+        brightness = brightness_for(frame)
+        _write_cme_preview(review_dir / frame['preview'], brightness, np.isfinite(brightness), low, peak, cmap_name)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for shape, frames in grids.items():
+            background = minimum_daily_mean(reference_images(frames), shape)
+            if np.isfinite(background).any():
+                backgrounds[shape] = background
+                list(pool.map(update_thumbnail, frames))
+            else:
+                print(f"No valid background for {frames[0]['group_name']} {shape}; using raw tB previews.")
+            for frame in frames:
+                frame['tb_background_subtracted'] = int(shape in backgrounds)
+        low, peak = _display_range(members, limit_decades=False)
+        list(pool.map(render, members))
+    return low, peak
+
+
+def _classify_cme(members):
+    from sunerf.data.coronagraph.detect_outliers import detect_outliers
+
+    classify(members, reject_z=7.0, warn_z=4.5, valid_reject=0.85, valid_warn=0.95)
+    dated = [r for r in members if np.isfinite(r['unix'])]
+    metrics = [dict(r, time=datetime.fromtimestamp(r['unix'], timezone.utc)) for r in dated]
+    if metrics:
+        detect_outliers(metrics, window=6, threshold=6)
+    for frame, metric in zip(dated, metrics):
+        if metric['reasons']:
+            frame['reasons'].insert(0, metric['reasons'])
+            frame['n_reject'] += 1
+            frame['status'] = 'reject'
 
 
 def _scan_task(arguments):
@@ -569,7 +734,8 @@ class _suppress_nan_warnings:
         return self._context.__exit__(*exc)
 
 
-def classify(records):
+def classify(records, *, reject_z=REJECT_Z, warn_z=WARN_Z,
+             valid_reject=VALID_FRACTION_REJECT, valid_warn=VALID_FRACTION_WARN):
     """Set ``status`` (reject/warn/ok) and ``reasons`` of one channel's records."""
     valid = np.array([r.get('valid_fraction', math.nan) for r in records], dtype=np.float64)
     exposure = np.array([r.get('exposure', math.nan) for r in records], dtype=np.float64)
@@ -587,9 +753,9 @@ def classify(records):
             reject.append(f'header QUALITY={quality}')
         fraction = record.get('valid_fraction', math.nan)
         if np.isfinite(median_valid) and np.isfinite(fraction):
-            if fraction < VALID_FRACTION_REJECT * median_valid:
+            if fraction < valid_reject * median_valid:
                 reject.append(f'valid fraction {fraction:.3f} (channel median {median_valid:.3f})')
-            elif fraction < VALID_FRACTION_WARN * median_valid:
+            elif fraction < valid_warn * median_valid:
                 warn.append(f'valid fraction {fraction:.3f} (channel median {median_valid:.3f})')
         saturated = record.get('saturated_fraction', math.nan)
         # Saturation never rejects a frame: run_plasma masks the saturated pixels
@@ -598,12 +764,12 @@ def classify(records):
             warn.append(f'{record.get("nsatpix")} saturated pixels ({saturated:.1e} of detector)')
         for key, label in (('level_z', 'level jump'), ('structure_z', 'structure change')):
             z = record.get(key, math.nan)
-            if np.isfinite(z) and abs(z) > REJECT_Z:
+            if np.isfinite(z) and abs(z) > reject_z:
                 reject.append(f'{label} z={z:+.1f}')
-            elif np.isfinite(z) and abs(z) > WARN_Z:
+            elif np.isfinite(z) and abs(z) > warn_z:
                 warn.append(f'{label} z={z:+.1f}')
         z = record.get('peak_z', math.nan)
-        if np.isfinite(z) and abs(z) > WARN_Z:
+        if np.isfinite(z) and abs(z) > warn_z:
             warn.append(f'peak jump z={z:+.1f}')
         value = record.get('exposure', math.nan)
         if np.isfinite(median_exposure) and np.isfinite(value) and value < SHORT_EXPOSURE_WARN * median_exposure:
@@ -691,11 +857,11 @@ DISPLAY_PERCENTILES = (1.0, 99.9)
 # frames would otherwise pull the minimum of one frame down by many decades
 # and wash out every other frame.
 MAX_DISPLAY_DECADES = 4.0
-INVALID_RGB = (52, 52, 58)
+INVALID_RGB = (0, 255, 0)
 SATURATED_RGB = (255, 40, 40)
 
 
-def _display_range(members):
+def _display_range(members, *, limit_decades=True):
     """Common log10 display range of one channel: min/max over its frames.
 
     At most ``MAX_DISPLAY_DECADES`` below the maximum. The range spans the
@@ -709,8 +875,9 @@ def _display_range(members):
             np.nanpercentile(r['thumb'].astype(np.float32), DISPLAY_PERCENTILES)
             for r in accepted
         ])
-    vmin, vmax = float(np.nanmin(bounds[:, 0])), float(np.nanmax(bounds[:, 1]))
-    vmin = max(vmin, vmax - MAX_DISPLAY_DECADES)
+        vmin, vmax = float(np.nanmin(bounds[:, 0])), float(np.nanmax(bounds[:, 1]))
+    if limit_decades:
+        vmin = max(vmin, vmax - MAX_DISPLAY_DECADES)
     if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
         return 0.0, 1.0
     return vmin, vmax
@@ -728,7 +895,7 @@ def _colormap(name):
         return matplotlib.colormaps['gray']
 
 
-def _render_thumbnails(records, output_dir, group_names):
+def _render_thumbnails(records, output_dir, group_names, *, cme=False, workers=1):
     """JPEG previews on one colormap and one value range per channel."""
     from collections import Counter
 
@@ -740,20 +907,23 @@ def _render_thumbnails(records, output_dir, group_names):
         members = [r for r in records if r['group'] == group_index and r.get('thumb') is not None]
         if not members:
             continue
-        vmin, vmax = _display_range(members)
         cmap_name = Counter(r.get('cmap') or 'gray' for r in members).most_common(1)[0][0]
+        if cme:
+            vmin, vmax = _render_cme_previews(members, output_dir, workers, cmap_name)
+        else:
+            vmin, vmax = _display_range(members)
         cmap = _colormap(cmap_name)
-        channels[name] = {'cmap': cmap_name, 'log10_min': round(vmin, 4), 'log10_max': round(vmax, 4)}
+        scale = 'asinh' if cme else 'log10'
+        channels[name] = {'cmap': cmap_name, f'{scale}_min': round(vmin, 4), f'{scale}_max': round(vmax, 4)}
         group_dir = thumbs_dir / _slug(name)
         group_dir.mkdir(parents=True, exist_ok=True)
         for record in members:
             scaled = (record['thumb'].astype(np.float32) - vmin) / (vmax - vmin)
-            rgb = (cmap(np.clip(np.nan_to_num(scaled, nan=0.0), 0.0, 1.0))[..., :3] * 255).astype(np.uint8)
-            rgb[~np.isfinite(scaled)] = INVALID_RGB
+            rgb = _preview_rgb(scaled, cmap, record['thumb_invalid'] | ~np.isfinite(scaled))
             if record.get('thumb_saturated') is not None:
                 rgb[record['thumb_saturated']] = SATURATED_RGB
             file_name = f'{record["index"]:06d}.jpg'
-            Image.fromarray(np.ascontiguousarray(rgb[::-1])).save(group_dir / file_name, quality=82)
+            Image.fromarray(np.ascontiguousarray(rgb[::-1])).save(group_dir / file_name, quality=82, subsampling=0)
             record['thumb_url'] = f'thumbs/{_slug(name)}/{file_name}'
     return channels
 
@@ -782,7 +952,7 @@ REASON_SEPARATOR = '; '
 # Columns of frames.csv: identity and review layout, then the statistics.
 FRAME_COLUMNS = (
     'index', 'group', 'group_name', 'row', 'time', 'unix', 'name', 'path', 'thumb',
-    'status', 'n_reject', 'reasons',
+    'status', 'n_reject', 'reasons', 'width', 'height', 'preview', 'mask_file', 'tb_background_subtracted',
 )
 STAT_COLUMNS = (
     'exposure', 'quality', 'nsatpix', 'aectype', 'img_type', 'valid_fraction',
@@ -790,9 +960,9 @@ STAT_COLUMNS = (
     'maximum', 'level_residual',
     'peak_residual', 'structure', 'level_z', 'peak_z', 'structure_z', 'error',
 )
-INTEGER_COLUMNS = ('index', 'group', 'row', 'n_reject', 'plateau_pixels')
+INTEGER_COLUMNS = ('index', 'group', 'row', 'n_reject', 'plateau_pixels', 'width', 'height', 'tb_background_subtracted')
 TEXT_COLUMNS = ('group_name', 'time', 'name', 'path', 'thumb', 'status', 'reasons',
-                'img_type', 'aectype', 'error')
+                'img_type', 'aectype', 'error', 'preview', 'mask_file')
 DECISION_COLUMNS = ('path', 'decision', 'auto_status', 'group_name', 'time', 'reasons')
 PAGE_STATS = tuple(key for key, _ in METRICS) + ('plateau_pixels', 'nsatpix', 'quality', 'aectype', 'low', 'high',
                                                   'maximum')
@@ -875,6 +1045,26 @@ def _read_decision_rows(review_dir):
         return {row['path']: row['decision'].strip().lower() for row in csv.DictReader(stream)}
 
 
+def _mask_partners(frames):
+    """Pair editable tB/pB images from the same observation and native pixel grid."""
+    observations = defaultdict(list)
+    for frame in frames:
+        channel = Path(frame['path']).parent
+        if channel.name in ('tB', 'pB') and frame.get('preview') and frame.get('mask_file'):
+            observations[channel.parent, frame['row']].append(frame)
+    partners = {}
+    for members in observations.values():
+        if len(members) != 2:
+            continue
+        a, b = members
+        if (Path(a['path']).parent != Path(b['path']).parent
+                and (a['width'], a['height']) == (b['width'], b['height'])
+                and a['unix'] is not None and b['unix'] is not None and abs(a['unix'] - b['unix']) <= 1.0):
+            partners[a['index']] = b['index']
+            partners[b['index']] = a['index']
+    return partners
+
+
 def build_page(review_dir):
     """Write ``index.html`` from ``frames.csv``, ``scan.json`` and ``decisions.csv``.
 
@@ -890,20 +1080,36 @@ def build_page(review_dir):
     groups = [None] * (max((f['group'] for f in frames), default=-1) + 1)
     for frame in frames:
         groups[frame['group']] = frame['group_name']
+    cme = meta.get('cme', False)
+    partners = _mask_partners(frames) if cme else {}
+    mask_dir = review_dir / 'masks'
+    available_masks = {p.relative_to(mask_dir).as_posix() for p in mask_dir.rglob('*.npy')} if cme else set()
+    masks = {f['path']: 'mask-preview/' + quote(f['mask_file']) for f in frames
+             if f.get('mask_file') in available_masks}
+    metrics = METRICS
+    stats = PAGE_STATS
+    if cme:
+        metrics = [(key, label.replace('log10', 'asinh').replace('|log difference|', '|asinh difference|'))
+                   for key, label in METRICS if key not in ('saturated_fraction', 'peak_dn')]
+        stats = [key for key, _ in metrics] + ['quality', 'low', 'high', 'maximum']
     page_frames = []
     for frame in frames:
         page_frames.append({
             'i': frame['index'], 'g': frame['group'], 'row': frame['row'],
+            'partner': partners.get(frame['index']),
             't': None if frame.get('unix') is None else frame['unix'] * 1000.0,
             'time': frame['time'], 'name': frame['name'], 'path': frame['path'],
+            'maskFile': frame.get('mask_file'), 'preview': frame.get('preview'), 'width': frame.get('width'), 'height': frame.get('height'),
             'thumb': frame['thumb'] or None, 'auto': frame['status'],
+            'tbBackgroundSubtracted': bool(frame.get('tb_background_subtracted')),
             'reasons': frame['reasons'], 'nr': frame['n_reject'],
-            'stats': {key: _json_value(frame.get(key)) for key in PAGE_STATS},
+            'stats': {key: _json_value(frame.get(key)) for key in stats},
         })
     payload = {
+        'cme': cme, 'masks': masks,
         'id': meta['id'], 'title': meta['title'], 'created': meta['created'],
         'groups': groups, 'rows': max((f['row'] for f in frames), default=-1) + 1,
-        'metrics': [list(item) for item in METRICS], 'frames': page_frames,
+        'metrics': [list(item) for item in metrics], 'frames': page_frames,
         'decisions': decisions, 'decisionColumns': list(DECISION_COLUMNS),
         'channels': meta.get('channels', {}),
         'saturation': meta.get('saturation'),
@@ -967,7 +1173,7 @@ def _html_escape(text):
     return (str(text).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
 
 
-def scan(patterns, output_dir, *, source_dir=None, workers=None, saturation_dn=None, title=None):
+def scan(patterns, output_dir, *, source_dir=None, workers=None, saturation_dn=None, title=None, cme=False):
     """Scan the files of ``patterns`` and write the review directory ``output_dir``.
 
     The directory holds only compact products: ``frames.csv`` (statistics and
@@ -975,12 +1181,20 @@ def scan(patterns, output_dir, *, source_dir=None, workers=None, saturation_dn=N
     ``thumbs/`` (JPEG previews) and ``index.html``. It is meant to be copied to
     the machine where the frames are reviewed.
     """
-    files = sorted({
-        os.path.abspath(path)
-        for pattern in patterns
-        for path in glob.glob(os.path.expanduser(pattern))
-        if os.path.isfile(path)
-    })
+    files = set()
+    for pattern in patterns:
+        path = Path(pattern).expanduser()
+        if path.is_dir():
+            images = [p for p in path.iterdir()
+                      if p.name.lower().endswith(('.fits', '.fts', '.fits.gz', '.fts.gz')) and p.is_file()]
+            if not images:
+                raise SystemExit(f'No FITS files in {path}.')
+            files.update(str(p.absolute()) for p in images)
+        else:
+            if not glob.has_magic(str(path)) and not path.is_file():
+                raise SystemExit(f'Missing input: {path}')
+            files.update(os.path.abspath(p) for p in glob.iglob(str(path)) if os.path.isfile(p))
+    files = sorted(files)
     if not files:
         raise SystemExit(f'No files match {patterns!r}.')
     output_dir = Path(output_dir)
@@ -988,15 +1202,38 @@ def scan(patterns, output_dir, *, source_dir=None, workers=None, saturation_dn=N
     workers = workers or min(8, os.cpu_count() or 1)
     print(f'Scanning {len(files)} files with {workers} workers')
     tasks = [(path, source_dir, saturation_dn) for path in files]
+    worker = _scan_task
+    if cme:
+        preview_dir = output_dir / 'previews'
+        preview_dir.mkdir(exist_ok=True)
+        (output_dir / 'masks').mkdir(exist_ok=True)
+        worker = _scan_cme_file
+        tasks = [(path, i) for i, path in enumerate(files)]
     records = []
     if workers > 1:
         with ProcessPoolExecutor(max_workers=workers) as pool:
-            for count, record in enumerate(pool.map(_scan_task, tasks, chunksize=4), 1):
+            for count, record in enumerate(pool.map(worker, tasks, chunksize=4), 1):
                 records.append(record)
                 if count % 200 == 0:
                     print(f'  {count}/{len(files)}')
     else:
-        records = [_scan_task(task) for task in tasks]
+        records = [worker(task) for task in tasks]
+
+    if cme:
+        root = Path(os.path.commonpath([os.path.dirname(path) for path in files]))
+        if root.name in ('tB', 'pB'):
+            root = root.parent
+        # A fresh review starts with already installed masks. A repeat scan
+        # preserves pending local edits, including a cleared mask.
+        previous = output_dir / FRAMES_CSV
+        known = {r['path']: r.get('mask_file') for r in load_frames(output_dir)} if previous.exists() else {}
+        for record in records:
+            source = Path(record['path'])
+            record['mask_file'] = known.get(str(source)) or str(source.relative_to(root)) + '.npy'
+            if not known.get(str(source)) and mask_path(source).is_file():
+                target = output_dir / 'masks' / record['mask_file']
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(mask_path(source), target)
 
     group_names = sorted({f'{r["instrument"]} {r["channel"]}'.strip() for r in records})
     for record in records:
@@ -1009,18 +1246,21 @@ def scan(patterns, output_dir, *, source_dir=None, workers=None, saturation_dn=N
     for group_index in range(len(group_names)):
         members = [r for r in records if r['group'] == group_index]
         temporal_scores(members)
-        classify(members)
+        if cme:
+            _classify_cme(members)
+        else:
+            classify(members)
     assign_rows(records)
 
-    channels = _render_thumbnails(records, output_dir, group_names)
-    saturation = dataset_saturation(records, group_names)
+    channels = _render_thumbnails(records, output_dir, group_names, cme=cme, workers=workers)
+    saturation = None if cme else dataset_saturation(records, group_names)
     _write_frames_csv(records, output_dir / FRAMES_CSV)
     created = datetime.now(timezone.utc).isoformat(timespec='seconds')
     meta = {
         'id': f'{os.path.abspath(output_dir)}|{created}',
         'title': title or f'Frame review: {", ".join(patterns)}',
         'created': created,
-        'patterns': list(patterns),
+        'patterns': list(patterns), 'cme': cme,
         'review_dir': os.path.abspath(output_dir),
         'host': socket.gethostname(),
         'frames': len(records),
@@ -1038,20 +1278,22 @@ def scan(patterns, output_dir, *, source_dir=None, workers=None, saturation_dn=N
         print(f'{name:28s} {len(members):7d} '
               f'{sum(r["status"] == "reject" for r in members):7d} '
               f'{sum(r["status"] == "warn" for r in members):7d}')
-    _print_saturation(saturation)
+    if saturation:
+        _print_saturation(saturation)
     missing = sum(bool(r.get('source_missing')) for r in records)
     if missing:
         print(f'{missing} source files (header SRCFILE) not found in {source_dir}; '
               'their saturation comes from their own header only.')
     size = sum(p.stat().st_size for p in output_dir.rglob('*') if p.is_file()) / 1e6
     remote = os.path.abspath(output_dir)
+    mask_sync = f'  rsync -acv --delete {output_dir.name}/masks/ <server>:{remote}/masks/\n' if cme else ''
     print(f'\nReview directory ({size:.1f} MB): {remote}\n'
           'Copy it to your machine and review the frames there:\n'
           f'  rsync -av <server>:{remote} .\n'
           f'  python -m sunerf.data.frame_review review {output_dir.name}\n'
           'Copy the decisions back and apply them here:\n'
           f'  rsync -av {output_dir.name}/{DECISIONS_CSV} <server>:{remote}/\n'
-          f'  python -m sunerf.data.frame_review apply {remote}\n'
+          f'{mask_sync}  python -m sunerf.data.frame_review apply {remote}\n'
           f'(without {DECISIONS_CSV}, apply uses the automatic flags of {FRAMES_CSV}; '
           'apply also takes the parent folder of several review directories)')
     return records
@@ -1072,30 +1314,104 @@ def _write_decisions_text(review_dir, text):
     if any(row['decision'] not in ('reject', 'keep') for row in rows):
         raise ValueError('decision must be "reject" or "keep"')
     target = Path(review_dir) / DECISIONS_CSV
-    temporary = target.with_suffix('.csv.tmp')
-    temporary.write_text(text)
-    os.replace(temporary, target)
+    with NamedTemporaryFile(mode='w', dir=target.parent, delete=False) as temporary:
+        temporary.write(text)
+    os.replace(temporary.name, target)
     return len(rows), sum(row['decision'] == 'reject' for row in rows)
+
+
+def _merge_review_masks(editable, sources, targets):
+    """Add the painted pixels to each destination and report completed writes."""
+    if not sources or not all(key in editable for key in [*sources, *targets]):
+        raise ValueError('Select a painted mask and frames from this review.')
+    shape = editable[sources[0]][1]
+    if any(editable[key][1] != shape for key in [*sources, *targets]):
+        raise ValueError('All masks must use the same pixel grid.')
+    brush = np.zeros(shape, dtype=bool)
+    for key in sources:
+        brush |= read_mask(*editable[key])
+    if not brush.any():
+        raise ValueError('The source mask is empty.')
+
+    applied = []
+    for key in targets:
+        path, _ = editable[key]
+        try:
+            pixels = read_mask(path, shape) | brush if path.is_file() else brush
+            write_mask(path, pixels)
+        except (OSError, ValueError) as error:
+            return {'applied': applied, 'error': f'{key}: {error}'}
+        applied.append(key)
+    return {'applied': applied}
 
 
 def make_review_server(review_dir, *, port=8765):
     """HTTP server on localhost for a review directory, and the page URL.
 
-    It serves the directory read-only, except ``POST /decisions.csv`` and
-    ``POST /saturation.csv``, which replace those files after validating them.
+    The dashboard saves decisions, saturation selections, and per-frame CME masks
+    in the review directory. Mask edits are limited to files listed in the scan.
     """
     import functools
     from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Lock
 
     review_dir = Path(review_dir).resolve()
     if not (review_dir / FRAMES_CSV).is_file():
         raise SystemExit(f'{review_dir} has no {FRAMES_CSV}; run "scan" first.')
     build_page(review_dir)
 
+    mask_dir = review_dir / 'masks'
+    mask_lock = Lock()
+    editable = {f['mask_file']: (mask_dir / f['mask_file'], (f['height'], f['width']))
+                for f in load_frames(review_dir) if f.get('preview') and f.get('mask_file')}
+
     class Handler(SimpleHTTPRequestHandler):
+        def do_GET(self):
+            name = self.path.split('?')[0].lstrip('/')
+            if name.startswith('mask-preview/'):
+                key = unquote(name.removeprefix('mask-preview/'))
+                if key not in editable or not editable[key][0].is_file():
+                    self.send_error(404)
+                    return
+                image = preview_png(read_mask(*editable[key]))
+                self.send_response(200)
+                self.send_header('Content-Type', 'image/png')
+                self.send_header('Content-Length', str(len(image)))
+                self.end_headers()
+                self.wfile.write(image)
+                return
+            # A reload must see masks added or cleared since the server started.
+            if editable and name in ('', PAGE):
+                build_page(review_dir)
+            super().do_GET()
+
         def do_POST(self):
             name = self.path.split('?')[0].lstrip('/')
-            if name not in (DECISIONS_CSV, SATURATION_CSV):
+            if name.startswith('pixel-mask/'):
+                key = unquote(name.removeprefix('pixel-mask/'))
+                if key not in editable:
+                    self.send_error(404)
+                    return
+                size = int(self.headers.get('Content-Length') or 0)
+                if size > MAX_DECISIONS_BYTES or size < 0:
+                    self.send_error(413)
+                    return
+                path, shape = editable[key]
+                if size:
+                    try:
+                        excluded = decode_brush(self.rfile.read(size), shape)
+                    except (OSError, ValueError) as error:
+                        self.send_error(400, str(error))
+                        return
+                    with mask_lock:
+                        write_mask(path, excluded)
+                else:
+                    with mask_lock:
+                        path.unlink(missing_ok=True)
+                self.send_response(204)
+                self.end_headers()
+                return
+            if name not in (DECISIONS_CSV, SATURATION_CSV, 'merge-masks'):
                 self.send_error(404)
                 return
             length = int(self.headers.get('Content-Length') or 0)
@@ -1104,13 +1420,17 @@ def make_review_server(review_dir, *, port=8765):
                 return
             try:
                 text = self.rfile.read(length).decode('utf-8')
-                if name == DECISIONS_CSV:
+                if name == 'merge-masks':
+                    request = json.loads(text)
+                    with mask_lock:
+                        result = _merge_review_masks(editable, request['sources'], request['targets'])
+                elif name == DECISIONS_CSV:
                     total, rejected = _write_decisions_text(review_dir, text)
                     result = {'frames': total, 'rejected': rejected}
                 else:
                     total, selected = _write_saturation_text(review_dir, text)
                     result = {'channels': total, 'selected_dn': selected}
-            except (ValueError, UnicodeDecodeError) as error:
+            except (ValueError, TypeError, KeyError, OSError) as error:
                 self.send_error(400, str(error))
                 return
             body = json.dumps(result).encode()
@@ -1163,6 +1483,32 @@ def serve_review(review_dir, *, port=8765, open_browser=True):
 # Apply / restore
 # ----------------------------------------------------------------------------
 
+def _apply_review_masks(directory, dry_run):
+    """Mirror only this scan's masks beside their prepared FITS, including explicit clears."""
+    mask_dir = directory / 'masks'
+    if not mask_dir.is_dir():
+        return
+    for frame in load_frames(directory):
+        if not frame.get('preview'):
+            continue
+        source = Path(frame['path'])
+        target = mask_path(source)
+        path = mask_dir / frame['mask_file']
+        if not path.is_file():
+            if target.is_file():
+                print(f'{"would clear" if dry_run else "clearing"} {target}')
+                if not dry_run:
+                    target.unlink(missing_ok=True)
+            continue
+        actual = source if source.is_file() else source.parent / REJECTED_DIRECTORY / source.name
+        with fits.open(actual, memmap=False) as hdul:
+            image, _ = _image_hdu(hdul)
+            excluded = read_mask(path, image.shape)
+        print(f'{"would mask" if dry_run else "masking"} {excluded.sum()} pixels of {source}')
+        if not dry_run:
+            write_mask(target, excluded)
+
+
 def apply_rejections(list_path, *, dry_run=False):
     """Move every rejected file into a ``rejected/`` directory beside it."""
     moved, missing = 0, 0
@@ -1176,6 +1522,8 @@ def apply_rejections(list_path, *, dry_run=False):
             continue
         target_dir = source.parent / REJECTED_DIRECTORY
         target = target_dir / source.name
+        if target.exists():
+            raise FileExistsError(f'Refusing to overwrite rejected file {target}')
         if dry_run:
             print(f'would move {source} -> {target}')
         else:
@@ -1220,6 +1568,7 @@ def apply_review(target, *, dry_run=False):
         else:
             source, label = frames, 'automatic flags, not reviewed'
         print(f'== {directory}: {source.name} ({label})')
+        _apply_review_masks(directory, dry_run)
         total += apply_rejections(source, dry_run=dry_run)
     verb = 'Would move' if dry_run else 'Moved'
     print(f'{verb} {total} files from {len(directories)} review directories.')
@@ -1255,12 +1604,14 @@ def main(argv=None):
 
     scan_parser = commands.add_parser(
         'scan', help='on the server: statistics, flags and JPEG previews of a FITS sequence')
-    scan_parser.add_argument('patterns', nargs='+', help='FITS file globs (quote them)')
+    scan_parser.add_argument('patterns', nargs='+', help='prepared image directories, FITS files, or quoted FITS globs')
     scan_parser.add_argument('--output', required=True, help='review directory to write')
     scan_parser.add_argument('--source-dir', default=None,
                              help='directory of the files the inputs were prepared from (header SRCFILE)')
     scan_parser.add_argument('--saturation-dn', type=float, default=None,
                              help='detector saturation in DN when not AIA or SECCHI')
+    scan_parser.add_argument('--cme', action='store_true',
+                             help='review prepared coronagraph brightness, with native-grid mask editing')
     scan_parser.add_argument('--workers', type=int, default=None)
     scan_parser.add_argument('--title', default=None)
 
@@ -1285,7 +1636,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == 'scan':
         scan(args.patterns, args.output, source_dir=args.source_dir, workers=args.workers,
-             saturation_dn=args.saturation_dn, title=args.title)
+             saturation_dn=args.saturation_dn, title=args.title, cme=args.cme)
     elif args.command == 'review':
         serve_review(args.review_dir, port=args.port, open_browser=not args.no_browser)
     elif args.command == 'apply':

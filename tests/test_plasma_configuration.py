@@ -587,7 +587,7 @@ def test_pointwise_model_controls_and_packaged_artifacts_are_validated():
 
 SHIPPED_PLASMA_CONFIGS = (
     "all_2012_08", "euv_wave_2022_03", "polar_2012_08", "polar_2025_10",
-    "polar_2025_10_absorption", "psi_observers",
+    "polar_2025_10_absorption", "polar_reversal", "psi_observers",
 )
 # Absorption runs share their base with polar_2025_10_absorption instead.
 SHIPPED_ABSORPTION_CONFIGS = ("all_2012_08", "polar_2025_10_absorption")

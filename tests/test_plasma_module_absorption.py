@@ -183,7 +183,7 @@ def test_separate_cool_absorber_is_rendered_regularized_and_recorded(tmp_path):
     assert metadata["cool_ion_fractions"] == {"H_I": 0.7, "He_I": 0.7, "He_II": 0.3}
     assert len(metadata["cool_cross_section_per_hydrogen_cm2"]) == 2
     assert module.construction_spec["cool_column_scale_cm2"] == 1.0e18
-    assert module.lambda_cool_absorber == 1.0e-4
+    assert module.lambda_cool_absorber == 0.0
 
     # The prior is concave: the same total column costs more as a haze over
     # every ray than concentrated on one, and thin columns cost ~N / N_s.

@@ -2,8 +2,8 @@
 
 ``--n_frames`` times are sampled from ``--time_range``; every instrument contributes its frame
 closest to each.  One figure per sampled time (``frames/polarization_<k>.jpg``) and the main
-figure ``polarization.jpg`` for the sampled time closest to ``--time``, for PUNCH, CCOR and
-STEREO-A COR2::
+figure ``polarization.jpg`` for the sampled time closest to ``--time``, for PUNCH, CCOR,
+STEREO-A COR2, LASCO C2 and LASCO C3::
 
     top     rows tB, pB, pB/tB; columns observation and SuNeRF render of every instrument
     bottom  pB/tB against the projected distance, mean and standard deviation of the pixels in
@@ -12,9 +12,9 @@ STEREO-A COR2::
 
 The render is the clean forward model without the learned detector terms, shown for the full
 field between the inner and the outer radius of the observation (no gaps of the observed image);
-the radial profiles use only the pixels of the observation.  CCOR has no pB, so
-its rendered pB and pB/tB are predictions.  pB/tB is never clipped: values outside the physical
-range (below zero or above the Thomson limit) are highlighted in the maps and counted.
+the radial profiles use only the pixels of the observation.  CCOR, LASCO C2 and LASCO C3
+use tB observations only, so their rendered pB and pB/tB are predictions.  The maps highlight
+and count pB/tB values below zero or above the Thomson limit without clipping them.
 
 The renders (GPU) are cached per instrument and sampled time in
 ``<out_path>/cache/<instrument>_<k>.npz``; the figures are redrawn from the cache unless
@@ -33,11 +33,14 @@ from matplotlib.ticker import MaxNLocator
 from sunpy.map import Map, all_coordinates_from_map
 from sunpy.visualization.colormaps import cm
 
+from sunerf.data.review_masks import load_reviewed_map
+from sunerf.data.coronagraph.brightness_pairs import exclude_rejected_partners
 from sunerf.data.ray_sampling import hpc_impact_parameter
 from sunerf.evaluation.cme.plot_ref_series import normalize_datetime, read_observation_date
 
 # display name, instrument key of the save state
-INSTRUMENTS = {'punch': ('PUNCH', 'PUNCH'), 'ccor': ('CCOR', 'CCOR'), 'cor2': ('COR2', 'STEREO_A_COR2')}
+INSTRUMENTS = {'punch': ('PUNCH', 'PUNCH'), 'ccor': ('CCOR', 'CCOR'), 'cor2': ('COR2', 'STEREO_A_COR2'),
+               'lasco_c2': ('LASCO C2', 'LASCO_C2'), 'lasco_c3': ('LASCO C3', 'LASCO_C3')}
 LIMB_DARKENING = 0.63
 N_BINS = 40
 # format of the cached frames; a cache of another version is rendered again
@@ -88,10 +91,12 @@ def polarization(pB, tB):
 
 def list_frames(tB_pattern, pB_pattern, tB_correction, pB_correction):
     """Observation times and files of one instrument; tB and pB files are paired in sorted order."""
-    tB_paths = sorted(glob.glob(tB_pattern))
+    tB_paths = sorted(p for p in glob.glob(tB_pattern) if os.path.isfile(p))
     if not tB_paths:
         raise ValueError(f'No files found for {tB_pattern}')
-    pB_paths = sorted(glob.glob(pB_pattern)) if pB_pattern is not None else [None] * len(tB_paths)
+    pB_paths = sorted(p for p in glob.glob(pB_pattern) if os.path.isfile(p)) if pB_pattern is not None else [None] * len(tB_paths)
+    if pB_pattern is not None:
+        tB_paths, pB_paths = exclude_rejected_partners(tB_paths, pB_paths)
     if len(pB_paths) != len(tB_paths):
         raise ValueError(f'{len(tB_paths)} tB files but {len(pB_paths)} pB files for {tB_pattern}')
     times = np.array([read_observation_date(path) for path in tB_paths])
@@ -102,7 +107,7 @@ def list_frames(tB_pattern, pB_pattern, tB_correction, pB_correction):
 
 def load_observation(path, correction):
     """Prepared image as it enters the training: static correction image subtracted, solar north up."""
-    s_map = Map(path)
+    s_map = load_reviewed_map(path)
     if correction is not None:
         s_map = Map(s_map.data - correction, s_map.meta)
     return s_map.rotate(order=3)
@@ -339,6 +344,10 @@ def main():
                         help='Static tB correction image subtracted from COR2 in the training (npy)')
     parser.add_argument('--cor2_pB_correction', type=str, default=None,
                         help='Static pB correction image subtracted from COR2 in the training (npy)')
+    parser.add_argument('--lasco_c2_tB', help='Glob of the prepared LASCO C2 tB files')
+    parser.add_argument('--lasco_c2_correction', help='Static tB correction image for LASCO C2 (npy)')
+    parser.add_argument('--lasco_c3_tB', help='Glob of the prepared LASCO C3 tB files')
+    parser.add_argument('--lasco_c3_correction', help='Static tB correction image for LASCO C3 (npy)')
     parser.add_argument('--time', type=normalize_datetime, required=True,
                         help='The main figure shows the sampled time closest to this')
     parser.add_argument('--time_range', type=normalize_datetime, nargs=2, required=True, metavar=('START', 'END'),
@@ -349,7 +358,9 @@ def main():
     os.makedirs(args.out_path, exist_ok=True)
 
     inputs = {'punch': (args.punch_tB, args.punch_pB, None, None), 'ccor': (args.ccor_tB, None, None, None),
-              'cor2': (args.cor2_tB, args.cor2_pB, args.cor2_tB_correction, args.cor2_pB_correction)}
+              'cor2': (args.cor2_tB, args.cor2_pB, args.cor2_tB_correction, args.cor2_pB_correction),
+              'lasco_c2': (args.lasco_c2_tB, None, args.lasco_c2_correction, None),
+              'lasco_c3': (args.lasco_c3_tB, None, args.lasco_c3_correction, None)}
     times = sample_times(args.time_range, args.n_frames)
     os.makedirs(os.path.join(args.out_path, 'cache'), exist_ok=True)
     os.makedirs(os.path.join(args.out_path, 'frames'), exist_ok=True)

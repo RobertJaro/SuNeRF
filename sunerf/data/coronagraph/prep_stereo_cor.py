@@ -16,7 +16,6 @@ For each matched tB/pB pair:
 import argparse
 import multiprocessing
 import os
-import re
 from glob import glob
 
 import numpy as np
@@ -26,6 +25,7 @@ from sunpy.map import Map
 from sunpy.sun import constants
 from tqdm import tqdm
 
+from sunerf.data.coronagraph.brightness_pairs import normalize_pair_stem
 from sunerf.data.coronagraph.prep_common import (
     MapPreprocessor,
     add_cadence_argument,
@@ -35,17 +35,6 @@ from sunerf.data.coronagraph.prep_common import (
     select_items_by_time,
     should_write_output,
 )
-
-
-PAIR_STEM_RE = re.compile(r"^(?P<prefix>\d{8}_\d{6})_1(?P<kind>[PB])(?P<suffix>.+)$")
-
-
-def normalize_pair_stem(path: str) -> str:
-    stem = os.path.splitext(os.path.basename(path))[0]
-    match = PAIR_STEM_RE.match(stem)
-    if match is None:
-        return stem
-    return f"{match.group('prefix')}_1X{match.group('suffix')}"
 
 
 def collect_pairs(tb_path: str, pb_path: str):

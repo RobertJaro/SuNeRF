@@ -3,8 +3,8 @@ schema_version: 2
 # Pointwise density/temperature reconstruction with H/He photoionization
 # absorption and a cool absorber field; shares the plasma base of
 # polar_2025_10_absorption.yaml. The recovered n_e is an RMS density.
-base_path: "/glade/work/rjarolim/sunerf/all_2012_08_plasma_absorption_v01"
-work_directory: "/glade/derecho/scratch/rjarolim/sunerf/all_2012_08_plasma_absorption_v01"
+base_path: "/glade/work/rjarolim/sunerf/all_2012_08_plasma_absorption_v02"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/all_2012_08_plasma_absorption_v02"
 
 instruments:
   - type: "plasma"
@@ -181,7 +181,7 @@ shuffle:
 
 training:
   epochs: 1000
-  log_every_n_steps: 2000
+  log_every_n_steps: 10000
   check_val_every_n_epoch: 1
   meta_path: "last"
 
@@ -232,4 +232,4 @@ lambda:
   regularization: 0.0
   absorption: 0.0
   calibration: 0.0
-  cool_absorber: 1.0e-4
+  cool_absorber: 0.0

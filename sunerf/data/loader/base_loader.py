@@ -12,6 +12,7 @@ from sunpy.map import Map, all_coordinates_from_map
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
 
+from sunerf.data.review_masks import load_reviewed_map
 from sunerf.data.dataset import IndexedDataset, TensorsDataset
 from sunerf.data.ray_sampling import get_rays, hpc_impact_parameter
 from sunerf.data.utils import get_azimuthal_equidistant_coordinates
@@ -129,7 +130,7 @@ class MapDataLoader:
     def load(self, map_path):
         # Accept an already-open map so a multi-channel loader can validate WCS
         # and construct rays without reading the reference FITS file twice.
-        s_map = map_path if hasattr(map_path, 'coordinate_frame') else Map(map_path)
+        s_map = map_path if hasattr(map_path, 'coordinate_frame') else load_reviewed_map(map_path)
         time = s_map.date.datetime
 
         if self.reference_frame == 'carrington':

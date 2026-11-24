@@ -43,7 +43,7 @@ button.primary { background: #1f4f7a; border-color: #2c6aa0; }
 #sat-info b { color: var(--text); font-weight: 600; }
 #sat-info code { color: #ffd27a; }
 #sat-status.ok { color: #7fd18b; } #sat-status.err { color: #ff9a9d; }
-main { display: grid; grid-template-columns: minmax(560px, 1.35fr) minmax(360px, 1fr);
+main { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
   flex: 1; min-height: 0; }
 .pane { overflow: auto; padding: 12px 16px; }
 .pane + .pane { border-left: 1px solid var(--line); }
@@ -58,12 +58,29 @@ h2 .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
 .axis { margin-left: 126px; display: flex; justify-content: space-between; color: var(--muted);
   font-size: 11px; margin-bottom: 14px; }
 /* Observation viewer: previous (small), current (all channels), next (small). */
-.strip { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 6px; }
-.strip.small { width: 58%; margin: 0 auto; gap: 4px; }
+.review-stage { height: 100%; display: flex; flex-direction: column; }
+.review-stage > * { flex: none; }
+#plots { max-height: 24dvh; overflow-y: auto; }
+#viewer { flex: 1; min-height: 0; display: grid;
+  grid-template-rows: minmax(0, 1fr) auto minmax(0, 2.4fr) auto minmax(0, 1fr) auto; }
+@media (max-width: 799px) {
+  main { grid-template-columns: minmax(0, 1fr); grid-template-rows: 100% auto; overflow: auto; }
+  .plot-row canvas { height: 36px; }
+}
+@media (min-width: 800px) and (max-height: 850px) {
+  main { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+  .plot-row canvas { height: clamp(32px, 6dvh, 48px); }
+  #viewer { grid-auto-flow: column; column-gap: 6px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2.6fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto; }
+}
+.strip { container-type: size; display: flex; justify-content: center; align-items: center; gap: 6px; }
 .strip-time { color: var(--muted); font-size: 11px; text-align: center; margin: 3px 0 6px;
   font-variant-numeric: tabular-nums; }
 .strip-time.current { color: var(--text); font-size: 12px; font-weight: 600; }
-.vcell { position: relative; aspect-ratio: 1; background: #000; border: 2px solid var(--line);
+.vcell { position: relative; --aspect: 1; aspect-ratio: var(--aspect);
+  width: min(calc((100% - (var(--n) - 1) * 6px) / var(--n)), calc(100cqh * var(--aspect)));
+  min-width: 0; background: #000; border: 2px solid var(--line);
   border-radius: 4px; overflow: hidden; cursor: pointer; }
 .vcell img { width: 100%; height: 100%; display: block; }
 .vcell.blank { background: transparent; border: 1px dashed #3a404b; cursor: default;
@@ -71,10 +88,6 @@ h2 .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
 .strip.small .vcell.blank { font-size: 0; }
 .vcell.warn { border-color: var(--warn); }
 .vcell.rej { border-color: var(--reject); }
-.vcell.rej img { opacity: .35; }
-.vcell.rej::after { content: "✕"; position: absolute; inset: 0; display: grid; place-items: center;
-  color: var(--reject); font-size: 28px; font-weight: 700; }
-.strip.small .vcell.rej::after { font-size: 16px; }
 .vcell.sel { outline: 2px solid var(--select); outline-offset: 1px; }
 .vcell .lbl { position: absolute; left: 4px; bottom: 2px; font-size: 10px; color: #fff;
   text-shadow: 0 0 3px #000, 0 0 3px #000; pointer-events: none; }
@@ -108,6 +121,11 @@ table.grid td.time { color: var(--muted); font-size: 11px; white-space: nowrap; 
   border-radius: 50%; background: var(--user); z-index: 1; }
 .cell.sel { outline: 2px solid var(--select); outline-offset: 1px; }
 .cell .noimg { color: var(--muted); font-size: 10px; display: grid; place-items: center; height: 100%; }
+#mask-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+#mask-controls[hidden] { display: none; }
+#mask-canvas { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .55;
+  touch-action: none; cursor: crosshair; }
+.mask-overlay { position: absolute; inset: 0; opacity: .55; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -119,8 +137,10 @@ table.grid td.time { color: var(--muted); font-size: 11px; white-space: nowrap; 
       <option value="all">all</option>
       <option value="flagged">flagged</option>
       <option value="rejected">rejected</option>
+      <option value="accepted" title="Every available frame in the row is kept">accepted</option>
     </select></label>
     <label>Metric <select id="metric"></select></label>
+    <button id="accept-all" title="Keep every frame in this dataset, including frames hidden by the row filter">Accept all frames</button>
     <button id="reset" title="Discard manual decisions">Reset to automatic</button>
     <span id="save-status"></span>
     <button id="import" title="Load decisions from a decisions.csv or a list of paths">Import</button>
@@ -139,17 +159,30 @@ table.grid td.time { color: var(--muted); font-size: 11px; white-space: nowrap; 
 </div>
 <main>
   <section class="pane">
-    <h2>Sequence <span class="hint">click a point to open the frame; scroll to zoom time, drag to pan, double-click to reset</span></h2>
-    <div id="plots"></div>
-    <div class="axis"><span id="t0"></span><span id="t1"></span></div>
-    <h2>Observation <span class="hint">previous · current (all channels) · next; click a panel to select it</span></h2>
-    <div id="viewer">
-      <div class="strip small" id="vprev"></div>
-      <div class="strip-time" id="cprev"></div>
-      <div class="strip" id="vcur"></div>
-      <div class="strip-time current" id="ccur"></div>
-      <div class="strip small" id="vnext"></div>
-      <div class="strip-time" id="cnext"></div>
+    <div class="review-stage">
+      <h2>Sequence <span class="hint">click a point to open the frame; scroll to zoom time, drag to pan, double-click to reset</span></h2>
+      <div id="plots"></div>
+      <div class="axis"><span id="t0"></span><span id="t1"></span></div>
+      <h2>Observation <span class="hint">previous · current (all channels) · next; click a panel to select it</span></h2>
+      <div id="mask-controls" hidden>
+        <label><input type="checkbox" id="mask-enable" title="Check to paint. Uncheck to remove this frame’s mask."> Edit exclusion mask</label>
+        <label id="mask-pair-control"><input type="checkbox" id="mask-pair" checked> Apply to both tB and pB</label>
+        <label>Brush radius <select id="mask-radius">
+          <option>1</option><option>3</option><option selected>8</option><option>16</option>
+          <option>32</option><option>64</option></select> px</label>
+        <button id="mask-duplicate">Edit with previous mask <kbd>M</kbd></button>
+        <button id="mask-later" title="Add these exclusions to every later frame on the same pixel grid, including hidden rows">Apply mask to all later frames</button>
+        <span id="mask-status"></span><span id="mask-save" role="status"></span>
+      </div>
+      <div id="viewer">
+        <div class="strip small" id="vprev"></div>
+        <div class="strip-time" id="cprev"></div>
+        <div class="strip" id="vcur"></div>
+        <canvas id="mask-canvas" hidden></canvas>
+        <div class="strip-time current" id="ccur"></div>
+        <div class="strip small" id="vnext"></div>
+        <div class="strip-time" id="cnext"></div>
+      </div>
     </div>
     <div class="info">
       <div>
@@ -161,7 +194,7 @@ table.grid td.time { color: var(--muted); font-size: 11px; white-space: nowrap; 
         <div class="keys">
           <kbd>←</kbd><kbd>→</kbd> frame &nbsp; <kbd>↑</kbd><kbd>↓</kbd> row &nbsp;
           <kbd>n</kbd><kbd>p</kbd> next/previous flagged &nbsp; <kbd>x</kbd> toggle frame &nbsp;
-          <kbd>r</kbd> toggle row. Each channel uses its instrument colormap on one log range over the whole sequence (hover a column title); red pixels are saturated, gray pixels invalid.
+          <kbd>r</kbd> toggle row. Each channel uses its instrument colormap on one log range over the whole sequence (hover a column title). Red marks saturation and green marks invalid pixels.
           Copy decisions.csv to the server and run <code>frame_review apply</code>.
         </div>
       </div>
@@ -175,6 +208,14 @@ table.grid td.time { color: var(--muted); font-size: 11px; white-space: nowrap; 
 <script>
 const DATA = __DATA__;
 const F = DATA.frames, G = DATA.groups;
+const channelFolder = f => f.path.slice(0, f.path.lastIndexOf('/'));
+const channelFolders = new Set(F.map(channelFolder));
+function pairedFolder(f) {
+  const folder = channelFolder(f);
+  if (!/\/[tp]B$/.test(folder)) return null;
+  const other = folder.slice(0, -2) + (folder.endsWith('/tB') ? 'pB' : 'tB');
+  return channelFolders.has(other) ? other : null;
+}
 const STORE = 'frame-review:' + DATA.id;
 const byGroup = G.map(() => []);
 F.forEach(f => byGroup[f.g].push(f.i));
@@ -187,6 +228,8 @@ F.forEach(f => { rows[f.row][f.g] = f.i; });
 const SERVED = location.protocol === 'http:' || location.protocol === 'https:';
 // decisions: path -> rejected (true/false), only where it differs from auto.
 let decisions = {};
+const masks = SERVED ? {...DATA.masks} : {};
+const editing = new Set(Object.keys(masks));
 function fromRows(rows) {
   const byPath = {};
   rows.forEach(([path, decision]) => { byPath[path] = decision; });
@@ -208,13 +251,13 @@ let selected = F.findIndex(f => f.auto !== 'ok');
 if (selected < 0) selected = 0;
 let metric = DATA.metrics[0][0];
 const finiteT = F.map(f => f.t).filter(t => t !== null);
-const T0 = Math.min(...finiteT), T1 = Math.max(...finiteT);
+const T0 = finiteT.length ? Math.min(...finiteT) : 0, T1 = finiteT.length ? Math.max(...finiteT) : 1;
 let view = [T0 - 1, T1 + 1];
 
 const $ = id => document.getElementById(id);
 const isRejected = f => (f.path in decisions) ? decisions[f.path] : f.auto === 'reject';
 const isChanged = f => (f.path in decisions);
-const flagged = f => f.auto !== 'ok' || isRejected(f);
+const flagged = f => f.auto !== 'ok' || isRejected(f) || !!masks[f.path];
 function csvField(value) {
   const text = value === null || value === undefined ? '' : String(value);
   return /[",\n\r]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
@@ -244,21 +287,30 @@ function decisionsCsv() {
   return lines.join('\n') + '\n';
 }
 function setStatus(text, cls) { const el = $('save-status'); el.textContent = text; el.className = cls || ''; }
-let saveTimer = null;
+let saveQueue = Promise.resolve(), revision = 0, dirty = false;
+window.addEventListener('beforeunload', e => { if (dirty || pendingMasks.size || applyingLater) { e.preventDefault(); e.returnValue = ''; } });
 function save() {
+  const current = ++revision;
   if (!SERVED) {
-    try { localStorage.setItem(STORE, JSON.stringify(decisions)); } catch (e) {}
+    try {
+      localStorage.setItem(STORE, JSON.stringify(decisions));
+    } catch (e) { setStatus('Browser storage full. Download decisions.csv to save your edits.', 'err'); return; }
     setStatus('opened as a file: download decisions.csv to keep the decisions', 'err');
     return;
   }
+  dirty = true;
   setStatus('saving…');
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    fetch('decisions.csv', {method: 'POST', body: decisionsCsv(), headers: {'Content-Type': 'text/csv'}})
-      .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
-      .then(info => setStatus(`saved decisions.csv · ${info.rejected} rejected`, 'ok'))
-      .catch(error => setStatus('not saved: ' + error + ' (is "frame_review review" running?)', 'err'));
-  }, 300);
+  saveQueue = saveQueue.then(async () => {
+    if (current !== revision) return;
+    const response = await fetch('decisions.csv', {method: 'POST', body: decisionsCsv(),
+      headers: {'Content-Type': 'text/csv'}});
+    if (!response.ok) throw Error(response.statusText);
+    const info = await response.json();
+    if (current === revision) {
+      dirty = false;
+      setStatus(`saved decisions.csv · ${info.rejected} rejected`, 'ok');
+    }
+  }).catch(error => setStatus('Save failed. Download decisions.csv to keep your edits. ' + error, 'err'));
 }
 function setRejected(f, value) {
   if (value === (f.auto === 'reject')) delete decisions[f.path]; else decisions[f.path] = value;
@@ -291,7 +343,8 @@ function buildGrid() {
   const head = document.createElement('tr');
   const range = name => {
     const c = (DATA.channels || {})[name];
-    return c ? `${c.cmap}, log10 ${c.log10_min.toFixed(2)} .. ${c.log10_max.toFixed(2)}` : '';
+    const scale = DATA.cme ? 'asinh' : 'log10';
+    return c ? `${c.cmap}, ${scale} ${c[scale + '_min'].toFixed(2)} .. ${c[scale + '_max'].toFixed(2)}` : '';
   };
   head.innerHTML = '<th></th>' + G.map(g => `<th title="${range(g)}">${g}</th>`).join('');
   table.appendChild(head);
@@ -326,7 +379,9 @@ function buildGrid() {
 function rowVisible(r) {
   const mode = $('filter').value;
   if (mode === 'all') return true;
-  return rows[r].some(i => i !== null && (mode === 'flagged' ? flagged(F[i]) : isRejected(F[i])));
+  if (mode === 'flagged') return rows[r].some(i => i !== null && flagged(F[i]));
+  const rejected = rows[r].some(i => i !== null && isRejected(F[i]));
+  return mode === 'accepted' ? !rejected : rejected;
 }
 function updateGrid() {
   rows.forEach((row, r) => {
@@ -335,7 +390,7 @@ function updateGrid() {
       if (i === null) return;
       const f = F[i];
       cells[i].className = 'cell' + (isRejected(f) ? ' rej' : (f.auto === 'warn' ? ' warn' : '')) +
-        (isChanged(f) ? ' user' : '') + (i === selected ? ' sel' : '');
+        ((isChanged(f) || masks[f.path]) ? ' user' : '') + (i === selected ? ' sel' : '');
     });
   });
 }
@@ -547,8 +602,11 @@ function stripHtml(r) {
     if (i === null) return `<div class="vcell blank" title="no ${G[g]}">no ${G[g]}</div>`;
     const f = F[i];
     const cls = (isRejected(f) ? ' rej' : (f.auto === 'warn' ? ' warn' : '')) + (i === selected ? ' sel' : '');
-    const image = f.thumb ? `<img src="${f.thumb}" alt="">` : '';
-    return `<div class="vcell${cls}" data-i="${i}" title="${G[g]} ${timeLabel(f)}">${image}` +
+    const src = f.preview || f.thumb;
+    const image = src ? `<img src="${src}" alt="">` : '';
+    const overlay = masks[f.path] ? `<img class="mask-overlay" src="${masks[f.path]}" alt="Excluded pixels">` : '';
+    const aspect = f.width && f.height ? ` style="--aspect:${f.width / f.height}"` : '';
+    return `<div class="vcell${cls}"${aspect} data-i="${i}" title="${G[g]} ${timeLabel(f)}">${image}${overlay}` +
       `<span class="lbl">${G[g]}</span></div>`;
   }).join('');
 }
@@ -567,7 +625,8 @@ function updateViewer() {
   $('vnext').innerHTML = stripHtml(f.row + 1);
   $('cprev').textContent = f.row > 0 ? '▲ ' + rowLabel(f.row - 1) : 'start of sequence';
   $('ccur').textContent = `${rowLabel(f.row)} · observation ${f.row + 1}/${rows.length} · ` +
-    `selected ${G[f.g]} (${f.k + 1}/${list.length})`;
+    `selected ${G[f.g]} (${f.k + 1}/${list.length})` +
+    (f.tbBackgroundSubtracted ? ' · daily background subtracted' : '');
   $('cnext').textContent = f.row < rows.length - 1 ? '▼ ' + rowLabel(f.row + 1) : 'end of sequence';
   const badge = $('badge');
   badge.className = 'badge ' + f.auto;
@@ -580,22 +639,231 @@ function updateViewer() {
     : '<li style="color:var(--muted)">no automatic findings</li>';
   $('toggle').innerHTML = (isRejected(f) ? 'Keep frame' : 'Reject frame') + ' <kbd>x</kbd>';
   $('path').textContent = f.path;
+  if (DATA.cme) updateMaskEditor(f);
   const labels = Object.fromEntries(DATA.metrics);
   Object.assign(labels, {nsatpix: 'Saturated pixels', quality: 'QUALITY', aectype: 'AECTYPE',
-    low: '1st percentile log10', high: '99th percentile log10', maximum: 'Maximum log10'});
+    low: '1st percentile', high: '99th percentile', maximum: 'Maximum'});
   $('stats').innerHTML = Object.entries(f.stats)
     .map(([key, value]) => `<tr><td>${labels[key] || key}</td><td>${fmt(value)}</td></tr>`).join('');
 }
 
+// The editing canvas has exactly one pixel per source pixel, in JPEG display order.
+const canvas = $('mask-canvas'), ink = canvas.getContext('2d');
+let stroke = null, editorReady = false, editorFrame = null, editorSources = [], editorVersion = 0;
+let applyingLater = false;
+function maskTargets(f) {
+  const partner = F[f.partner];
+  return $('mask-pair').checked && partner ? [f, partner] : [f];
+}
+function maskSources(f) {
+  return [...new Set(maskTargets(f).map(target => masks[target.path]).filter(Boolean))];
+}
+async function loadLayers(sources) {
+  return Promise.all(sources.map(async src => {
+    const image = new Image();
+    image.src = src;
+    await image.decode();
+    return image;
+  }));
+}
+function applyMask(f, image) {
+  for (const target of maskTargets(f)) {
+    if (image) {
+      masks[target.path] = image;
+      editing.add(target.path);
+    } else {
+      editing.delete(target.path);
+      if (!masks[target.path]) continue;
+      delete masks[target.path];
+    }
+    saveMask(target, image);
+  }
+}
+
+function previousMask(f) {
+  for (let k = f.k - 1; k >= 0; k--) {
+    const previous = F[byGroup[f.g][k]];
+    if (previous.width === f.width && previous.height === f.height &&
+        maskTargets(previous).some(target => masks[target.path])) return previous;
+  }
+  return null;
+}
+function updateMaskEditor(f) {
+  const active = editing.has(f.path) && !!f.preview;
+  $('mask-controls').hidden = false;
+  $('mask-enable').disabled = !SERVED || !f.preview || applyingLater;
+  $('mask-enable').checked = active;
+  $('mask-pair-control').hidden = !pairedFolder(f);
+  $('mask-pair').disabled = applyingLater;
+  $('mask-radius').disabled = !active;
+  $('mask-duplicate').disabled = !SERVED || !f.preview || applyingLater;
+  $('mask-later').disabled = !SERVED || !active || applyingLater || !maskSources(f).length;
+  $('mask-duplicate').title = 'Enable editing and copy the most recent earlier mask on this grid, if available';
+  canvas.hidden = !active;
+  const hint = masks[f.path] ? 'Uncheck to clear the mask' : 'Drag to exclude pixels';
+  $('mask-status').textContent = SERVED ? (active ? hint : '') : 'Run frame_review review to edit masks';
+  if (!active) { editorFrame = null; editorReady = false; editorVersion++; return; }
+  const panel = $('vcur').querySelector(`[data-i="${f.i}"]`);
+  const overlay = panel.querySelector('.mask-overlay');
+  if (overlay) overlay.remove();
+  if (canvas.parentElement !== panel) panel.appendChild(canvas);
+  const sources = maskSources(f);
+  if (editorFrame === f && sources.length === editorSources.length && sources.every((src, i) => src === editorSources[i])) return;
+  editorFrame = f;
+  editorSources = sources;
+  const version = ++editorVersion;
+  editorReady = !sources.length;
+  canvas.width = f.width;
+  canvas.height = f.height;
+  if (sources.length) {
+    loadLayers(sources).then(images => {
+      if (version !== editorVersion) return;
+      // Painting adds to the union of any existing channel-specific exclusions.
+      images.forEach(image => ink.drawImage(image, 0, 0));
+      editorReady = true;
+    }).catch(error => {
+      if (version === editorVersion) $('mask-save').textContent = 'Could not load mask for ' + f.name + ': ' + error;
+    });
+  }
+}
+$('mask-pair').addEventListener('change', () => {
+  editorFrame = null;
+  updateMaskEditor(F[selected]);
+});
+$('mask-enable').addEventListener('change', e => {
+  const f = F[selected];
+  if (e.target.checked) {
+    editing.add(f.path);
+  } else {
+    applyMask(f, null);
+  }
+  refresh();
+});
+const pendingMasks = new Map();
+let maskWrites = Promise.resolve();
+function saveMask(f, image) {
+  const change = {image};
+  pendingMasks.set(f.path, change);
+  $('mask-save').textContent = 'Saving mask…';
+  maskWrites = maskWrites.then(async () => {
+    if (pendingMasks.get(f.path) !== change) return;
+    const body = image ? await (await fetch(image)).blob() : null;
+    const response = await fetch('pixel-mask/' + encodeURIComponent(f.maskFile), {method: 'POST', body});
+    if (!response.ok) throw Error(response.statusText);
+    if (pendingMasks.get(f.path) === change) pendingMasks.delete(f.path);
+    if (!pendingMasks.size) $('mask-save').textContent = image ? 'Saved .npy mask' : 'Removed .npy mask';
+  }).catch(error => { $('mask-save').textContent = 'Mask save failed for ' + f.name + ': ' + error; });
+}
+async function editWithPreviousMask() {
+  const f = F[selected];
+  if (!DATA.cme || !SERVED || !f.preview || stroke || applyingLater) return;
+  editing.add(f.path);
+  updateMaskEditor(f);
+  const previous = previousMask(f);
+  if (!previous) return;
+  const version = ++editorVersion;
+  editorReady = false;
+  try {
+    const images = await loadLayers(maskSources(previous));
+    if (version !== editorVersion) return;
+    ink.clearRect(0, 0, canvas.width, canvas.height);
+    images.forEach(image => ink.drawImage(image, 0, 0));
+    const image = canvas.toDataURL();
+    applyMask(f, image);
+    editorSources = [image];
+    editorReady = true;
+    refresh();
+  } catch (error) {
+    if (version !== editorVersion) return;
+    editorFrame = null;
+    updateMaskEditor(f);
+    $('mask-save').textContent = 'Could not duplicate mask: ' + error;
+  }
+}
+$('mask-duplicate').addEventListener('click', editWithPreviousMask);
+$('mask-later').addEventListener('click', async () => {
+  const f = F[selected];
+  const sources = maskTargets(f).filter(target => masks[target.path]).map(target => target.maskFile);
+  const channels = new Set([channelFolder(f)]);
+  if ($('mask-pair').checked) channels.add(pairedFolder(f));
+  const targets = F.filter(target => target.t > f.t && target.i !== f.partner &&
+    target.preview && target.width === f.width && target.height === f.height && channels.has(channelFolder(target)));
+  const status = $('mask-save');
+  if (!targets.length) { status.textContent = 'No later frames on this grid'; return; }
+  applyingLater = true;
+  updateMaskEditor(f);
+  try {
+    await maskWrites;
+    if (pendingMasks.size) throw Error('A previous mask edit still needs to be saved.');
+    status.textContent = `Applying mask to ${targets.length} frames…`;
+    const response = await fetch('merge-masks', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sources, targets: targets.map(target => target.maskFile)})});
+    if (!response.ok) throw Error(response.statusText);
+    const result = await response.json();
+    const applied = new Set(result.applied);
+    targets.forEach(target => {
+      if (applied.has(target.maskFile)) {
+        masks[target.path] = 'mask-preview/' + encodeURIComponent(target.maskFile);
+        editing.add(target.path);
+      }
+    });
+    status.textContent = `Applied mask to ${applied.size} later frames` + (result.error ? '. Stopped at ' + result.error : '');
+  } catch (error) {
+    status.textContent = 'Could not apply mask to later frames: ' + error;
+  } finally {
+    applyingLater = false;
+    editorFrame = null;
+    refresh();
+  }
+});
+function stamp(x, y, r) {
+  // Integer spans keep the alpha plane strictly binary, including along the rim.
+  ink.fillStyle = '#ff496c';
+  for (let dy = -r; dy <= r; dy++) {
+    const dx = Math.floor(Math.sqrt(r * r - dy * dy));
+    ink.fillRect(Math.round(x) - dx, Math.round(y) + dy, 2 * dx + 1, 1);
+  }
+}
+function paint(e) {
+  if (!stroke || stroke.pointer !== e.pointerId) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = (e.clientX - rect.left) * canvas.width / rect.width - 0.5;
+  const y = (e.clientY - rect.top) * canvas.height / rect.height - 0.5;
+  const r = Number($('mask-radius').value);
+  const dx = x - (stroke.x ?? x), dy = y - (stroke.y ?? y);
+  const n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / Math.max(1, r / 2)));
+  for (let i = 1; i <= n; i++) stamp(x - dx * (1 - i/n), y - dy * (1 - i/n), r);
+  stroke.x = x; stroke.y = y;
+}
+function finishStroke() {
+  if (!stroke) return;
+  const f = stroke.frame;
+  stroke = null;
+  const image = canvas.toDataURL();
+  applyMask(f, image);
+  editorSources = [image];
+  refresh();
+}
+canvas.addEventListener('pointerdown', e => {
+  if (!editorReady || stroke || applyingLater || e.button !== 0 || !editing.has(F[selected].path)) return;
+  canvas.setPointerCapture(e.pointerId);
+  stroke = {frame: F[selected], pointer: e.pointerId};
+  paint(e);
+});
+canvas.addEventListener('pointermove', paint);
+canvas.addEventListener('pointerup', e => { paint(e); finishStroke(); });
+canvas.addEventListener('lostpointercapture', finishStroke);
+
 // ---------------------------------------------------------------- selection
 function select(i, scroll) {
   if (i === null || i === undefined || !F[i]) return;
+  finishStroke();
   const previous = selected;
   selected = i;
   if (cells[previous]) cells[previous].classList.remove('sel');
   if (cells[i]) {
     cells[i].classList.add('sel');
-    if (scroll) cells[i].scrollIntoView({block: 'nearest'});
+    if (scroll) cells[i].scrollIntoView({block: 'nearest', container: 'nearest'});
   }
   const t = F[i].t;
   if (t !== null && (t < view[0] || t > view[1])) {
@@ -635,6 +903,11 @@ function toggleRow() {
   save(); refresh();
 }
 
+function importDecisions(rows) {
+  const p = rows[0].indexOf('path'), d = rows[0].indexOf('decision');
+  fromRows(rows.slice(1).map(r => [r[p], (r[d] || '').trim().toLowerCase()]));
+}
+
 // ---------------------------------------------------------------- export / import
 function download(name, text) {
   const link = document.createElement('a');
@@ -653,7 +926,7 @@ $('import-file').addEventListener('change', e => {
     const header = rows.length ? rows[0].map(h => h.trim()) : [];
     const pathIndex = header.indexOf('path'), decisionIndex = header.indexOf('decision');
     if (pathIndex >= 0 && decisionIndex >= 0) {
-      fromRows(rows.slice(1).map(r => [r[pathIndex], (r[decisionIndex] || '').trim().toLowerCase()]));
+      importDecisions(rows);
     } else {
       // A list of rejected paths (or file names), one per line.
       const listed = new Set(text.split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith('#')));
@@ -664,6 +937,10 @@ $('import-file').addEventListener('change', e => {
     save(); refresh();
     e.target.value = '';
   });
+});
+$('accept-all').addEventListener('click', () => {
+  F.forEach(f => setRejected(f, false));
+  save(); refresh();
 });
 $('reset').addEventListener('click', () => {
   if (!Object.keys(decisions).length || confirm('Discard all manual decisions?')) {
@@ -683,17 +960,26 @@ $('sat-level').addEventListener('focus', () => {
 $('sat-recommended').addEventListener('click', () => setSatLevel(SAT.recommended_dn ?? null));
 $('sat-save').addEventListener('click', saveSaturation);
 $('viewer').addEventListener('click', e => {
+  if (e.target === canvas) return;
   const cell = e.target.closest('[data-i]');
   if (cell) select(Number(cell.dataset.i), true);
 });
 $('viewer').addEventListener('dblclick', e => {
+  if (e.target === canvas) return;
   const cell = e.target.closest('[data-i]');
   if (cell) { select(Number(cell.dataset.i), true); toggleFrame(); }
 });
 $('toggle').addEventListener('click', toggleFrame);
 $('toggle-row').addEventListener('click', toggleRow);
 document.addEventListener('keydown', e => {
-  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' || e.metaKey || e.ctrlKey) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (DATA.cme && e.key.toLowerCase() === 'm' &&
+      (e.target.tagName !== 'INPUT' || e.target.type === 'checkbox') && e.target.tagName !== 'SELECT') {
+    e.preventDefault();
+    if (!e.repeat) editWithPreviousMask();
+    return;
+  }
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
   const actions = {
     ArrowRight: () => stepFrame(1), l: () => stepFrame(1),
     ArrowLeft: () => stepFrame(-1), h: () => stepFrame(-1),
@@ -707,7 +993,10 @@ document.addEventListener('keydown', e => {
 window.addEventListener('resize', drawPlots);
 
 document.title = 'Frame review · ' + DATA.title;
-if (HAS_PEAKS) {
+if (DATA.cme) {
+  $('saturation-bar').style.display = 'none';
+  document.querySelector('.keys').lastChild.textContent = ' toggle row. Green marks invalid pixels. The mask editor uses native pixels. Upload decisions.csv and the masks directory, then apply the review on the server.';
+} else if (HAS_PEAKS) {
   $('sat-level').value = satLevel === null ? '' : satLevel;
   $('sat-recommended').disabled = !SAT.recommended_dn;
   describeSaturation();
@@ -726,10 +1015,9 @@ if (SERVED) {
   fetch('decisions.csv', {cache: 'no-store'})
     .then(r => r.ok ? r.text() : null)
     .then(text => {
+      if (revision) return;
       if (text) {
-        const rows = parseCsv(text);
-        const header = rows[0], p = header.indexOf('path'), d = header.indexOf('decision');
-        fromRows(rows.slice(1).map(r => [r[p], r[d]]));
+        importDecisions(parseCsv(text));
         refresh();
         setStatus(`loaded decisions.csv · ${F.filter(isRejected).length} rejected`, 'ok');
       } else setStatus('no decisions.csv yet: automatic flags', '');

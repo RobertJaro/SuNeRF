@@ -103,3 +103,20 @@ def test_tb_only_sequence_is_ordered_by_header_time(monkeypatch):
 
     assert tb == ['tb_filename_last', 'tb_filename_first']
     assert pb is None
+
+
+def test_reviewed_partner_is_skipped_only_for_paired_observations(tmp_path):
+    from sunerf.data.coronagraph.brightness_pairs import exclude_rejected_partners
+
+    tb_dir = tmp_path / 'tB'
+    pb_dir = tmp_path / 'pB'
+    tb_dir.mkdir()
+    (pb_dir / 'rejected').mkdir(parents=True)
+    tb = tb_dir / '20250901_000745_1B4c2A.fts'
+    pb = pb_dir / '20250901_000745_1P4c2A.fts'
+    tb.touch()
+    (pb_dir / 'rejected' / pb.name).touch()
+    assert exclude_rejected_partners([tb], []) == ([], [])
+    assert exclude_rejected_partners([tb], None) == ([tb], None)
+    (pb_dir / 'rejected' / pb.name).rename(pb)
+    assert exclude_rejected_partners([tb], [pb]) == ([tb], [pb])

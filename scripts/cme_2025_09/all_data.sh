@@ -28,3 +28,6 @@ SCRIPT_DIR="/glade/u/home/rjarolim/projects/SuNeRF/scripts/cme_2025_09"
 ################################################################################
 "${SCRIPT_DIR}/psp.sh"
 "${SCRIPT_DIR}/solo.sh"
+
+# Review the prepared observations before deriving the backgrounds and movies.
+# Server and local commands are in review_frames.sh, followed by compute_correction.sh and review_products.sh.

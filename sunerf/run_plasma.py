@@ -4,6 +4,7 @@ import os
 from collections.abc import Mapping, Sequence
 
 import numpy as np
+import torch
 from astropy import units as u
 from lightning.pytorch.callbacks import LambdaCallback, ModelCheckpoint
 from lightning.pytorch.utilities.rank_zero import rank_zero_only
@@ -33,6 +34,19 @@ from sunerf.train.util import load_yaml_config
 @rank_zero_only
 def _save_plasma_sunerf_rank_zero(*args, **kwargs):
     return save_plasma_sunerf(*args, **kwargs)
+
+
+def load_initial_state(sunerf, path):
+    """Copy the weights of a plasma save state into ``sunerf`` (strict).
+
+    Only the module state is taken: optimizer, schedules and step count start
+    fresh, so a model trained on one time window initializes the next.
+    """
+    state = torch.load(path, map_location='cpu', weights_only=True)
+    if not isinstance(state, Mapping) or 'state_dict' not in state:
+        raise ValueError(f'{path!r} is not a plasma save state (no state_dict).')
+    sunerf.load_state_dict(state['state_dict'], strict=True)
+    print(f'Initialized the model weights from {path}')
 
 
 def _configured_dataset_instruments(data_config):
@@ -409,6 +423,8 @@ def main(argv=None):
     use_absorption_validation = absorption_config.get('type') in {'learned', 'constant'}
 
     epochs = training_config.get('epochs', 1000)
+    max_steps = training_config.get('max_steps') or -1
+    init_state = training_config.get('init_state')
     log_every_n_steps = training_config.get('log_every_n_steps')
     check_val_every_n_epoch = training_config.get('check_val_every_n_epoch', 1)
     ckpt_path = training_config.get('meta_path', 'last')
@@ -451,6 +467,8 @@ def main(argv=None):
         data_config,
         instruments_config,
     )
+    if init_state is not None:
+        load_initial_state(sunerf, init_state)
     sunerf.config_schema_version = config['schema_version']
     sunerf.config_fingerprint = config_fingerprint
     sunerf.config_source_records = config_source_records
@@ -540,6 +558,7 @@ def main(argv=None):
         logger=logger,
         callbacks=callbacks,
         max_epochs=epochs,
+        max_steps=max_steps,
         val_check_interval=log_every_n_steps,
         check_val_every_n_epoch=check_val_every_n_epoch,
     )

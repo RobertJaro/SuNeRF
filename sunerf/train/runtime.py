@@ -71,7 +71,13 @@ def _configured_source_files(value, key=""):
     matches = glob.glob(expanded_value)
     if not matches and os.path.isfile(expanded_value):
         matches = [expanded_value]
-    return [os.path.abspath(path) for path in matches if os.path.isfile(path)]
+    files = [os.path.abspath(path) for path in matches if os.path.isfile(path)]
+    if key in ('data_path_tB', 'data_path_pB'):
+        from sunerf.data.review_masks import mask_path
+
+        masks = [mask_path(path) for path in files]
+        files.extend(str(mask) for mask in masks if mask.is_file())
+    return files
 
 
 def build_data_cache_fingerprint(data_config, *, format_version=DATA_CACHE_FORMAT_VERSION):

@@ -1,5 +1,5 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_cme_v22"
-work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2025_09_cme_v22'
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/2025_09_cme_v25"
+work_directory: '/glade/derecho/scratch/rjarolim/sunerf-cme-obs/2025_09_cme_v25'
 
 # Per-channel additive and multiplicative image-plane corrections per instrument;
 # STEREO-A COR2 is the photometric reference (gain fixed at 1). LASCO adds a
@@ -33,20 +33,20 @@ instruments:
       corrections: [tB_add, tB_mul]
       additive_parametrization: exp  # add = scale * a * exp(b), sign carried by a
       additive_scale: 1.0e-3
-#   - type: 'default'
-#     key: 'LASCO_C2'
-#     scaling: { type: "asinh", a: 1.0e-3 }
-#     correction:
-#       corrections: [f_corona, tB_add, tB_mul]
-#       additive_parametrization: exp  # add = scale * a * exp(b), sign carried by a
-#       additive_scale: 1.0e-3
-#   - type: 'default'
-#     key: 'LASCO_C3'
-#     scaling: { type: "asinh", a: 1.0e-3 }
-#     correction:
-#       corrections: [f_corona, tB_add, tB_mul]
-#       additive_parametrization: exp  # add = scale * a * exp(b), sign carried by a
-#       additive_scale: 1.0e-3
+  - type: 'default'
+    key: 'LASCO_C2'
+    scaling: { type: "asinh", a: 1.0e-3 }
+    correction:
+      corrections: [f_corona, tB_add, tB_mul]
+      additive_parametrization: exp  # add = scale * a * exp(b), sign carried by a
+      additive_scale: 1.0e-3
+  - type: 'default'
+    key: 'LASCO_C3'
+    scaling: { type: "asinh", a: 1.0e-3 }
+    correction:
+      corrections: [f_corona, tB_add, tB_mul]
+      additive_parametrization: exp  # add = scale * a * exp(b), sign carried by a
+      additive_scale: 1.0e-3
   - type: 'insitu'
     key: 'PSP'
     calibration: False
@@ -85,8 +85,8 @@ data:
     - type: 'punch'
       key: 'PUNCH_background'
       instrument_key: 'PUNCH'
-      data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/punch_pam/pB/*"
-      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/punch_pam/tB/*"
+      data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep_stash/punch_pam/pB/*"
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep_stash/punch_pam/tB/*"
       batch_size: 512
       debug: False
 
@@ -109,27 +109,27 @@ data:
       tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/stereo_a_cor2_tB_clear_correction.npy",
       clean: False }
 
-#     - type: 'LASCO'
-#       key: 'LASCO_C2_background'
-#       instrument_key: 'LASCO_C2'
-#       data_path_pB: null
-#       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c2/tB/*"
-#       batch_size: 512
-#       debug: False
-#       correction_config: { type: file,
-#       tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c2_tB_correction.npy",
-#       clean: False }
+    - type: 'LASCO'
+      key: 'LASCO_C2_background'
+      instrument_key: 'LASCO_C2'
+      data_path_pB: null
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c2/tB/*"
+      batch_size: 512
+      debug: False
+      correction_config: { type: file,
+      tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c2_tB_correction.npy",
+      clean: False }
 
-#     - type: 'LASCO'
-#       key: 'LASCO_C3_background'
-#       instrument_key: 'LASCO_C3'
-#       data_path_pB: null
-#       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c3/tB/*"
-#       batch_size: 512
-#       debug: False
-#       correction_config: { type: file,
-#       tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c3_tB_correction.npy",
-#       clean: False }
+    - type: 'LASCO'
+      key: 'LASCO_C3_background'
+      instrument_key: 'LASCO_C3'
+      data_path_pB: null
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c3/tB/*"
+      batch_size: 512
+      debug: False
+      correction_config: { type: file,
+      tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c3_tB_correction.npy",
+      clean: False }
 
     - type: 'COR'
       key: 'STEREO_A_COR2_cme'
@@ -147,8 +147,8 @@ data:
     - type: 'punch'
       key: 'PUNCH_cme'
       instrument_key: 'PUNCH'
-      data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/punch_pam/pB/*"
-      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/punch_pam/tB/*"
+      data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep_stash/punch_pam/pB/*"
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep_stash/punch_pam/tB/*"
       time_range: *cme_time
       batch_size: 512
       debug: False
@@ -174,29 +174,29 @@ data:
       tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/stereo_a_cor2_tB_clear_correction.npy",
       clean: False }
 
-#     - type: 'LASCO'
-#       key: 'LASCO_C2_cme'
-#       instrument_key: 'LASCO_C2'
-#       data_path_pB: null
-#       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c2/tB/*"
-#       time_range: *cme_time
-#       batch_size: 512
-#       debug: False
-#       correction_config: { type: file,
-#       tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c2_tB_correction.npy",
-#       clean: False }
+    - type: 'LASCO'
+      key: 'LASCO_C2_cme'
+      instrument_key: 'LASCO_C2'
+      data_path_pB: null
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c2/tB/*"
+      time_range: *cme_time
+      batch_size: 512
+      debug: False
+      correction_config: { type: file,
+      tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c2_tB_correction.npy",
+      clean: False }
 
-#     - type: 'LASCO'
-#       key: 'LASCO_C3_cme'
-#       instrument_key: 'LASCO_C3'
-#       data_path_pB: null
-#       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c3/tB/*"
-#       time_range: *cme_time
-#       batch_size: 512
-#       debug: False
-#       correction_config: { type: file,
-#       tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c3_tB_correction.npy",
-#       clean: False }
+    - type: 'LASCO'
+      key: 'LASCO_C3_cme'
+      instrument_key: 'LASCO_C3'
+      data_path_pB: null
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c3/tB/*"
+      time_range: *cme_time
+      batch_size: 512
+      debug: False
+      correction_config: { type: file,
+      tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c3_tB_correction.npy",
+      clean: False }
 
     - type: 'psp'
       key: 'PSP'
@@ -244,8 +244,8 @@ data:
     - type: 'punch'
       key: 'PUNCH'
       instrument_key: 'PUNCH'
-      data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/punch_pam/pB/*"
-      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/punch_pam/tB/*"
+      data_path_pB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep_stash/punch_pam/pB/*"
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep_stash/punch_pam/tB/*"
       validation_time: *valid_time
 
     - type: 'CCOR'
@@ -265,25 +265,25 @@ data:
       clean: False }
       validation_time: *valid_time
 
-#     - type: 'LASCO'
-#       key: 'LASCO_C2'
-#       instrument_key: 'LASCO_C2'
-#       data_path_pB: null
-#       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c2/tB/*"
-#       correction_config: { type: file,
-#       tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c2_tB_correction.npy",
-#       clean: False }
-#       validation_time: *valid_time
+    - type: 'LASCO'
+      key: 'LASCO_C2'
+      instrument_key: 'LASCO_C2'
+      data_path_pB: null
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c2/tB/*"
+      correction_config: { type: file,
+      tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c2_tB_correction.npy",
+      clean: False }
+      validation_time: *valid_time
 
-#     - type: 'LASCO'
-#       key: 'LASCO_C3'
-#       instrument_key: 'LASCO_C3'
-#       data_path_pB: null
-#       data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c3/tB/*"
-#       correction_config: { type: file,
-#       tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c3_tB_correction.npy",
-#       clean: False }
-#       validation_time: *valid_time
+    - type: 'LASCO'
+      key: 'LASCO_C3'
+      instrument_key: 'LASCO_C3'
+      data_path_pB: null
+      data_path_tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/lasco_c3/tB/*"
+      correction_config: { type: file,
+      tB: "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/masks/lasco_c3_tB_correction.npy",
+      clean: False }
+      validation_time: *valid_time
 
     - key: valid_radial
       type: radial_slices
@@ -323,10 +323,10 @@ callbacks:
     ds_key: 'CCOR'
   - type: 'thomson_image'
     ds_key: 'STEREO_A_COR2_CLEAR'
-#   - type: 'thomson_image'
-#     ds_key: 'LASCO_C2'
-#   - type: 'thomson_image'
-#     ds_key: 'LASCO_C3'
+  - type: 'thomson_image'
+    ds_key: 'LASCO_C2'
+  - type: 'thomson_image'
+    ds_key: 'LASCO_C3'
 
   - type: 'correction_image'
     ds_key: 'STEREO_A_COR2'
@@ -336,10 +336,10 @@ callbacks:
     ds_key: 'CCOR'
   - type: 'correction_image'
     ds_key: 'STEREO_A_COR2_CLEAR'
-#   - type: 'correction_image'
-#     ds_key: 'LASCO_C2'
-#   - type: 'correction_image'
-#     ds_key: 'LASCO_C3'
+  - type: 'correction_image'
+    ds_key: 'LASCO_C2'
+  - type: 'correction_image'
+    ds_key: 'LASCO_C3'
 
   - type: radial_slices
     ds_key: valid_radial
@@ -358,7 +358,7 @@ callbacks:
 logging:
   entity: "robert_jarolim"
   project: "sunerf-cme-obs-v4"
-  name: "2025-09 - STEREO A COR2 (+ clear) + PUNCH + CCOR - additive + multiplicative corrections + calibration factors"
+  name: "2025-09 - STEREO A COR2 (+ clear) + PUNCH (stash) + CCOR + LASCO C2/C3 - additive + multiplicative corrections + calibration factors - no ballistic"
 
 # Integrate past the 120 R_sun PUNCH mask to limit truncation at the field edge.
 sampling:
@@ -378,7 +378,7 @@ lambda:
   calibration: 0.0
   radial: 1.0
   continuity: { start: 1.0e-2, end: 5.0e-4, iterations: 5.0e+4 }
-  ballistic:  { start: 1.0e-2, end: 5.0e-4, iterations: 5.0e+4 }
+  ballistic: 0.0
   velocity: 1.0
   insitu_density: 0.0
   insitu_velocity_radial: 0.0

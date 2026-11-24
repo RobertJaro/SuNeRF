@@ -647,7 +647,7 @@ def _validate_training_contract(config):
             ("regularization", 0.0),
             ("absorption", 0.0),
             ("calibration", 1.0e-4),
-            ("cool_absorber", 1.0e-4),
+            ("cool_absorber", 0.0),
         )
     }
     if lambda_values["image"] == 0:
@@ -692,6 +692,16 @@ def _validate_training_contract(config):
         training.get("check_val_every_n_epoch", 1),
         "training.check_val_every_n_epoch",
     )
+    # Optional optimizer-step budget; training stops at whichever of epochs and
+    # max_steps comes first.
+    if training.get("max_steps") is not None:
+        _positive_integer(training["max_steps"], "training.max_steps")
+    # Optional weights-only start from a plasma save state (save_state.snf) of
+    # the same model configuration; a run resumed from its own checkpoint
+    # (training.meta_path) restores that checkpoint instead.
+    if training.get("init_state") is not None:
+        if not isinstance(training["init_state"], str) or not training["init_state"]:
+            raise PlasmaConfigError("training.init_state must name a plasma save state")
 
 
 def _boolean(value, path):

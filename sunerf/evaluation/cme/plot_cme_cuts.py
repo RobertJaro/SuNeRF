@@ -1,6 +1,6 @@
 """Evolution of the primary CME in cuts: two planes through the CME axis and one spherical shell at five times.
 
-Reads the density of the spherical frames of ``export_density_grid``; no background is used.  The
+Reads the spherical frames of ``export_density_grid``.  The
 shown quantity is ``log10(n_e)`` (``COLOR_PERCENTILES`` of the shown values); the cuts share one
 color scale over the rows, the shell map of every row has its own.  Rows are the frames closest to
 ``--times``, the first one the state before the CME; columns:
@@ -15,7 +15,9 @@ color scale over the rows, the shell map of every row has its own.  Rows are the
    it is the radius of the maximum of the compensated density ``r^2 n_e`` averaged over the cone of
    ``AXIS_HALF_ANGLE`` around the CME axis, beyond ``TRACK_MIN_RADIUS``.
 
-The shell radius is marked in the cuts.
+With ``--centroid``, each event row's planes intersect at the positive excess-density centroid
+on its selected shell, inside a fixed 45-degree cone about the supplied axis. The pre-event row
+uses the supplied axis. The shell radius is marked in the cuts.
 
 Example::
 
@@ -32,6 +34,8 @@ from dateutil.parser import parse
 from matplotlib import pyplot as plt
 from scipy.ndimage import map_coordinates
 
+from sunerf.evaluation.cme.export_density_grid import corotation_angle, rotate_background
+from sunerf.evaluation.cme.mass_transport import cone_mask
 from sunerf.evaluation.cme.plot_cme_propagation import TRACK_MIN_RADIUS
 
 # color range of log10(n_e)
@@ -42,9 +46,8 @@ PLANE_SAMPLES = 400
 AXIS_HALF_ANGLE = 10.0
 
 
-def load_frames(export_path, times):
-    """Density ``[lat, lon, r]`` [cm^-3] of the frames closest to ``times``, with the axes radius [R_sun],
-    latitude, longitude [deg] and the frame times."""
+def selected_frames(export_path, times):
+    """Paths and actual timestamps of the nearest exported frames."""
     files = sorted(glob.glob(os.path.join(export_path, 'rho*.npz')))
     if not files:
         raise FileNotFoundError(f'No rho*.npz frames in {export_path}')
@@ -54,12 +57,7 @@ def load_frames(export_path, times):
             frame_times.append(frame['time'])
     frame_times = np.array(frame_times, dtype='datetime64[s]')
     selected = [int(np.argmin(np.abs(frame_times - np.datetime64(time, 's')))) for time in times]
-    density = []
-    for index in selected:
-        with np.load(files[index]) as frame:
-            density.append(frame['density'])
-            radius, latitude, longitude = frame['radius'], frame['latitude'], frame['longitude']
-    return np.stack(density), radius, latitude, longitude, frame_times[selected]
+    return [(files[i], frame_times[i]) for i in selected]
 
 
 def color_range(images):
@@ -106,12 +104,69 @@ def cme_shell(density, radius, latitude, longitude, axis):
     return int(outer[np.nanargmax(compensated[outer])])
 
 
+def shell_centroid(excess, latitude, longitude, seed_lat, seed_lon):
+    """Area-weighted mean latitude and circular mean longitude of the positive shell excess."""
+    lat, lon = np.radians(latitude), np.radians(longitude)
+    mask = cone_mask(lat, lon, *np.radians((seed_lat, seed_lon, 45)))
+    weights = np.where(mask & np.isfinite(excess) & (excess > 0), excess, 0.) * np.cos(lat[:, None])
+    if weights.sum() <= 0:
+        return None
+    center_lat = np.average(latitude, weights=weights.sum(axis=1))
+    center_lon = np.degrees(np.angle(np.sum(weights.sum(axis=0) * np.exp(1j * lon))))
+    return center_lat, seed_lon + ((center_lon - seed_lon + 180.) % 360. - 180.)
+
+
+def load_centroid_reference(path, radius, latitude, longitude):
+    if path is None:
+        return None
+    with np.load(path) as ref:
+        for key, grid in [('radius', radius), ('latitude', latitude), ('longitude', longitude)]:
+            if ref[key].shape != grid.shape or not np.allclose(ref[key], grid):
+                raise ValueError(f'Centroid reference {key} differs from the export grid')
+        return ref['density'], ref['times'][-1].astype('datetime64[us]').item()
+
+
+def frame_centroid(frame, density, shell, latitude, longitude, seed, reference):
+    if reference is None:
+        background = frame['background'][:, :, shell]
+    else:
+        field, epoch = reference
+        time = frame['time'].astype('datetime64[us]').item()
+        angle = corotation_angle(time, epoch)
+        background = rotate_background(field[:, :, shell:shell + 1], np.radians(longitude), angle)[:, :, 0]
+    return shell_centroid(density[:, :, shell] - background, latitude, longitude, *seed)
+
+
+def cut_geometry(center_lat, center_lon, tilt, longitude):
+    lon0 = np.radians(center_lon)
+    meridional = (np.array([np.cos(lon0), np.sin(lon0), 0.0]), np.array([0.0, 0.0, 1.0]))
+    axis = unit(center_lat, center_lon)
+    east = np.array([-np.sin(lon0), np.cos(lon0), 0.0])
+    north = np.cross(axis, east)
+    tilt = np.radians(tilt)
+    perpendicular = (axis, np.cos(tilt) * east + np.sin(tilt) * north)
+    angle = np.radians(np.linspace(-90.0, 90.0, 361))
+    points = np.cos(angle)[:, None] * perpendicular[0] + np.sin(angle)[:, None] * perpendicular[1]
+    trace_lat = np.degrees(np.arcsin(np.clip(points[:, 2], -1.0, 1.0)))
+    trace_lon = (np.degrees(np.arctan2(points[:, 1], points[:, 0])) - center_lon + 180.0) % 360.0 - 180.0
+    traces = [(np.full(2, center_lon), np.array([-90.0, 90.0])), (trace_lon + center_lon, trace_lat)]
+
+    # shell map centered on the CME longitude
+    offset = (longitude - center_lon + 180.0) % 360.0 - 180.0
+    order = np.argsort(offset)
+
+    return (meridional, perpendicular), traces, center_lon + offset[order], order
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--export_path', required=True, help='Export directory of export_density_grid')
     parser.add_argument('--out_path', required=True, help='Output figure (jpg)')
     parser.add_argument('--latitude', type=float, required=True, help='CME direction, latitude [deg]')
     parser.add_argument('--longitude', type=float, required=True, help='CME direction, HCI longitude [deg]')
+    parser.add_argument('--centroid', action='store_true', help='Center each event row on its shell excess centroid')
+    parser.add_argument('--centroid_reference', help='Pre-event NPZ reference on the export grid, aligned to its '
+                        'last reference timestamp. Defaults to the exported corotating background.')
     parser.add_argument('--tilt', type=float, default=0.0,
                         help='Rotation of the second cut about the CME axis, from the direction of increasing '
                              'longitude toward north [deg]')
@@ -119,47 +174,50 @@ def main(argv=None):
                         help='Times of the five rows, the first one before the CME')
     args = parser.parse_args(argv)
 
-    density, radius, latitude, longitude, times = load_frames(args.export_path, args.times)
+    if args.centroid_reference and not args.centroid:
+        parser.error('--centroid_reference requires --centroid')
+    frames = selected_frames(args.export_path, args.times)
+    with np.load(frames[0][0]) as first:
+        radius, latitude, longitude = (first[key] for key in ('radius', 'latitude', 'longitude'))
+    reference = load_centroid_reference(args.centroid_reference, radius, latitude, longitude)
+
     extent = radius[-1]
+    seed = args.latitude, args.longitude
+    rows = []
+    cuts = []
+    for row, (path, time) in enumerate(frames):
+        center = seed
+        center_label = 'Reference axis' if row == 0 or not args.centroid else 'Centroid'
+        with np.load(path) as frame:
+            density = frame['density']
+            shell = (cme_shell(density, radius, latitude, longitude, unit(*seed)) if row else
+                     int(np.argmin(np.abs(radius - TRACK_MIN_RADIUS))))
+            if row and args.centroid:
+                centroid = frame_centroid(frame, density, shell, latitude, longitude, seed, reference)
+                if centroid is None:
+                    center_label = 'Reference axis (no excess)'
+                else:
+                    center = centroid
 
-    # bases of the cuts: meridional (horizontal toward the CME, north) and perpendicular (CME axis, tilt)
-    lon0 = np.radians(args.longitude)
-    meridional = (np.array([np.cos(lon0), np.sin(lon0), 0.0]), np.array([0.0, 0.0, 1.0]))
-    axis = unit(args.latitude, args.longitude)
-    east = np.array([-np.sin(lon0), np.cos(lon0), 0.0])
-    north = np.cross(axis, east)
-    tilt = np.radians(args.tilt)
-    perpendicular = (axis, np.cos(tilt) * east + np.sin(tilt) * north)
-    # shell of every row: the inner tracking boundary before the CME, then through the CME
-    shells = [int(np.argmin(np.abs(radius - TRACK_MIN_RADIUS)))]
-    shells += [cme_shell(values, radius, latitude, longitude, axis) for values in density[1:]]
+        bases, traces, map_lon, order = cut_geometry(*center, args.tilt, longitude)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            values = np.log10(density)
+        images = []
+        for u, v in bases:
+            points, x, y = plane_points(u, v, extent)
+            images.append(sample(values, radius, latitude, longitude, points))
+        cuts.append(images)
+        rows.append((time, shell, center, center_label, traces, map_lon, values[:, order, shell]))
+        print(f'{time}  {radius[shell]:g} R_sun  {center_label}  lat {center[0]:+.2f}  lon {center[1]:+.2f}')
+    cut_range = color_range([image for pair in cuts for image in pair])
 
-    # traces of the planes on the shell map: the CME meridian and the great half circle of the second cut
-    angle = np.radians(np.linspace(-90.0, 90.0, 361))
-    points = np.cos(angle)[:, None] * perpendicular[0] + np.sin(angle)[:, None] * perpendicular[1]
-    trace_lat = np.degrees(np.arcsin(np.clip(points[:, 2], -1.0, 1.0)))
-    trace_lon = (np.degrees(np.arctan2(points[:, 1], points[:, 0])) - args.longitude + 180.0) % 360.0 - 180.0
-    traces = [(np.full(2, args.longitude), np.array([-90.0, 90.0])), (trace_lon + args.longitude, trace_lat)]
-
-    # shell map centered on the CME longitude
-    offset = (longitude - args.longitude + 180.0) % 360.0 - 180.0
-    order = np.argsort(offset)
-
-    # log10 density of the cuts [row, cut] and the shell maps [row]
-    with np.errstate(invalid='ignore', divide='ignore'):
-        log_density = np.log10(density)
-    planes = [plane_points(u, v, extent) for u, v in (meridional, perpendicular)]
-    cuts = [[sample(values, radius, latitude, longitude, points) for points, _, _ in planes] for values in log_density]
-    shell_maps = [values[:, order, shell] for values, shell in zip(log_density, shells)]
-    cut_range = color_range([image for row in cuts for image in row])
-
-    fig, axes = plt.subplots(len(times), 3, figsize=(15, 4 * len(times)), constrained_layout=True,
+    fig, axes = plt.subplots(len(rows), 3, figsize=(15, 4 * len(rows)), constrained_layout=True,
                              gridspec_kw={'width_ratios': (1.0, 1.0, 2.0)})
     circle = np.radians(np.linspace(0.0, 360.0, 361))
-    for row, (time, shell) in enumerate(zip(times, shells)):
-        for column, (_, x, y) in enumerate(planes):
+    for row, (time, shell, (center_lat, center_lon), center_label, traces, map_lon, shell_map) in enumerate(rows):
+        for column, image in enumerate(cuts[row]):
             ax = axes[row, column]
-            cut_image = ax.pcolormesh(x, y, cuts[row][column], cmap='plasma', vmin=cut_range[0], vmax=cut_range[1],
+            cut_image = ax.pcolormesh(x, y, image, cmap='plasma', vmin=cut_range[0], vmax=cut_range[1],
                                       shading='nearest')
             ax.plot(radius[shell] * np.cos(circle), radius[shell] * np.sin(circle), color='black', lw=0.6, ls='--')
             ax.add_patch(plt.Circle((0, 0), radius[0], color='0.3'))
@@ -170,22 +228,25 @@ def main(argv=None):
         axes[row, 1].set_ylabel(r'along the tilt [R$_\odot$]')
 
         ax = axes[row, 2]
-        shell_range = color_range([shell_maps[row]])
-        shell_image = ax.pcolormesh(args.longitude + offset[order], latitude, shell_maps[row], cmap='plasma',
+        shell_range = color_range([shell_map])
+        shell_image = ax.pcolormesh(map_lon, latitude, shell_map, cmap='plasma',
                                     vmin=shell_range[0], vmax=shell_range[1], shading='nearest')
         fig.colorbar(shell_image, ax=ax, pad=0.01, label=r'$\log_{10} n_e$ [cm$^{-3}$]')
         ax.set_title(f'Shell at {radius[shell]:g} R$_\\odot$', fontsize=10)
+        if args.centroid:
+            ax.set_title(f'Shell at {radius[shell]:g} R$_\\odot$   ·   {center_label} '
+                         f'{center_lat:+.1f}° lat, {center_lon:+.1f}° lon', fontsize=10)
         for trace_lon, trace_lat in traces:
             ax.plot(trace_lon, trace_lat, color='black', lw=0.6, ls='--')
-        ax.plot(args.longitude, args.latitude, marker='+', color='black', ms=10)
-        ax.set_xlim(args.longitude - 180.0, args.longitude + 180.0)
+        ax.plot(center_lon, center_lat, marker='+', color='black', ms=10)
+        ax.set_xlim(center_lon - 180., center_lon + 180.)
         ax.set_ylim(-90.0, 90.0)
         ax.set_aspect('equal')
         ax.set_ylabel('Latitude [deg]')
     axes[-1, 0].set_xlabel(r'horizontal toward the CME [R$_\odot$]')
     axes[-1, 1].set_xlabel(r'along the CME axis [R$_\odot$]')
     axes[-1, 2].set_xlabel('HCI longitude [deg]')
-    axes[0, 0].set_title(f'Meridional cut, HCI longitude {args.longitude:g}°')
+    axes[0, 0].set_title('Meridional cut' if args.centroid else f'Meridional cut, HCI longitude {args.longitude:g}°')
     axes[0, 1].set_title(f'Perpendicular cut through the CME axis, tilt {args.tilt:g}°')
     fig.colorbar(cut_image, ax=axes[:, :2], location='bottom', shrink=0.8, pad=0.01,
                  label=r'$\log_{10} n_e$ [cm$^{-3}$], cuts')

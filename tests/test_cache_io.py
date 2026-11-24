@@ -454,3 +454,19 @@ def test_block_size_does_not_change_the_cache(tmp_path):
     for key in caches[0]:
         np.testing.assert_array_equal(caches[0][key], caches[1][key])
     assert np.isfinite(caches[0]['value']).all()
+
+
+def test_thomson_cache_provenance_includes_matching_review_masks(tmp_path):
+    from sunerf.data.review_masks import mask_path, write_mask
+
+    image = tmp_path / 'observation.fits'
+    image.touch()
+    config = {'data_path_tB': str(tmp_path / '*.fits')}
+    previous, _ = build_data_cache_fingerprint(config)
+    target = mask_path(image)
+    write_mask(target, np.eye(4, dtype=bool))
+    current, records = build_data_cache_fingerprint(config)
+    assert current != previous
+    assert {r['path'] for r in records} == {str(image), str(target)}
+    target.unlink()
+    assert build_data_cache_fingerprint(config)[0] == previous

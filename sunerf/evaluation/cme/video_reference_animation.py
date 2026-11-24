@@ -85,7 +85,8 @@ def resolve_reference_patterns(args):
 
 
 def build_reference_paths(tB_pattern=None, n_samples=20):
-    tB_paths = sorted(glob.glob(tB_pattern, recursive=True)) if tB_pattern is not None else []
+    paths = glob.iglob(tB_pattern, recursive=True) if tB_pattern else ()
+    tB_paths = sorted(path for path in paths if os.path.isfile(path) and 'rejected' not in Path(path).parts)
 
     if not tB_paths:
         raise ValueError("Provide reference tB files via --ref_path or --ref_tB_path.")

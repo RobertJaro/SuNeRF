@@ -490,8 +490,8 @@ class PlasmaSuNeRFModule(BaseSuNeRFModule):
         self.lambda_calibration = float(lambda_config.get('calibration', 1.0e-4))
         # Sparsity prior on the LOS hydrogen column of the cool absorber: it is
         # only constrained where it sits in front of bright emission. See
-        # ``compute_cool_column_regularization``.
-        self.lambda_cool_absorber = float(lambda_config.get('cool_absorber', 1.0e-4))
+        # ``compute_cool_column_regularization``. Off by default.
+        self.lambda_cool_absorber = float(lambda_config.get('cool_absorber', 0.0))
         cool_column_scale_cm2 = float(cool_column_scale_cm2)
         if not np.isfinite(cool_column_scale_cm2) or cool_column_scale_cm2 <= 0:
             raise ValueError('cool_column_scale_cm2 must be finite and positive.')

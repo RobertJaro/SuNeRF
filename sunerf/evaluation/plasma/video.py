@@ -6,7 +6,7 @@ every frame shows a configurable row of panels: rendered EUV channels of the
 training instruments (``aia193``, ``euvi284``, ``eui174``), the column electron
 density, the emission-weighted temperature, the line-of-sight hydrogen column of
 the cool absorber (models with ``model.cool_absorber``), the radially integrated
-emission measure of the visible disk in temperature bins, the emission-weighted
+emission measure of the visible disk below and above log T = 6.1, the emission-weighted
 distance from the observer and a 3D sketch of the observer geometry.
 
 The emission measure panels are a separate query of the model: every disk pixel
@@ -56,6 +56,8 @@ PLASMA_PANELS = {'density': (r'Column $N_e$ [cm$^{-2}$]', 'viridis', 'log'),
                  'observer': ('Observer', None, None)}
 # emission-measure panels: colormap; the title carries the temperature bin
 EM_CMAP = 'magma'
+# the em panel splits the diagnostic temperature grid into the bins below and above log10 T = 6.1
+EM_SPLIT_LOG_T = 6.1
 # default half-width of the field of view [projected R_sun] without --hpc_frame
 DEFAULT_FOV = 1.5
 # percentiles of the first frame that fix the color scales of the video; EUV channels are shown with an
@@ -136,16 +138,13 @@ def build_parser():
     parser.add_argument('--panels', nargs='+', default=['aia193', 'density', 'em', 'observer'],
                         help='Panels of every frame, in this order. EUV channels are <instrument><wavelength> '
                              '(aia193, euvi284, eui174) or <instrument key>:<channel id> (AIA:A193). em expands '
-                             'to --em_bins panels over --em_log_T_range; em:5.8-6.3 is one explicit bin in '
-                             'log10 K (radially integrated above the visible disk). Plasma panels: '
-                             + ', '.join(sorted(PLASMA_PANELS)))
-    parser.add_argument('--em_bins', type=int, default=3, help='Number of temperature bins of the em panel')
+                             'to two panels, below and above log10 T = 6.1 over the diagnostic temperature grid; '
+                             'em:5.8-6.3 is one explicit bin in log10 K (radially integrated above the visible '
+                             'disk). Plasma panels: ' + ', '.join(sorted(PLASMA_PANELS)))
     parser.add_argument('--em_radius_range', type=float, nargs=2, metavar=('MIN', 'MAX'), default=None,
                         help='Radial integration range of the em panels in solar radii; default: the rendered '
                              'shell (sampling.min_distance to max_distance)')
     parser.add_argument('--em_n_radius', type=int, default=256, help='Radial samples of the em integration')
-    parser.add_argument('--em_log_T_range', type=float, nargs=2, metavar=('MIN', 'MAX'), default=None,
-                        help='log10 K range split into --em_bins; default: the diagnostic temperature grid')
     parser.add_argument('--channel_range', type=float, nargs=2, metavar=('MIN', 'MAX'), default=None,
                         help='Fixed range of every EUV channel color scale (asinh stretch); default: 0 to the 99.9th percentile of the first frame')
     parser.add_argument('--density_range', type=float, nargs=2, metavar=('MIN', 'MAX'), default=None,
@@ -191,20 +190,19 @@ def resolve_channel(loader, instrument_key, token):
     return matches[0]
 
 
-def parse_panels(loader, panel_tokens, em_bins, em_log_T_range):
+def parse_panels(loader, panel_tokens):
     """Panel dictionaries: {'type': 'channel', 'instrument', 'channel'}, {'type': 'em', 'log_T_range'} or
-    {'type': <plasma panel>}."""
-    if em_log_T_range is None:
-        log_T = np.asarray(loader.log_T_range, dtype=float)
-        em_log_T_range = (float(log_T.min()), float(log_T.max()))
+    {'type': <plasma panel>}. ``em`` expands to the two bins below and above log10 T = 6.1 over the diagnostic grid."""
+    log_T = np.asarray(loader.log_T_range, dtype=float)
+    log_T_min, log_T_max = float(log_T.min()), float(log_T.max())
     panels = []
     for token in panel_tokens:
         lowered = token.lower()
         if lowered in PLASMA_PANELS:
             panels.append({'type': lowered})
         elif lowered == 'em':
-            edges = np.linspace(em_log_T_range[0], em_log_T_range[1], em_bins + 1)
-            panels.extend({'type': 'em', 'log_T_range': (float(lo), float(hi))} for lo, hi in zip(edges[:-1], edges[1:]))
+            panels.extend({'type': 'em', 'log_T_range': log_T_range}
+                          for log_T_range in ((log_T_min, EM_SPLIT_LOG_T), (EM_SPLIT_LOG_T, log_T_max)))
         elif lowered.startswith('em:'):
             match = re.fullmatch(r'em:([0-9.]+)-([0-9.]+)', lowered)
             if match is None:
@@ -539,7 +537,7 @@ def main():
     loader = PlasmaSuNeRFLoader(args.sunerf_path)
     if args.em_radius_range is None:
         args.em_radius_range = rendered_shell(loader)
-    panels = parse_panels(loader, args.panels, args.em_bins, args.em_log_T_range)
+    panels = parse_panels(loader, args.panels)
     instruments = list(dict.fromkeys(p['instrument'] for p in panels if p['type'] == 'channel'))
     if not instruments:
         # the plasma diagnostics are instrument independent; render the first instrument for them

@@ -16,7 +16,7 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 ################################################################################
 # Configuration
 ################################################################################
-RUN_ROOT="/glade/work/rjarolim/sunerf/polar_2025_10_plasma_absorption_v03"
+RUN_ROOT="/glade/work/rjarolim/sunerf/polar_2025_10_plasma_absorption_v04"
 SUNERF_PATH="${RUN_ROOT}/save_state.snf"
 PREPARED_ROOT="/glade/campaign/hao/radmhd/rjarolim/SUNERF_POLAR/data_2025_10/prepared"
 # Hourly training frames closest to the EUI frame at 06:00.

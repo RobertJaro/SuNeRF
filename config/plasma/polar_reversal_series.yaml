@@ -1,0 +1,25 @@
+# Series of polar_reversal.yaml: its 27-day window and 5-day focus move forward
+# in 5-day steps until the window reaches 2014-10-01 (STEREO-B lost); 262
+# windows, step 0 is the base run. Run with python -m sunerf.run_plasma_series.
+base_config: "config/plasma/polar_reversal.yaml"
+initial_state: "/glade/work/rjarolim/sunerf/polar_reversal_v01/save_state.snf"
+base_path: "/glade/work/rjarolim/sunerf/polar_reversal_series_v01"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/polar_reversal_series_v01"
+end: "2014-10-01T00:00:00"
+step_days: 5
+
+# Deep-merged into polar_reversal.yaml for every step (weights from the step before).
+overrides:
+  module:
+    lr_config:
+      start: 2.0e-4
+      end: 1.0e-4
+      iterations: 20000
+  shuffle:
+    type: "normal_time"
+    start_seconds: 86400.0
+    end_seconds: 0.0
+    iterations: 10000
+    cold_iterations: 0
+  training:
+    max_steps: 20000

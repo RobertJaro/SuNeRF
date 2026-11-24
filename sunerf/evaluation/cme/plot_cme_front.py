@@ -75,7 +75,7 @@ def main(argv=None):
     series = load_series(args.export_path, keys=('density',))
     radius, latitude, longitude, times = series['radius'], series['latitude'], series['longitude'], series['times']
     seconds = (times - times[0]).astype(float)
-    density = np.nan_to_num(series.pop('density'), copy=False)
+    density = series.pop('density')
 
     # sector rays on a [lat, lon] grid centered on the CME longitude
     in_latitude, in_longitude = sector(latitude, longitude, np.deg2rad((args.latitude, args.longitude)),

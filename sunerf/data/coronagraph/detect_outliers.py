@@ -104,23 +104,29 @@ def frame_statistics(path):
             values = np.asarray(hdu.data, dtype=np.float64)
             header = hdu.header.copy()
         record["time"] = get_observation_time(path)
-        record["mode"] = "|".join(f"{key}={header[key]}" for key in MODE_KEYS if key in header)
-        exposure = next((header[key] for key in EXPOSURE_KEYS if key in header), None)
-        record["exposure"] = float(exposure) if exposure is not None else math.nan
-        try:
-            record["roll"], record["center_x"], record["center_y"] = _pointing(header)
-        except Exception:
-            pass
-        finite = np.isfinite(values)
-        record["valid_fraction"] = float(finite.mean())
-        values = values[finite]
-        if values.size == 0:
-            record["error"] = "no valid pixels"
-            return record
-        record.update(mean=float(values.mean()), median=float(np.median(values)), std=float(values.std()))
+        measure_image(record, values, header)
     except Exception as exc:  # a defective file is a finding, not a failure
         record["error"] = f"unreadable: {type(exc).__name__}: {exc}"
     return record
+
+
+def measure_image(record, values, header):
+    """Measure one prepared coronagraph image on its native pixel grid."""
+    record["mode"] = "|".join(f"{key}={header[key]}" for key in MODE_KEYS if key in header)
+    exposure = next((header[key] for key in EXPOSURE_KEYS if key in header), None)
+    exposure = float(exposure) if exposure is not None else math.nan
+    record["exposure"] = exposure if np.isfinite(exposure) and exposure > 0 else math.nan
+    try:
+        record["roll"], record["center_x"], record["center_y"] = _pointing(header)
+    except Exception:
+        pass
+    finite = np.isfinite(values)
+    record["valid_fraction"] = float(finite.mean())
+    values = values[finite]
+    if values.size == 0:
+        record["error"] = "no valid pixels"
+        return
+    record.update(mean=float(values.mean()), median=float(np.median(values)), std=float(values.std()))
 
 
 def metric_series(records, key):

@@ -7,7 +7,7 @@ from astropy import units as u
 from astropy.coordinates import SkyCoord
 from matplotlib import pyplot as plt
 from matplotlib.cm import ScalarMappable
-from matplotlib.colors import ListedColormap, LogNorm, Normalize
+from matplotlib.colors import LogNorm, Normalize
 from matplotlib import patheffects
 from matplotlib.patches import Circle
 from sunpy.coordinates import frames
@@ -24,13 +24,10 @@ OBSERVERS = {'earth': '399', 'stereo_a': 'STEREO-A', 'psp': 'Parker Solar Probe'
 # percentiles of the frame
 DISTANCE_LIMIT = 30.0
 DISTANCE_ALPHA_PERCENTILES = (5.0, 99.5)
-# PUNCH colormap of the angle out of the plane of sky (punchbowl punch_tau)
-PUNCH_TAU = ListedColormap(np.loadtxt(os.path.join(os.path.dirname(__file__), 'punch_tau.csv'), delimiter=',')
-                           / 255.0, name='punch_tau')
 # image panels: title and colormap
 PANELS = {'tB': ('Total Brightness [MSB]', cm.soholasco2), 'pB': ('Polarized Brightness [MSB]', cm.soholasco2),
           'density': (r'$n_e$ [cm$^{-3}$]', 'RdPu'),
-          'distance': (r'$x$ distance from plane of sky [R$_\odot$]', PUNCH_TAU),
+          'distance': (r'$x$ distance from plane of sky [R$_\odot$]', 'berlin'),
           'observer': ('Observer', None)}
 
 

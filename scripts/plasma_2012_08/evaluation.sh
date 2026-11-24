@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-SUNERF_PATH="/glade/work/rjarolim/sunerf/all_2012_08_plasma_absorption_v01/save_state.snf"
-EVALUATION_ROOT="/glade/work/rjarolim/sunerf/all_2012_08_plasma_absorption_v01/evaluation"
+SUNERF_PATH="/glade/work/rjarolim/sunerf/all_2012_08_plasma_absorption_v02/save_state.snf"
+EVALUATION_ROOT="/glade/work/rjarolim/sunerf/all_2012_08_plasma_absorption_v02/evaluation"
 
 ################################################################################
 # Artifact-driven virtual-observer movies for every reconstructed instrument
@@ -41,12 +41,22 @@ python -m sunerf.evaluation.video \
 ################################################################################
 python -m sunerf.evaluation.plasma.video \
   --sunerf_path "${SUNERF_PATH}" \
-  --out_path "${EVALUATION_ROOT}/video_polar_v2" \
+  --out_path "${EVALUATION_ROOT}/video_polar_193" \
   --resolution 256 --fov 1.4 \
-  --panels aia171 aia193 aia211 em cool_column observer \
+  --panels observer aia193 em \
   --lat 0  --lon 185.6 --time 2012-08-01T00:00:00 --steps 1 \
-  --lat -89   --lon 185.6 --time 2012-08-01T00:00:00 --steps 40 \
-  --lat -89   --lon 185.6 --time 2012-08-31T18:00:00 --steps 256 \
-  --fps 10
+  --lat -89   --lon 185.6 --time 2012-08-01T00:00:00 --steps 30 \
+  --lat -89   --lon 185.6 --time 2012-08-31T18:00:00 --steps 100 \
+  --fps 10 --overwrite
+
+python -m sunerf.evaluation.plasma.video \
+  --sunerf_path "${SUNERF_PATH}" \
+  --out_path "${EVALUATION_ROOT}/video_polar_171" \
+  --resolution 256 --fov 1.4 \
+  --panels observer aia171 em \
+  --lat 0  --lon 185.6 --time 2012-08-01T00:00:00 --steps 1 \
+  --lat -89   --lon 185.6 --time 2012-08-01T00:00:00 --steps 30 \
+  --lat -89   --lon 185.6 --time 2012-08-31T18:00:00 --steps 100 \
+  --fps 10 --overwrite
 
 echo "Evaluation products written to ${EVALUATION_ROOT}"

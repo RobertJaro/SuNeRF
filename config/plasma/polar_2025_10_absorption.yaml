@@ -4,8 +4,8 @@ schema_version: 2
 # EUVI-A, with EUI FSI 174 (peak +16.8 deg latitude on 10-14) held out.
 # Same as polar_2025_10.yaml with H/He photoionization absorption and a cool
 # absorber field.
-base_path: "/glade/work/rjarolim/sunerf/polar_2025_10_plasma_absorption_v03"
-work_directory: "/glade/derecho/scratch/rjarolim/sunerf/polar_2025_10_plasma_absorption_v02"
+base_path: "/glade/work/rjarolim/sunerf/polar_2025_10_plasma_absorption_v04"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf/polar_2025_10_plasma_absorption_v04"
 
 instruments:
   - type: "plasma"
@@ -248,4 +248,4 @@ lambda:
   regularization: 0.0
   absorption: 0.0
   calibration: 0.0
-  cool_absorber: 1.0e-4
+  cool_absorber: 0.0

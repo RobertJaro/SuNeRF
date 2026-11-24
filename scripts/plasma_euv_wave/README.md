@@ -40,11 +40,11 @@ channels of the training instruments (`aia193`, `euvi284`, `eui174`),
 log T), `cool_column` (line-of-sight hydrogen column of the cool absorber,
 only for models with `model.cool_absorber`), `em` (emission measure integrated radially above the footpoint of
 every disk pixel over the rendered shell, `--em_radius_range`, with
-`--em_n_radius` trapezoid samples, in `--em_bins` temperature bins over the
+`--em_n_radius` trapezoid samples, in two bins below and above log T = 6.1 over the
 diagnostic grid or one explicit bin `em:5.8-6.3`; off limb is blank), `distance`
 (emission-weighted distance from the observer relative to the Sun center)
 and `observer` (3D sketch with the training spacecraft). Default:
-`aia193 density em observer` with three bins. The color scales are fixed by
+`aia193 density em observer` with the two bins. The color scales are fixed by
 the first frame, so a video that starts before the flare shows the wave as a
 change against the quiet corona. The script produces the Earth view and the
 near-quadrature Solar Orbiter view at 1 min over the focus window and a moving view

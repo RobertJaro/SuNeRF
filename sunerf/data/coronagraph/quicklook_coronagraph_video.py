@@ -2,7 +2,7 @@
 import argparse, glob
 import multiprocessing
 import os.path
-import shutil
+from zipfile import ZipFile
 from pathlib import Path
 
 import matplotlib
@@ -13,7 +13,8 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-import sunpy.map
+from sunerf.data.coronagraph.brightness_pairs import exclude_rejected_partners
+from sunerf.data.review_masks import load_reviewed_map
 from tqdm import tqdm
 
 
@@ -40,7 +41,7 @@ def load_correction(path):
 
 
 def first_frame_max(file_path, correction=None):
-    data = np.asarray(sunpy.map.Map(file_path).data, float)
+    data = np.asarray(load_reviewed_map(file_path).data, float)
     if correction is not None:
         data = data - correction
     finite_data = data[np.isfinite(data)]
@@ -67,14 +68,14 @@ class FrameRenderer:
         kinds = []
 
         if tb_fp:
-            m = sunpy.map.Map(tb_fp)
+            m = load_reviewed_map(tb_fp)
             maps.append(m)
             labels.append(f"tB: {m.date.isot if m.date else stem(tb_fp)}")
             stems.append(stem(tb_fp))
             kinds.append("tb")
 
         if pb_fp:
-            m = sunpy.map.Map(pb_fp)
+            m = load_reviewed_map(pb_fp)
             maps.append(m)
             labels.append(f"pB: {m.date.isot if m.date else stem(pb_fp)}")
             stems.append(stem(pb_fp))
@@ -115,6 +116,8 @@ def main():
 
     tb_files = sorted(f for f in glob.glob(a.tb) if os.path.isfile(f)) if a.tb else []
     pb_files = sorted(f for f in glob.glob(a.pb) if os.path.isfile(f)) if a.pb else []
+    if a.tb and a.pb:
+        tb_files, pb_files = exclude_rejected_partners(tb_files, pb_files)
     correction_by_kind = {
         "tb": load_correction(a.tb_correction),
         "pb": load_correction(a.pb_correction),
@@ -146,16 +149,18 @@ def main():
         dpi=a.dpi, size=a.size,
     )
 
+    if not rows:
+        raise ValueError('No review-selected frames available for the quicklook')
     if a.num_workers is None or a.num_workers <= 1:
-        for row in tqdm(rows, total=len(rows), desc="Rendering frames"):
-            renderer(row)
+        rendered = [renderer(row) for row in tqdm(rows, desc="Rendering frames")]
     else:
         with multiprocessing.Pool(a.num_workers) as pool:
-            for _ in tqdm(pool.imap(renderer, rows), total=len(rows), desc="Rendering frames"):
-                pass
+            rendered = list(tqdm(pool.imap(renderer, rows), total=len(rows), desc="Rendering frames"))
 
-    # create zip of all images
-    shutil.make_archive(a.out_path, 'zip', a.out_path)
+    # A rerun may leave older JPEGs in the directory. Publish only this selection.
+    with ZipFile(str(out_dir) + '.zip', 'w') as archive:
+        for path in rendered:
+            archive.write(path, arcname=Path(path).name)
 
 
 if __name__ == "__main__":

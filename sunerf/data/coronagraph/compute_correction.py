@@ -2,10 +2,13 @@ import argparse
 import glob
 import os
 from collections import defaultdict
+from itertools import groupby
+from operator import itemgetter
 from pathlib import Path
 
 import numpy as np
 from scipy.ndimage import gaussian_filter, map_coordinates, percentile_filter
+from sunerf.data.review_masks import load_reviewed_map
 from tqdm import tqdm
 
 
@@ -28,6 +31,22 @@ def compute_daily_medians(per_day_images, min_frames_per_day=6):
     if not daily_medians:
         raise ValueError("No valid days available to compute daily correction mask.")
     return np.stack(daily_medians, axis=0)
+
+
+def minimum_daily_mean(dated_images, shape):
+    """Pixelwise minimum of daily means from chronological (UTC day, image) pairs."""
+    background = np.full(shape, np.nan)
+    for _, frames in groupby(dated_images, key=itemgetter(0)):
+        total = np.zeros(shape, dtype=np.float64)
+        count = np.zeros(shape, dtype=np.int32)
+        for _, image in frames:
+            valid = np.isfinite(image)
+            np.add(total, image, out=total, where=valid)
+            count += valid
+        total[count == 0] = np.nan
+        np.divide(total, count, out=total, where=count > 0)
+        np.fmin(background, total, out=background)
+    return background
 
 
 def compute_correction_mask(
@@ -210,7 +229,7 @@ def main():
     stack = []
     per_day_images = defaultdict(list)
     for file_path in tqdm(files, desc="Loading maps"):
-        m = sunpy.map.Map(file_path)
+        m = load_reviewed_map(file_path)
         image = np.asarray(m.data)
         stack.append(image)
         if args.type in ("daily-min", "daily-percentile"):

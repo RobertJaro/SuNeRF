@@ -14,7 +14,7 @@ The tracking of the CME core along a ray (``core_tracks``, used by ``plot_cme_ma
 first detected where the density exceeds ``CORE_CONTRAST`` times the ambient and followed from
 there forward and backward in time down to the inner boundary of the grid, and the leading edge and
 the rear where the excess falls to half its maximum ahead of and behind the core; from frame to
-frame the core and the leading edge move at most at ``MAX_SPEED_KMS``.  Output: ``--out_path``.
+frame the core and both edges move at most at ``MAX_SPEED_KMS``.  Output: ``--out_path``.
 
 Example::
 
@@ -27,6 +27,7 @@ import os
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.colors import LogNorm
+from scipy.signal import find_peaks
 
 from sunerf.evaluation.cme.export_density_grid import rotate_background
 from sunerf.evaluation.cme.grid_series import CM_PER_RSUN, load_series
@@ -41,7 +42,9 @@ TRACK_MIN_RADIUS = 10.0
 TRACK_OFFSETS = np.linspace(-TRACK_HALF_ANGLE, TRACK_HALF_ANGLE, 5)
 # minimum density over the ambient at the core
 CORE_CONTRAST = 2.0
-# largest speed of the core and the leading edge between two tracked frames [km/s]
+# Continuation threshold after the strong initial detection (density / ambient).
+FOLLOW_CONTRAST = 1.2
+# largest speed of each tracked feature between detections [km/s]
 MAX_SPEED_KMS = 1500.0
 KM_PER_RSUN = CM_PER_RSUN / 1e5
 
@@ -59,75 +62,78 @@ def ambient_on_rays(first, longitude, seconds, selections):
 
 
 def half_maximum(values, start, stop):
-    """Fractional index between ``start`` and ``stop`` (the maximum) where ``values`` crosses half of
-    ``values[stop]``, searched from ``stop`` toward ``start``; behind the maximum ``start`` when it does
-    not cross, ahead of it NaN."""
+    """First half-height crossing from the peak toward the boundary, confirmed by two bins."""
     half = 0.5 * values[stop]
     step = 1 if start > stop else -1
-    for index in range(stop + step, start + step, step):
-        if values[index] < half:
+    for index in range(stop + step, start, step):
+        if not np.isfinite(values[index]):
+            break
+        if values[index] <= half and values[index + step] <= half and np.isfinite(values[index + step]):
             return index - step * (half - values[index]) / (values[index - step] - values[index])
-    return float(start) if step < 0 else np.nan
+    return np.nan
 
 
 def core_tracks(density, ambient, radius, seconds):
-    """Rear, core and leading edge [R_sun] of the CME along one ray, ``[time, 3]``, from the density and
-    the ambient ``[time, r]`` at the times ``seconds``.
+    """Track an outward-moving peak and its two independently observed half-height edges.
 
-    The core is first detected beyond ``TRACK_MIN_RADIUS`` where the maximum of the excess exceeds
-    ``CORE_CONTRAST`` times the ambient; from there it is followed forward (outward) and backward in
-    time (inward, down to the inner boundary of the grid) as long as its maximum lies above the
-    ambient, inside the grid, and the excess falls to half its maximum ahead of it.  From frame to
-    frame the core is searched, and the leading edge accepted, only within the distance covered at
-    ``MAX_SPEED_KMS`` since the last tracked frame, so that the track neither switches to a structure
-    farther out nor jumps across a secondary maximum; the track ends after two frames without a
-    match.  NaN elsewhere."""
+    Seed above TRACK_MIN_RADIUS at CORE_CONTRAST and follow local peaks at FOLLOW_CONTRAST.
+    A single missing core frame can be crossed. Each edge can resume while the core is
+    tracked, subject to the speed limit since that edge's own last detection. Missing
+    crossings, including profiles truncated at a grid boundary, stay NaN.
+    """
     excess = (density - ambient) * radius ** 2
     tracks = np.full((len(excess), 3), np.nan)
-    start = int(np.searchsorted(radius, TRACK_MIN_RADIUS))
     index = np.arange(radius.size)
+    # Find peaks on the full profile so a slope truncated by the motion gate cannot become a core.
+    peaks = [find_peaks(profile)[0] for profile in excess]
 
-    def locate(t, lower, upper, contrast, previous):
-        """Core index of frame ``t`` between ``lower`` and ``upper`` and within reach of the tracked frame
-        ``previous`` (None before the first detection), or None; fills the tracks."""
-        values = excess[t]
-        if previous is not None:
-            reach = MAX_SPEED_KMS * abs(seconds[t] - seconds[previous]) / KM_PER_RSUN
-            if t > previous:
-                upper = min(upper, int(np.searchsorted(radius, tracks[previous, 1] + reach, side='right')) - 1)
-            else:
-                lower = max(lower, int(np.searchsorted(radius, tracks[previous, 1] - reach)))
-        if upper < lower:
-            return None
-        peak = lower + int(np.argmax(values[lower:upper + 1]))
-        if peak == 0 or density[t, peak] < contrast * ambient[t, peak]:
-            return None
-        front = half_maximum(values, radius.size - 1, peak)
-        if not np.isfinite(front):
-            return None
-        front = np.interp(front, index, radius)
-        if previous is not None and abs(front - tracks[previous, 2]) > reach:
-            return None
-        tracks[t] = [np.interp(half_maximum(values, 0, peak), index, radius), radius[peak], front]
-        return peak
+    def locate_core(t, lower, upper, contrast):
+        candidates = peaks[t]
+        valid = ((radius[candidates] >= lower) & (radius[candidates] <= upper)
+                 & (ambient[t, candidates] > 0)
+                 & (density[t, candidates] >= contrast * ambient[t, candidates])
+                 & np.isfinite(excess[t, candidates]))
+        candidates = candidates[valid]
+        if candidates.size:
+            return candidates[np.argmax(excess[t, candidates])]
 
-    first = previous = None
-    lower = start
-    for t in range(len(excess)):
-        # a single frame may be skipped; the reach grows with the gap and would admit other structures
-        if previous is not None and t - previous > 2:
-            break
-        peak = locate(t, lower, radius.size - 1, CORE_CONTRAST if first is None else 1.0, previous)
+    def measure(t, peak, last_edges):
+        tracks[t, 1] = radius[peak]
+        for column, boundary in ((0, 0), (2, radius.size - 1)):
+            crossing = half_maximum(excess[t], boundary, peak)
+            if not np.isfinite(crossing):
+                continue
+            edge = np.interp(crossing, index, radius)
+            previous = last_edges[column]
+            if previous is not None:
+                reach = MAX_SPEED_KMS * abs(seconds[t] - seconds[previous]) / KM_PER_RSUN
+                if abs(edge - tracks[previous, column]) > reach:
+                    continue
+            tracks[t, column] = edge
+            last_edges[column] = t
+
+    for seed in range(len(excess)):
+        peak = locate_core(seed, TRACK_MIN_RADIUS, radius[-1], CORE_CONTRAST)
         if peak is not None:
-            first = t if first is None else first
-            previous, lower = t, peak
-    if first is not None:
-        previous, upper = first, int(np.argmin(np.abs(radius - tracks[first, 1])))
-        for t in range(first - 1, -1, -1):
-            upper = locate(t, 0, upper, 1.0, previous)
-            if upper is None:
+            break
+    else:
+        return tracks
+
+    seed_edges = {0: None, 2: None}
+    measure(seed, peak, seed_edges)
+    for direction, end in ((1, len(excess)), (-1, -1)):
+        previous = seed
+        last_edges = seed_edges.copy()
+        for t in range(seed + direction, end, direction):
+            if abs(t - previous) > 2:
                 break
-            previous = t
+            reach = MAX_SPEED_KMS * (seconds[t] - seconds[previous]) / KM_PER_RSUN
+            center = tracks[previous, 1]
+            lower, upper = sorted((center, center + reach))
+            peak = locate_core(t, lower, upper, FOLLOW_CONTRAST)
+            if peak is not None:
+                measure(t, peak, last_edges)
+                previous = t
     return tracks
 
 

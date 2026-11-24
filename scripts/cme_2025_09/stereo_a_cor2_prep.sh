@@ -24,12 +24,6 @@ COR_RAW_DIR="${DATA_ROOT}/cor"
 COR_PREP_DIR="${DATA_ROOT}/cor_prep"
 COR_CLEAR_RAW_DIR="${COR_RAW_DIR}/clear"
 PREP_DIR="${DATA_ROOT}/prep"
-# The pB correction mask is smoothed around the Sun to suppress streamer structure:
-# Gaussian widths in position angle and, as a fraction of the image width, along
-# the radius.
-MASK_SMOOTH_ANGLE_DEG=60
-MASK_SMOOTH_FRACTION=0.02
-
 ################################################################################
 # Run SECCHI_PREP through SolarSoft/IDL
 ################################################################################
@@ -62,53 +56,4 @@ python -m sunerf.data.coronagraph.prep_coronagraph \
   --occ_max 15000 \
   --resize 512 512 \
   --n_images 3 6 \
-  --num_workers "${WORKERS}"
-
-################################################################################
-# Remove invalid files
-################################################################################
-
-python -m sunerf.data.coronagraph.clean_invalid --invalid_files "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/invalid_files.txt" --base_path "/glade/campaign/hao/radmhd/rjarolim/SuNeRF_CME_OBS/2025_09/prep/**/*" --dry_run
-
-
-################################################################################
-# Compute correction masks
-################################################################################
-mkdir -p "${PREP_DIR}/masks"
-
-python -m sunerf.data.coronagraph.compute_correction \
-  --type daily-min \
-  --input "${PREP_DIR}/cor2/tB/*" \
-  --output "${PREP_DIR}/masks/stereo_a_cor2_tB_correction.npy" \
-  --smooth-angle-deg "${MASK_SMOOTH_ANGLE_DEG}" \
-  --smooth-fraction "${MASK_SMOOTH_FRACTION}"
-
-python -m sunerf.data.coronagraph.compute_correction \
-  --type daily-min \
-  --input "${PREP_DIR}/cor2/pB/*" \
-  --output "${PREP_DIR}/masks/stereo_a_cor2_pB_correction.npy" \
-  --smooth-angle-deg "${MASK_SMOOTH_ANGLE_DEG}" \
-  --smooth-fraction "${MASK_SMOOTH_FRACTION}"
-
-python -m sunerf.data.coronagraph.compute_correction \
-  --type daily-min \
-  --input "${PREP_DIR}/cor2_clear/*" \
-  --output "${PREP_DIR}/masks/stereo_a_cor2_tB_clear_correction.npy"
-
-
-################################################################################
-# Quicklook movies
-################################################################################
-python -m sunerf.data.coronagraph.quicklook_coronagraph_video \
-  "${PREP_DIR}/video/cor2" \
-  --pb "${PREP_DIR}/cor2/pB/*" \
-  --tb "${PREP_DIR}/cor2/tB/*" \
-  --pb_correction "${PREP_DIR}/masks/stereo_a_cor2_pB_correction.npy" \
-  --tb_correction "${PREP_DIR}/masks/stereo_a_cor2_tB_correction.npy" \
-  --num_workers "${WORKERS}"
-
-python -m sunerf.data.coronagraph.quicklook_coronagraph_video \
-  "${PREP_DIR}/video/cor2_clear" \
-  --tb "${PREP_DIR}/cor2_clear/*" \
-  --tb_correction "${PREP_DIR}/masks/stereo_a_cor2_tB_clear_correction.npy" \
   --num_workers "${WORKERS}"

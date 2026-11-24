@@ -18,6 +18,8 @@ from sunpy.map import Map, all_coordinates_from_map
 from sunpy.visualization.colormaps import cm
 from tqdm import tqdm
 
+from sunerf.data.review_masks import load_reviewed_map
+from sunerf.data.coronagraph.brightness_pairs import exclude_rejected_partners
 from sunerf.evaluation.loader import ThomsonSuNeRFLoader
 
 
@@ -210,9 +212,11 @@ def build_reference_paths(tB_pattern=None, pB_pattern=None, legacy_pattern=None,
     if legacy_pattern is not None and pB_pattern is None:
         pB_pattern = legacy_pattern
 
-    tB_paths = sorted(glob.glob(tB_pattern)) if tB_pattern is not None else []
-    pB_paths = sorted(glob.glob(pB_pattern)) if pB_pattern is not None else []
+    tB_paths = sorted(p for p in glob.glob(tB_pattern) if os.path.isfile(p)) if tB_pattern is not None else []
+    pB_paths = sorted(p for p in glob.glob(pB_pattern) if os.path.isfile(p)) if pB_pattern is not None else []
 
+    if tB_pattern and pB_pattern:
+        tB_paths, pB_paths = exclude_rejected_partners(tB_paths, pB_paths)
     if not tB_paths and not pB_paths:
         raise ValueError("Provide at least one reference glob via --ref_tB_path, --ref_pB_path, or --ref_map_path.")
     if tB_paths and pB_paths and len(tB_paths) != len(pB_paths):
@@ -265,7 +269,7 @@ def sample_reference_paths(ref_items, n_samples):
 def load_reference_map(path):
     if path is None:
         return None
-    return Map(path).rotate(order=3)
+    return load_reviewed_map(path).rotate(order=3)
 
 
 def apply_mask(s_map, mask):

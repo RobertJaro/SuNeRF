@@ -36,6 +36,7 @@ from sunpy.map import Map
 from sunpy.visualization.colormaps import cm
 from tqdm import tqdm
 
+from sunerf.data.review_masks import load_reviewed_map
 from sunerf.data.coronagraph.prep_ccor import _load_ccor_header, _rotate_ccor_map
 from sunerf.evaluation.cme.plot_ref_series import normalize_datetime, read_observation_date
 
@@ -53,7 +54,7 @@ STYLE = {'text.color': 'white', 'axes.edgecolor': 'white', 'axes.labelcolor': 'w
 
 def list_files(pattern, time_range, label, pool):
     """Files of ``pattern`` observed in ``time_range`` and their observation times, sorted by time."""
-    paths = sorted(glob.glob(pattern))
+    paths = sorted(path for path in glob.glob(pattern) if os.path.isfile(path))
     if not paths:
         raise ValueError(f'No files found for {pattern}')
     start, end = time_range
@@ -78,16 +79,21 @@ def load_raw(name, path):
         data = np.array(fits.getdata(path, 1), dtype=np.float64)
         data[fits.getdata(path, 2) != 0] = np.nan
         return _rotate_ccor_map(Map(data, _load_ccor_header(path)), fits.getheader(path, 0))
-    return Map(path)
+    return load_reviewed_map(path)
 
 
 def projected_image(name, path):
     """Raw image of one file, solar north up, and its extent on the image plane in projected solar radii;
     None for a file whose header gives no valid rotation (singular PC/CD matrix)."""
-    s_map = load_raw(name, path)
+    return project_map(load_raw(name, path), path)
+
+
+def project_map(s_map, label):
+    """Image of a map, solar north up, and its extent on the image plane in projected solar radii;
+    None for a map whose header gives no valid rotation (singular PC/CD matrix)."""
     rotation = np.asarray(s_map.rotation_matrix, dtype=float)
     if not np.all(np.isfinite(rotation)) or abs(np.linalg.det(rotation)) < 1e-6:
-        print(f'Skipping {path}: singular rotation matrix {rotation.tolist()}', flush=True)
+        print(f'Skipping {label}: singular rotation matrix {rotation.tolist()}', flush=True)
         return None
     # resampled before the rotation, which is costly at the full resolution
     factor = min(RESOLUTION / max(s_map.data.shape), 1.0)

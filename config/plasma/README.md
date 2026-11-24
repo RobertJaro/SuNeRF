@@ -41,7 +41,8 @@ prior on the LOS hydrogen column N of the cool absorber, the ray mean of
 `log1p(N / module.cool_column_scale_cm2)`. The default scale of 1e18 cm^-2 is
 an optical depth of about 0.1 at 171-193 A. Below the scale a column costs
 linearly, above it only logarithmically, so a thin haze over many rays costs
-more than the same column concentrated in a few compact absorbers.
+more than the same column concentrated in a few compact absorbers. The prior
+is off by default (`lambda.cool_absorber: 0.0`) and disabled in all runs.
 
 The loss-space transform and its divisor are configured per instrument; datasets
 define no scaling and stay in physical units:
@@ -79,6 +80,27 @@ is fixed only by this declared gauge. `module.calibration_iterations: N`
 trains the gains for the first N steps only and then freezes them. Use it
 for absorption runs: there the gains of some channels keep drifting and
 trade off against the absorber instead of staying a fixed calibration.
+
+## Training budget and warm start
+
+`training.max_steps` (optional) stops training after that many optimizer
+steps, or at `training.epochs`, whichever comes first. `training.init_state`
+(optional) copies the weights of a plasma save state (`save_state.snf`) of the
+same model configuration into the new model; optimizer, schedules and step
+count start fresh. A run resumed from its own checkpoint
+(`training.meta_path: last`) restores that checkpoint instead.
+
+## Series reconstruction
+
+`python -m sunerf.run_plasma_series --config <series>.yaml` moves the windows
+of a regular configuration (`base_config`) forward in steps of `step_days`
+until the training windows reach `end`: every training `start`/`end` and every
+validation `time` shift together, `data.ref_date` stays fixed. Step 0 is the
+base run; each later step runs `sunerf.run_plasma` with `training.init_state`
+set to the save state of the step before and the series `overrides` merged in,
+and keeps `config.yaml` and `save_state.snf` under
+`<base_path>/steps/<index>_<validation time>/`. `--dry-run` validates and lists
+every window. Example: `polar_reversal_series.yaml`.
 
 ## Time jitter
 

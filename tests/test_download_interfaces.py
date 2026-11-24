@@ -211,6 +211,60 @@ def test_aia_download_replaces_existing_files_when_overwriting(tmp_path, monkeyp
     assert (tmp_path / "a.fits").read_text() == "fits"
 
 
+def test_aia_export_waits_while_another_export_is_pending(tmp_path, monkeypatch, capsys):
+    import drms
+
+    from sunerf.data.download import download_aia
+
+    export = _Export(["a.fits"])
+    pending = drms.DrmsExportError(
+        "User x has 1 pending export requests (JSOC_1); please wait [status=7]"
+    )
+    refusals = [pending, pending]
+
+    class _Client:
+        def __init__(self, email):
+            pass
+
+        def export(self, dataset, protocol):
+            if refusals:
+                raise refusals.pop()
+            return export
+
+    sleeps = []
+    monkeypatch.setattr(download_aia.drms, "Client", _Client)
+    monkeypatch.setattr(download_aia.time, "sleep", sleeps.append)
+    request = DownloadRequest(
+        start=dt.datetime(2012, 8, 1), end=dt.datetime(2012, 8, 2), output=tmp_path
+    )
+
+    result = download_aia.download(request, email="registered@example.org")
+
+    assert result.downloaded == 1
+    assert sleeps == [download_aia.PENDING_EXPORT_WAIT_SECONDS] * 2
+    assert "submitting again" in capsys.readouterr().out
+
+
+def test_aia_export_failure_other_than_pending_is_raised(tmp_path, monkeypatch):
+    import drms
+
+    from sunerf.data.download import download_aia
+
+    class _Client:
+        def __init__(self, email):
+            pass
+
+        def export(self, dataset, protocol):
+            raise drms.DrmsExportError(" [status=4]")
+
+    monkeypatch.setattr(download_aia.drms, "Client", _Client)
+    request = DownloadRequest(
+        start=dt.datetime(2012, 8, 1), end=dt.datetime(2012, 8, 2), output=tmp_path
+    )
+    with pytest.raises(drms.DrmsExportError, match="status=4"):
+        download_aia.download(request, email="registered@example.org")
+
+
 def test_search_with_retry_recovers_from_transient_failures():
     from sunerf.data.download.core import search_with_retry
 
@@ -254,3 +308,188 @@ def test_split_request_covers_the_range_without_overlap(tmp_path):
         (dt.datetime(2025, 10, 11), dt.datetime(2025, 10, 13)),
     ]
     assert list(split_request(request, None)) == [request]
+
+
+def _euvi_records(times):
+    from astropy.table import Table
+    from astropy.time import Time
+
+    fileids = [
+        f"secchi/L0/a/img/euvi/{time:%Y%m%d}/{time:%Y%m%d_%H%M%S}_n4euA.fts" for time in times
+    ]
+    return Table({"Start Time": Time(times), "fileid": fileids})
+
+
+def _fake_euvi_archive(records_by_channel):
+    import astropy.units as u
+
+    def search(_search, *query):
+        from sunpy.net import attrs as a
+
+        channel = next(round(q.min.to_value(u.AA)) for q in query if isinstance(q, a.Wavelength))
+        if channel not in records_by_channel:
+            raise RuntimeError("VSO returned no matching records")
+        return _euvi_records(records_by_channel[channel])
+
+    return search
+
+
+def test_euvi_sets_drop_far_channel_records(monkeypatch):
+    from sunerf.data.download import download_euvi
+
+    t0 = dt.datetime(2012, 6, 1)
+    archive = {
+        284: [t0, t0 + dt.timedelta(hours=2)],
+        171: [t0 + dt.timedelta(minutes=1), t0 + dt.timedelta(hours=1)],
+    }
+    monkeypatch.setattr(download_euvi, "search_with_retry", _fake_euvi_archive(archive))
+    request = DownloadRequest(start=t0, end=t0 + dt.timedelta(days=1), output=Path("unused"))
+    selected = download_euvi.select_channel_sets(
+        request, source="STEREO_A", channels=(171, 195, 284), cadence=None
+    )
+    # 195 has no records and is skipped; the 171 record 1 h from the second
+    # anchor is too far from it, so only its first match remains.
+    assert [len(records) for records in selected] == [1, 2]
+
+
+def test_euvi_download_skips_chunks_without_anchor_records(monkeypatch, capsys):
+    from sunerf.data.download import download_euvi
+    from sunerf.data.download.core import DownloadResult
+
+    t0 = dt.datetime(2012, 6, 1)
+    archive = {284: [t0 + dt.timedelta(days=8)], 171: [t0 + dt.timedelta(days=8)]}
+
+    def search(_search, *query):
+        from sunpy.net import attrs as a
+
+        start = next(q.start for q in query if isinstance(q, a.Time))
+        if start.datetime < t0 + dt.timedelta(days=7):
+            raise RuntimeError("VSO returned no matching records")
+        return _fake_euvi_archive(archive)(_search, *query)
+
+    fetched = []
+    monkeypatch.setattr(download_euvi, "search_with_retry", search)
+    monkeypatch.setattr(
+        download_euvi, "fetch_fido",
+        lambda *responses, request, description: fetched.append(responses) or DownloadResult(selected=len(responses)),
+    )
+    request = DownloadRequest(start=t0, end=t0 + dt.timedelta(days=14), output=Path("unused"))
+    result = download_euvi.download(request, channels=(171, 284), sources=("STEREO_A",))
+    assert len(fetched) == 1 and result.selected == 2
+    assert "1 chunks without EUVI records" in capsys.readouterr().out
+
+
+def _aia_client(export, records, exports):
+    import pandas as pd
+
+    class _Client:
+        def __init__(self, email):
+            pass
+
+        def query(self, dataset, key):
+            return pd.DataFrame(records, columns=["T_REC", "WAVELNTH"])
+
+        def export(self, dataset, protocol):
+            exports.append(dataset)
+            return export
+
+    return _Client
+
+
+def test_aia_export_names_match_jsoc():
+    from sunerf.data.download.download_aia import export_filename
+
+    assert export_filename("2012-08-01T00:00:01Z", 211) == (
+        "aia.lev1_euv_12s.2012-08-01T000001Z.211.image_lev1.fits"
+    )
+
+
+def test_aia_chunk_with_every_record_present_is_not_exported(tmp_path, monkeypatch):
+    from sunerf.data.download import download_aia
+
+    raw, prepared = tmp_path / "raw", tmp_path / "prepared"
+    (prepared / "rejected").mkdir(parents=True)
+    raw.mkdir()
+    (raw / "aia.lev1_euv_12s.2012-08-01T000001Z.211.image_lev1.fits").write_text("raw")
+    (prepared / "aia.lev1_euv_12s.2012-08-01T020001Z.211.image_lev1.prepared.fits").write_text("")
+    (prepared / "rejected" / "aia.lev1_euv_12s.2012-08-01T040001Z.211.image_lev1.prepared.fits").write_text("")
+    records = [("2012-08-01T00:00:01Z", 211), ("2012-08-01T02:00:01Z", 211), ("2012-08-01T04:00:01Z", 211)]
+    exports = []
+    monkeypatch.setattr(download_aia.drms, "Client", _aia_client(None, records, exports))
+    request = DownloadRequest(start=dt.datetime(2012, 8, 1), end=dt.datetime(2012, 8, 2), output=raw)
+
+    result = download_aia.download(request, email="registered@example.org", prepared_dir=prepared)
+
+    assert exports == [] and result.downloaded == 0
+
+
+def test_aia_records_with_a_prepared_product_are_not_downloaded(tmp_path, monkeypatch):
+    from sunerf.data.download import download_aia
+
+    raw, prepared = tmp_path / "raw", tmp_path / "prepared"
+    prepared.mkdir()
+    raw.mkdir()
+    names = [
+        "aia.lev1_euv_12s.2012-08-01T000001Z.211.image_lev1.fits",
+        "aia.lev1_euv_12s.2012-08-01T020001Z.211.image_lev1.fits",
+    ]
+    (prepared / "aia.lev1_euv_12s.2012-08-01T000001Z.211.image_lev1.prepared.fits").write_text("")
+    records = [("2012-08-01T00:00:01Z", 211), ("2012-08-01T02:00:01Z", 211)]
+    exports = []
+    monkeypatch.setattr(download_aia.drms, "Client", _aia_client(_Export(names), records, exports))
+    request = DownloadRequest(start=dt.datetime(2012, 8, 1), end=dt.datetime(2012, 8, 2), output=raw)
+
+    result = download_aia.download(request, email="registered@example.org", prepared_dir=prepared)
+
+    assert len(exports) == 1
+    assert result == core.DownloadResult(
+        selected=2, downloaded=1, skipped=1, files=(str(raw / names[1]),)
+    )
+    assert [path.name for path in raw.iterdir()] == [names[1]]
+
+
+def test_euvi_records_with_a_raw_file_or_prepared_product_are_dropped(tmp_path):
+    from sunerf.data.download import download_euvi
+
+    raw, prepared = tmp_path / "raw", tmp_path / "prepared"
+    (prepared / "rejected").mkdir(parents=True)
+    raw.mkdir()
+    t0 = dt.datetime(2012, 6, 1)
+    times = [t0 + dt.timedelta(hours=2 * index) for index in range(4)]
+    (raw / "20120601_000000_n4euA.fts").write_text("raw")
+    (prepared / "20120601_020000_14euA.prepared.fits").write_text("")
+    (prepared / "rejected" / "20120601_040000_14euA.prepared.fits").write_text("")
+    request = DownloadRequest(start=t0, end=t0 + dt.timedelta(days=1), output=raw)
+
+    remaining, skipped = download_euvi.missing_records(
+        (_euvi_records(times[:2]), _euvi_records(times[2:])), request, prepared
+    )
+    assert skipped == 3
+    assert [list(records["fileid"]) for records in remaining] == [
+        ["secchi/L0/a/img/euvi/20120601/20120601_060000_n4euA.fts"]
+    ]
+
+    # Without the prepared directory only the raw file counts.
+    remaining, skipped = download_euvi.missing_records((_euvi_records(times),), request)
+    assert skipped == 1 and len(remaining[0]) == 3
+    # Overwriting fetches everything.
+    overwrite = DownloadRequest(start=request.start, end=request.end, output=raw, overwrite=True)
+    assert download_euvi.missing_records((_euvi_records(times),), overwrite, prepared)[1] == 0
+
+
+def test_euvi_download_fetches_nothing_when_every_record_is_present(tmp_path, monkeypatch):
+    from sunerf.data.download import download_euvi
+
+    t0 = dt.datetime(2012, 6, 1)
+    archive = {284: [t0], 171: [t0]}
+    (tmp_path / "20120601_000000_n4euA.fts").write_text("raw")
+    fetched = []
+    monkeypatch.setattr(download_euvi, "search_with_retry", _fake_euvi_archive(archive))
+    monkeypatch.setattr(
+        download_euvi, "fetch_fido",
+        lambda *responses, request, description: fetched.append(responses),
+    )
+    request = DownloadRequest(start=t0, end=t0 + dt.timedelta(days=1), output=tmp_path)
+    result = download_euvi.download(request, channels=(171, 284), sources=("STEREO_A",))
+    # Both channels map to the same fake fileid, so both records are present.
+    assert fetched == [] and result.skipped == 2

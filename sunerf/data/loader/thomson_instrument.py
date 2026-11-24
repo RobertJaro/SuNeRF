@@ -19,6 +19,8 @@ from sunpy.map import Map, make_fitswcs_header, all_coordinates_from_map
 from sunpy.visualization.colormaps import cm
 from tqdm import tqdm
 
+from sunerf.data.review_masks import load_reviewed_fits
+from sunerf.data.coronagraph.brightness_pairs import exclude_rejected_partners
 from sunerf.data.date_util import normalize_datetime, unnormalize_datetime
 from sunerf.data.dataset import ObservationCacheWriter, TensorsDataset, shuffled_valid_rows
 from sunerf.data.loader.base_loader import BaseDataModule, MapDataLoader
@@ -105,7 +107,7 @@ def _load_fits_stack(files, workers, description):
     """Load a FITS sequence into one preallocated stack."""
     if not files:
         raise ValueError(f"No files available for {description}.")
-    iterator, pool = _iter_parallel(fits.getdata, files, workers)
+    iterator, pool = _iter_parallel(load_reviewed_fits, files, workers)
     stack = None
     try:
         for index, image in enumerate(
@@ -113,7 +115,7 @@ def _load_fits_stack(files, workers, description):
         ):
             image = np.asarray(image)
             if stack is None:
-                stack = np.empty((len(files), *image.shape), dtype=image.dtype)
+                stack = np.empty((len(files), *image.shape), dtype=np.result_type(image.dtype, np.float32))
             elif image.shape != stack.shape[1:]:
                 raise ValueError(
                     f"Inconsistent image shape for {files[index]}: "
@@ -887,6 +889,7 @@ class GenericThomsonDataset(TensorsDataset):
         tB_files = sorted(f for f in glob.glob(data_path_tB) if os.path.isfile(f))
         pB_files = (sorted(f for f in glob.glob(data_path_pB) if os.path.isfile(f))
                     if data_path_pB is not None else None)
+        tB_files, pB_files = exclude_rejected_partners(tB_files, pB_files)
         if not tB_files:
             raise FileNotFoundError(
                 f"No tB files matched data_path_tB={data_path_tB!r} "

@@ -36,8 +36,9 @@ python -m sunerf.evaluation.cme.video \
   --sunerf_path "${SUNERF_PATH}" \
   --out_path "${RUN_ROOT}/video_virtual" \
   --lon_frame hci \
-  --no_observer \
+  --panels observer pB density distance --resolution 256 \
   --lat 0 --lon 0 --time 2025-09-21T00:00 --steps 1  --radius_min 3 --radius_max 50 \
   --lat 0 --lon 0 --time 2025-09-22T11:00 --steps 10  --radius_min 3 --radius_max 50 \
   --lat 89 --lon 0 --time 2025-09-22T11:00 --steps 10  --radius_min 3 --radius_max 50 \
   --lat 89 --lon 0 --time 2025-09-24T00:00 --steps 10  --radius_min 3 --radius_max 50
+python -m sunerf.evaluation.image_sequence_to_video "${RUN_ROOT}/video_virtual" "${RUN_ROOT}/video_virtual.mp4" --fps 10
