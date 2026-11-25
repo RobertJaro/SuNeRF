@@ -32,4 +32,4 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 ################################################################################
 # Degraded views with gain, corrections learned only during a 20k-step cold phase
 ################################################################################
-python -m sunerf.run_thomson --config "config/cme/psi/psi_degraded_gain_2view_cold_correction.yaml"
+python -m sunerf.run_thomson --config "config/cme/psi/psi_degraded_gain_2view.yaml"

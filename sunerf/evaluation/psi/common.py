@@ -26,9 +26,9 @@ TRUTH_COLOR = "black"
 RUN_COLORS = ("C0", "C1", "C2", "C3", "C4", "C5")
 PRODUCT_LABELS = {"tb": "tB", "pb": "pB"}
 # Stonyhurst longitudes of the viewpoints marked in the equatorial cut.
-VIEWPOINTS = {"Halo": 0.0, "Side": 60.0, "Earth": -60.0}
+VIEWPOINTS = {"Halo": 0.0, "Side": 60.0, "L5": -60.0}
 # Names of the views in the figures; the data and the save states keep the keys of the synthetic observers.
-VIEW_NAMES = {"L1": "Halo", "L4": "Side", "L5": "Earth", "L5_wide": "Earth (wide)", "P1": "Polar"}
+VIEW_NAMES = {"L1": "Halo", "L4": "Side", "L5": "L5 (CCOR)", "PUNCH": "L5 (PUNCH)", "P1": "Polar"}
 RADIUS_RANGE = (2.0, 30.0)
 DENSITY_LABEL = r"$n_e\,(r/R_\odot)^2$ [cm$^{-3}$]"
 DENSITY_CMAP = plt.get_cmap("plasma").copy()

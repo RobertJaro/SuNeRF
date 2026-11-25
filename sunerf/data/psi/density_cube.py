@@ -17,7 +17,8 @@ MAS_RHO_TO_ELECTRON_CM3 = 1.0e8
 MAS_VELOCITY_TO_KMS = 481.3711
 
 _HDF4_MAGIC = b"\x0e\x03\x13\x01"
-_HDF4_FLOAT32_BIG_ENDIAN = b"\x01\x05\x20\x01"
+_HDF4_FLOAT_TYPES = {b"\x01\x05\x20\x01": np.dtype(">f4"),
+                     b"\x01\x06\x40\x01": np.dtype(">f8")}
 _DFTAG_NT, _DFTAG_SDD, _DFTAG_SD, _DFTAG_SDS = 106, 701, 702, 703
 _DFTAG_SPECIAL_BIT = 0x4000
 
@@ -31,7 +32,7 @@ def dump_index(path) -> int:
 
 
 def _read_plain_hdf4_sds(path):
-    """Read one uncompressed float32 scientific data set without HDF4 libraries.
+    """Read one uncompressed floating-point scientific data set without HDF4 libraries.
 
     MAS writes a single SDS with its three coordinate scales.  Anything else
     (compression, chunking, several data sets) is left to ``psi_io``.
@@ -58,18 +59,21 @@ def _read_plain_hdf4_sds(path):
 
     def element(tag):
         data_offset, length = descriptors[tag]
-        return buffer[data_offset:data_offset + length]
+        return memoryview(buffer)[data_offset:data_offset + length]
 
-    if element(_DFTAG_NT) != _HDF4_FLOAT32_BIG_ENDIAN:
-        raise ValueError(f"{path} is not big-endian float32; install psi-io with pyhdf.")
+    dtype = _HDF4_FLOAT_TYPES.get(bytes(element(_DFTAG_NT)))
+    if dtype is None:
+        raise ValueError(f"Unsupported HDF4 number type in {path}; install psi-io with pyhdf.")
     dimension_record = element(_DFTAG_SDD)
     rank = struct.unpack(">H", dimension_record[:2])[0]
     shape = struct.unpack(f">{rank}I", dimension_record[2:2 + 4 * rank])
     scales = element(_DFTAG_SDS)
     if rank != 3 or not all(scales[:rank]):
         raise ValueError(f"{path} must hold one 3D data set with all coordinate scales.")
-    axes = np.split(np.frombuffer(scales[rank:], dtype=">f4"), np.cumsum(shape)[:-1])
-    density = np.frombuffer(element(_DFTAG_SD), dtype=">f4").reshape(shape)
+    if len(scales) != rank + sum(shape) * dtype.itemsize:
+        raise ValueError(f"{path} has inconsistent HDF4 dimension scales.")
+    axes = np.split(np.frombuffer(scales[rank:], dtype=dtype), np.cumsum(shape)[:-1])
+    density = np.frombuffer(element(_DFTAG_SD), dtype=dtype).reshape(shape)
     # HDF4 stores the axes in data order: (phi, theta, radius).
     return density, axes[2], axes[1], axes[0]
 

@@ -52,6 +52,19 @@ def _maybe_shuffle_times(batch, shuffler, *, module_training, shuffle):
     return shuffler(copied_batch)
 
 
+def _sample_instrument_rays(sampler, batch, rays_o, rays_d):
+    # Older saved renderers and samplers use one common integration domain.
+    limits = getattr(sampler, 'max_distance_by_instrument', None)
+    if not limits:
+        return sampler(rays_o, rays_d)
+    radii = []
+    for dataset in batch.values():
+        count = dataset['rays'].shape[0]
+        limit = limits.get(dataset['instrument'])
+        radii.append(sampler.max_distance.expand(count) if limit is None else rays_o.new_full((count,), limit))
+    return sampler(rays_o, rays_d, outer_radius=torch.cat(radii))
+
+
 def _batch_ray_validity(batch, dataset_keys):
     validity = []
     for dataset_key in dataset_keys:
@@ -168,7 +181,7 @@ class MultiResolutionRenderingModule(nn.Module):
         times = torch.where(torch.isfinite(times), times, torch.zeros_like(times))
 
         # Sample query points along each ray.
-        sampling_out = self.sampler(rays_o, rays_d)
+        sampling_out = _sample_instrument_rays(self.sampler, batch, rays_o, rays_d)
         query_points, z_vals = sampling_out['points'], sampling_out['z_vals']
         rays_o, rays_d = sampling_out['rays_o'], sampling_out['rays_d']
         ray_valid = input_ray_valid & sampling_out['ray_valid']
@@ -325,7 +338,7 @@ class BasicRenderingModule(nn.Module):
         times = torch.where(torch.isfinite(times), times, torch.zeros_like(times))
 
         # Sample query points along each ray.
-        sampling_out = self.sampler(rays_o, rays_d)
+        sampling_out = _sample_instrument_rays(self.sampler, batch, rays_o, rays_d)
         query_points, z_vals = sampling_out['points'], sampling_out['z_vals']
         rays_o, rays_d = sampling_out['rays_o'], sampling_out['rays_d']
         ray_valid = input_ray_valid & sampling_out['ray_valid']

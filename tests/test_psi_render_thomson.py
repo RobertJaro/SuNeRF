@@ -16,8 +16,10 @@ from sunerf.data.psi.prepare_psi_clear import radial_rsun  # noqa: E402
 from sunerf.data.psi.render_psi_thomson import (  # noqa: E402
     frame_schedule,
     line_of_sight_samples,
+    load_pam_footprint,
     observation_map,
     observer_coordinate,
+    pam_observation_map,
     render_rays,
 )
 from sunerf.physics.thomson import LIMB_DARKENING_COEFF, R_SUN_CM, SIGMA_NE  # noqa: E402
@@ -32,12 +34,13 @@ def _mesh():
     return radius, theta, phi
 
 
-def _write_plain_hdf4(path, density, radius, theta, phi):
+def _write_plain_hdf4(path, density, radius, theta, phi, dtype):
+    number_type = {">f4": b"\x01\x05\x20\x01", ">f8": b"\x01\x06\x40\x01"}[dtype]
     elements = [
-        (702, density.astype(">f4").tobytes()),
-        (106, b"\x01\x05\x20\x01"),
+        (702, density.astype(dtype).tobytes()),
+        (106, number_type),
         (701, struct.pack(">H3I", 3, *density.shape) + b"\x00" * 16),
-        (703, b"\x01\x01\x01" + b"".join(axis.astype(">f4").tobytes() for axis in (phi, theta, radius))),
+        (703, b"\x01\x01\x01" + b"".join(axis.astype(dtype).tobytes() for axis in (phi, theta, radius))),
     ]
     offset = 4 + 6 + 12 * len(elements)
     descriptors = b""
@@ -50,11 +53,12 @@ def _write_plain_hdf4(path, density, radius, theta, phi):
     )
 
 
-def test_plain_hdf4_reader_round_trips_density_and_axes(tmp_path):
+@pytest.mark.parametrize("dtype", [">f4", ">f8"])
+def test_plain_hdf4_reader_round_trips_density_and_axes(tmp_path, dtype):
     radius, theta, phi = _mesh()
-    density = np.random.default_rng(0).random((phi.size, theta.size, radius.size)).astype(np.float32)
+    density = np.random.default_rng(0).random((phi.size, theta.size, radius.size)).astype(dtype)
     path = tmp_path / "rho000007.hdf"
-    _write_plain_hdf4(path, density, radius, theta, phi)
+    _write_plain_hdf4(path, density, radius, theta, phi, dtype)
 
     read_density, read_radius, read_theta, read_phi = _read_plain_hdf4_sds(path)
 
@@ -157,6 +161,31 @@ def test_observation_map_spans_the_requested_field_of_view():
     # The field edge lies half a pixel beyond the outermost pixel centres.
     assert radius[32, 0] == pytest.approx(15.0 * 63 / 64, rel=1e-2)
     assert radius.min() < 0.4
+
+
+def test_pam_grid_transfers_coverage_to_simulated_earth(tmp_path):
+    from astropy.io import fits
+    from sunpy.coordinates import get_earth
+
+    path = tmp_path / "pam.fits"
+    header = fits.Header({
+        "TYPECODE": "PA", "OBSCODE": "M", "DATE-OBS": "2025-09-15",
+        "CTYPE1": "HPLN-ARC", "CTYPE2": "HPLT-ARC", "CUNIT1": "deg", "CUNIT2": "deg",
+        "CDELT1": 1.0, "CDELT2": 1.0, "CRPIX1": 5.0, "CRPIX2": 5.0,
+        "CRVAL1": 0.0, "CRVAL2": 0.0, "DSUN_OBS": 1.5e11, "HGLN_OBS": 0, "HGLT_OBS": 6,
+    })
+    science = fits.ImageHDU(np.zeros((3, 9, 9)), header=header)
+    uncertainty = np.zeros((3, 9, 9))
+    uncertainty[1, 4, 6] = -1.0
+    fits.HDUList([fits.PrimaryHDU(), science, fits.ImageHDU(uncertainty)]).writeto(path)
+    time = datetime(2021, 10, 30, 16, 30, 23)
+    observer = observer_coordinate(["Earth"], time)
+    result = pam_observation_map(load_pam_footprint(path), observer, time, 25.0, 9, "PUNCH")
+
+    assert result.date.to_datetime() == time
+    assert result.dsun.to_value("AU") == pytest.approx(get_earth(time).radius.to_value("AU"))
+    assert tuple(result.wcs.wcs.ctype) == ("HPLN-ARC", "HPLT-ARC")
+    np.testing.assert_array_equal(result.data, uncertainty[1] != 0)
 
 
 def test_line_of_sight_samples_span_the_chord_through_the_sphere():

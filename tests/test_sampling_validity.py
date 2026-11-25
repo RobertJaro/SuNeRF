@@ -75,6 +75,23 @@ def test_shell_misses_are_finite_and_explicitly_invalid():
     torch.testing.assert_close(output['z_vals'][1], torch.zeros(4))
 
 
+def test_shared_observer_uses_each_instruments_integration_radius():
+    module = BasicRenderingModule(
+        model=_ConstantModel(), rendering_modules={'L5': _ConstantRenderer(), 'PUNCH': _ConstantRenderer()},
+        Rs_per_ds=15, seconds_per_dt=1, light_travel_time=False,
+        sampling_config={'type': 'spherical', 'max_distance': 30.2, 'n_samples': 8,
+                         'max_distance_by_instrument': {'PUNCH': 236.46}},
+    ).eval()
+    # A ray from L5 with a 100 R_sun impact parameter misses the coronal grid.
+    rays = torch.tensor([[[215 / 15, 0., 0.], [-(1 - (100 / 215)**2)**0.5, 100 / 215, 0.]]])
+    batch = {key: {'rays': rays, 'time': torch.zeros(1, 1), 'instrument': key} for key in ('L5', 'PUNCH')}
+    out = module(batch)
+    assert out['ray_valid'].tolist() == [False, True]
+    z = out['z_vals'][1]
+    torch.testing.assert_close(z[0], torch.tensor(0.))
+    torch.testing.assert_close((rays[0, 0] + z[-1] * rays[0, 1]).norm() * 15, torch.tensor(236.46))
+
+
 def test_stratified_sampler_uses_a_fixed_path_length_per_ray():
     sampler = StratifiedSampler(Rs_per_ds=1, max_distance=2, n_samples=4)
     sampler.eval()

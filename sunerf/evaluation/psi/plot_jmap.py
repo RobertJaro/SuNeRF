@@ -31,6 +31,7 @@ from scipy.ndimage import map_coordinates
 from sunpy.coordinates import frames
 from sunpy.map import Map
 
+from sunerf.data.coronagraph.prep_common import ZENITHAL_RADIUS
 from sunerf.data.psi.render_psi_thomson import carrington_to_hci_longitude
 from sunerf.evaluation.cme.export_layout import labelled_path
 from sunerf.evaluation.cme.mass_transport import fit_speed
@@ -48,7 +49,7 @@ TRUTH_LINE = "cyan"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image-dir", type=Path, required=True, help="GT image series <view>/tb/*.fts.")
-    parser.add_argument("--views", nargs="+", default=["L4", "L5", "L5_wide"], help="Views of the naive J-maps.")
+    parser.add_argument("--views", nargs="+", default=["L4", "L5", "PUNCH"], help="Views of the naive J-maps.")
     parser.add_argument("--psi-series", type=Path, required=True, help="CME series of the GT cubes (npz).")
     parser.add_argument("--runs", type=labelled_path, nargs="+", required=True, metavar="LABEL=EXPORT",
                         help="Column title and export directory of every compared run.")
@@ -62,7 +63,7 @@ def cme_direction(s_map, latitude, longitude):
     return np.array([np.cos(latitude) * np.cos(lon), np.cos(latitude) * np.sin(lon), np.sin(latitude)])
 
 
-def slit_profile(s_map, direction):
+def slit_profile(s_map, direction, heights):
     """Brightness along the projected CME direction on the plane-of-sky height grid.
 
     Returns the profile and the distance [R_sun] and unit vector of the observer.
@@ -74,9 +75,9 @@ def slit_profile(s_map, direction):
         SkyCoord(0 * u.arcsec, 0 * u.arcsec, frame=s_map.coordinate_frame))])
     offset = np.array([v.to_value(u.pix) for v in s_map.world_to_pixel(point)]) - center
     angle = np.arctan2(offset[1], offset[0])
-    # tangent-plane scale of the image in R_sun per pixel
-    rsun_per_pixel = float(s_map.scale[0].to_value(u.rad / u.pix)) * float(s_map.dsun.to_value(u.R_sun))
-    pixels = HEIGHTS / rsun_per_pixel
+    elongation = np.arcsin(heights / s_map.dsun.to_value(u.R_sun))
+    projection = s_map.wcs.wcs.ctype[0][-3:]
+    pixels = ZENITHAL_RADIUS[projection](elongation) / s_map.scale[0].to_value(u.rad / u.pix)
     lines = [map_coordinates(np.asarray(s_map.data, dtype=float),
                              [center[1] + pixels * np.sin(angle + delta), center[0] + pixels * np.cos(angle + delta)],
                              order=1, mode="constant", cval=np.nan) for delta in SLIT_ANGLES]
@@ -91,7 +92,7 @@ def projected_height(radius, direction, observer_distance, observer_direction):
     return observer_distance * radius * sin_psi / (observer_distance - radius * cos_psi)
 
 
-def naive_jmap(image_dir: Path, view, start, end, latitude, longitude):
+def naive_jmap(image_dir: Path, view, start, end, latitude, longitude, heights):
     """Base-ratio J-map of one view over the CME period with the geometry of every frame."""
     times, profiles, geometry = [], [], []
     for file in sorted((image_dir / view / "tb").glob("*.fts")):
@@ -99,7 +100,7 @@ def naive_jmap(image_dir: Path, view, start, end, latitude, longitude):
         if not start <= s_map.date.datetime <= end:
             continue
         direction = cme_direction(s_map, latitude, longitude)
-        profile, distance, observer_direction = slit_profile(s_map, direction)
+        profile, distance, observer_direction = slit_profile(s_map, direction, heights)
         times.append(s_map.date.datetime)
         profiles.append(profile)
         geometry.append((direction, distance, observer_direction))
@@ -130,10 +131,10 @@ def write_speeds(path: Path, speeds) -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
-def finish_axis(axis, title, ylabel, first, period, max_ticks=6, title_fontsize=8):
+def finish_axis(axis, title, ylabel, first, period, max_ticks=6, title_fontsize=8, heights=HEIGHTS):
     axis.set_title(title, fontsize=title_fontsize)
     axis.set_xlim(*period)
-    axis.set_ylim(HEIGHTS[0], HEIGHTS[-1])
+    axis.set_ylim(heights[0], heights[-1])
     axis.set_xlabel("Time [UT]", fontsize=7)
     if first:
         axis.set_ylabel(ylabel, fontsize=7)
@@ -158,16 +159,17 @@ def main() -> None:
 
     naive = rows[0].subgridspec(1, len(args.views) + 1, width_ratios=(*[1] * len(args.views), 0.04))
     for column, view in enumerate(args.views):
-        times, ratio, _ = naive_jmap(args.image_dir, view, *period, latitude, longitude)
+        heights = np.arange(2.0, 120.01, 0.25) if view == "PUNCH" else HEIGHTS
+        times, ratio, _ = naive_jmap(args.image_dir, view, *period, latitude, longitude, heights)
         axis = fig.add_subplot(naive[0, column])
-        artist = axis.pcolormesh(times, HEIGHTS, ratio.T, norm=LogNorm(0.8, 10.0), cmap="gray",
+        artist = axis.pcolormesh(times, heights, ratio.T, norm=LogNorm(0.8, 10.0), cmap="gray",
                                  shading="nearest", rasterized=True)
         # GT body edge along the CME direction at the times of the images
         edge = np.interp([time.timestamp() for time in times], psi_seconds, psi_edge)
-        speeds[view_name(view), "Plane-of-sky fit"] = plot_track(axis, times, leading_edge(ratio, HEIGHTS), "-", "red",
+        speeds[view_name(view), "Plane-of-sky fit"] = plot_track(axis, times, leading_edge(ratio, heights), "-", "red",
                                                       "Plane-of-sky fit")
         plot_track(axis, times, edge, "--", TRUTH_LINE, "GT body edge")
-        finish_axis(axis, f"{view_name(view)}: tB / tB(t$_0$)", r"Plane-of-sky height [R$_\odot$]", column == 0, period)
+        finish_axis(axis, f"{view_name(view)}: tB / tB(t$_0$)", r"Plane-of-sky height [R$_\odot$]", column == 0 or view == "PUNCH", period, heights=heights)
     add_colorbar(fig, artist, naive[0, -1], "brightness ratio")
 
     volume = rows[1].subgridspec(1, len(series) + 1, width_ratios=(*[1] * len(series), 0.05))

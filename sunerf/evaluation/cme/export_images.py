@@ -12,7 +12,7 @@ Example::
 
     python -m sunerf.evaluation.cme.export_images \
         --sunerf_path /path/save_state.snf --data_path /path/clean \
-        --frames L4=153 L5_wide=153 P1=153 --out_path /path/export
+        --frames L4=153 PUNCH=130 P1=153 --out_path /path/export
 """
 import argparse
 import os

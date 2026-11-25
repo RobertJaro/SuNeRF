@@ -20,7 +20,7 @@ from sunerf.evaluation.psi.common import (
 )
 
 ROLES = {"Halo": ("C1", "Halo: C2-like\n(3 views)"), "Side": ("C0", "Side: COR2-like"),
-         "Earth": ("C3", "Earth: CCOR-like\n+ PUNCH-like")}
+         "L5": ("C3", "L5: CCOR + PUNCH")}
 
 
 def parse_args() -> argparse.Namespace:

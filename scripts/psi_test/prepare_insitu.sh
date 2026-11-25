@@ -9,7 +9,7 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 ################################################################################
 # Configuration
 ################################################################################
-# Density cubes and dump times come from scripts/psi_test/render_clean.sh.
+# Density cubes and dump times come from scripts/psi_test/download.sh.
 DATA_ROOT="/glade/work/rjarolim/data/sunerf-cme/psi_obs"
 PSI_DENSITY_DIR="${DATA_ROOT}/rho"
 PSI_DUMP_TIMES="${DATA_ROOT}/dump_times.json"

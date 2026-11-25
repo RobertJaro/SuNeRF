@@ -4,8 +4,9 @@
 Every cube in ``--density-dir`` yields one tB/pB pair at the observation time
 that ``--dump-times`` (written by ``sunerf.data.psi.dump_times``) tabulates for
 its dump, so the series keeps the cadence of the simulation.  The observer
-is a Sun--Earth Lagrange point or an explicit Stonyhurst position, and the image
-grid is a Sun-centred square that spans ``--outer-rsun``.  Rays are built by the
+is Earth, a Sun--Earth Lagrange point or an explicit Stonyhurst position. The
+grid is a Sun-centred square or the ARC grid and footprint of a PUNCH PAM
+mosaic supplied with ``--punch-pam``. Rays are built by the
 training loader; detector effects are applied afterwards with ``degrade_psi``.
 
 ``--pre-duration`` prepends frames before the first dump.  They render the
@@ -25,12 +26,15 @@ import numpy as np
 import torch
 from astropy import units as u
 from astropy.coordinates import SkyCoord
+from astropy.io import fits
 from astropy.time import Time
+from astropy.wcs import WCS
 from sunpy.coordinates import frames, get_earth
 from sunpy.map import Map, make_fitswcs_header
 from tqdm.auto import tqdm
 
-from sunerf.data.coronagraph.prep_common import parse_duration, positive_float
+from sunerf.data.coronagraph.prep_common import crop_to_field_limit, parse_duration, positive_float
+from sunerf.data.coronagraph.prep_punch_pam import PUNCH_OCC_MIN, PUNCH_INVALID_FILE_FLAGS
 from sunerf.data.loader.base_loader import MapDataLoader
 from sunerf.data.psi.density_cube import (
     MAS_RHO_TO_ELECTRON_CM3,
@@ -63,9 +67,11 @@ def parse_args() -> argparse.Namespace:
                         help="Output directory; files go to <out-dir>/{tb,pb}/.")
     parser.add_argument("--key", required=True, help="Observer name used in the file names.")
     parser.add_argument("--observer", nargs="+", required=True, metavar="VALUE",
-                        help="Lagrange point (L1..L5) or Stonyhurst 'LON_DEG LAT_DEG DISTANCE_AU'.")
-    parser.add_argument("--inner-rsun", type=positive_float, required=True,
-                        help="Smallest rendered line-of-sight impact parameter.")
+                        help="Earth, Lagrange point (L1..L5), or Stonyhurst 'LON_DEG LAT_DEG DISTANCE_AU'.")
+    parser.add_argument("--punch-pam", type=Path,
+                        help="PUNCH L3 PAM FITS supplying spatial WCS and uncertainty footprint.")
+    parser.add_argument("--inner-rsun", type=positive_float,
+                        help="Smallest impact parameter. PAM defaults to the preparation occulter angle.")
     parser.add_argument("--outer-rsun", type=positive_float, required=True,
                         help="Largest rendered impact parameter (at most the cube radius).")
     parser.add_argument("--resolution", type=int, required=True, help="Image size in pixels.")
@@ -82,7 +88,10 @@ def parse_args() -> argparse.Namespace:
                         help="Electron density in cm^-3 of one cube density unit.")
     parser.add_argument("--device", default=None, help="Torch device; default picks cuda/mps/cpu.")
     parser.add_argument("--overwrite", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.inner_rsun is None and args.punch_pam is None:
+        parser.error("--inner-rsun is required unless --punch-pam is supplied")
+    return args
 
 
 def discover_cubes(density_dir: Path) -> dict[int, Path]:
@@ -116,7 +125,9 @@ def frame_schedule(dumps, dump_times, pre_duration=None, pre_cadence=None):
 
 
 def observer_coordinate(observer, time) -> SkyCoord:
-    """Stonyhurst position of a Lagrange point or of 'lon_deg lat_deg distance_au'."""
+    """Stonyhurst position of Earth, a Lagrange point or 'lon_deg lat_deg distance_au'."""
+    if len(observer) == 1 and observer[0].lower() == "earth":
+        return get_earth(time)
     stonyhurst = frames.HeliographicStonyhurst(obstime=time)
     if len(observer) == 1 and observer[0].upper() in LAGRANGE_POINTS:
         longitude, distance_factor = LAGRANGE_POINTS[observer[0].upper()]
@@ -126,7 +137,7 @@ def observer_coordinate(observer, time) -> SkyCoord:
         ).transform_to(stonyhurst)
     if len(observer) != 3:
         raise ValueError(
-            f"--observer takes one of {sorted(LAGRANGE_POINTS)} or 'LON_DEG LAT_DEG DISTANCE_AU'."
+            f"--observer takes Earth, one of {sorted(LAGRANGE_POINTS)} or 'LON_DEG LAT_DEG DISTANCE_AU'."
         )
     longitude, latitude, distance = (float(value) for value in observer)
     return SkyCoord(lon=longitude * u.deg, lat=latitude * u.deg, radius=distance * u.AU, frame=stonyhurst)
@@ -147,6 +158,38 @@ def observation_map(observer: SkyCoord, time, outer_rsun, resolution, key) -> Ma
         data, center, scale=u.Quantity([scale, scale]), telescope="PSI-MAS", instrument=key
     )
     return Map(data, header)
+
+
+def load_pam_footprint(path: Path) -> Map:
+    """Read the angular grid and joint coverage of a Level 3 PAM mosaic."""
+    with fits.open(path) as hdus:
+        header = hdus[1].header
+        if (header.get("TYPECODE"), header.get("OBSCODE")) != ("PA", "M"):
+            raise ValueError(f"{path} is not a PUNCH PAM mosaic.")
+        if any(header.get(flag, 0) for flag in PUNCH_INVALID_FILE_FLAGS):
+            raise ValueError(f"{path} has PUNCH file-quality flags set.")
+        uncertainty = hdus[2].data[:2]
+        covered = np.any(np.isfinite(uncertainty) & (uncertainty != 0), axis=0)
+        wcs = WCS(header, naxis=2)
+        if tuple(wcs.wcs.ctype) != ("HPLN-ARC", "HPLT-ARC"):
+            raise ValueError(f"{path} lacks the helioprojective ARC mosaic grid.")
+        return Map(covered.astype(np.float32), wcs.to_header())
+
+
+def pam_observation_map(template, observer, time, outer_rsun, resolution, key):
+    """Place the angular footprint at the simulation observer and crop to the requested field."""
+    ref = template.reference_coordinate
+    center = SkyCoord(ref.Tx, ref.Ty, frame=frames.Helioprojective(observer=observer, obstime=time))
+    header = make_fitswcs_header(
+        template.data, center, scale=u.Quantity(template.scale),
+        reference_pixel=u.Quantity(template.reference_pixel), rotation_matrix=template.rotation_matrix,
+        projection_code="ARC", telescope="PSI-MAS", instrument=key,
+    )
+    fraction = (outer_rsun * u.R_sun / observer.radius).to_value(u.one)
+    if not 0 < fraction < 1:
+        raise ValueError("--outer-rsun must lie between the Sun and the observer.")
+    cropped = crop_to_field_limit(Map(template.data, header), np.arcsin(fraction) * u.rad)
+    return cropped.resample([resolution, resolution] * u.pixel, method="nearest")
 
 
 def carrington_to_hci_longitude(time) -> float:
@@ -177,14 +220,15 @@ def line_of_sight_samples(rays_o, rays_d, sphere_radius, n_samples):
 def render_rays(cube, thomson, rays, longitude_offset, n_samples, ray_batch, device):
     """Return tB/pB in mean solar brightness for ``rays[N, 2, 3]`` in HCI R_sun."""
     rays = np.asarray(rays, dtype=np.float64)
-    z_vals = line_of_sight_samples(rays[:, 0], rays[:, 1], cube.radial_range[1], n_samples)
+    sphere_radius = cube.radial_range[1]
     brightness_per_model_unit = 1.0 / electron_density_normalization_cm3(1.0, 1.0)
     images = []
     for start in range(0, rays.shape[0], ray_batch):
         batch = slice(start, start + ray_batch)
         rays_o = torch.tensor(rays[batch, 0], dtype=torch.float32, device=device)
         rays_d = torch.tensor(rays[batch, 1], dtype=torch.float32, device=device)
-        z = torch.tensor(z_vals[batch], dtype=torch.float32, device=device)
+        z_vals = line_of_sight_samples(rays[batch, 0], rays[batch, 1], sphere_radius, n_samples)
+        z = torch.tensor(z_vals, dtype=torch.float32, device=device)
         points = rays_o[:, None] + z[..., None] * rays_d[:, None]
         radius = points.norm(dim=-1)
         theta = torch.acos((points[..., 2] / radius.clamp_min(1e-6)).clamp(-1.0, 1.0))
@@ -195,10 +239,15 @@ def render_rays(cube, thomson, rays, longitude_offset, n_samples, ray_batch, dev
     return np.concatenate(images, axis=0)
 
 
-def render_map(s_map, cube, thomson, inner_rsun, outer_rsun, n_samples, ray_batch, device):
+def render_map(s_map, cube, thomson, inner_rsun, outer_rsun, n_samples, ray_batch, device,
+               footprint=None):
     geometry = MapDataLoader(Rs_per_ds=1.0, reference_frame="inertial").load(s_map)
     projected_radius = geometry["projected_radius"]
     valid = (projected_radius >= inner_rsun) & (projected_radius <= outer_rsun)
+    if footprint is not None:
+        valid &= footprint
+    if not np.any(valid):
+        raise ValueError("No pixels are covered within the requested field of view.")
     image = np.full((*projected_radius.shape, 2), np.nan, dtype=np.float32)
     image[valid] = render_rays(
         cube, thomson, geometry["rays"][valid], carrington_to_hci_longitude(s_map.date),
@@ -226,6 +275,7 @@ def main() -> None:
         args.device = "cuda" if torch.cuda.is_available() else (
             "mps" if torch.backends.mps.is_available() else "cpu")
     device = torch.device(args.device)
+    pam = load_pam_footprint(args.punch_pam) if args.punch_pam else None
     cubes = discover_cubes(args.density_dir)
     schedule = frame_schedule(
         cubes, load_dump_times(args.dump_times), args.pre_duration, args.pre_cadence
@@ -255,14 +305,25 @@ def main() -> None:
                 raise ValueError(
                     f"--outer-rsun {args.outer_rsun} exceeds the cube radius {cube.radial_range[1]:.2f}."
                 )
-        s_map = observation_map(
-            observer_coordinate(args.observer, time), time, args.outer_rsun, args.resolution, args.key
-        )
+        observer = observer_coordinate(args.observer, time)
+        inner_rsun = args.inner_rsun
+        footprint = None
+        if pam is None:
+            s_map = observation_map(observer, time, args.outer_rsun, args.resolution, args.key)
+        else:
+            s_map = pam_observation_map(pam, observer, time, args.outer_rsun, args.resolution, args.key)
+            footprint = s_map.data == 1
+            s_map.meta["pam_file"] = args.punch_pam.name
+            if inner_rsun is None:
+                inner_rsun = observer.radius.to_value(u.R_sun) * np.sin(PUNCH_OCC_MIN * u.arcsec).value
+        s_map.meta["sim_file"] = cubes[dump].name
+        s_map.meta["los_rmax"] = cube.radial_range[1]  # R_sun
+        s_map.meta["ne_scale"] = args.density_unit_scale_cm3
         images = render_map(
-            s_map, cube, thomson, args.inner_rsun, args.outer_rsun,
-            args.n_samples, args.ray_batch, device,
+            s_map, cube, thomson, inner_rsun, args.outer_rsun,
+            args.n_samples, args.ray_batch, device, footprint=footprint,
         )
-        metadata = {"inner_rsun": args.inner_rsun, "outer_rsun": args.outer_rsun, "dump": dump}
+        metadata = {"inner_rsun": inner_rsun, "outer_rsun": args.outer_rsun, "dump": dump}
         for product, path in outputs.items():
             save_product(images[product], s_map, path, metadata)
 

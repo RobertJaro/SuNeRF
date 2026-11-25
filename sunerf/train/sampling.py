@@ -102,12 +102,16 @@ def _perturb_interior_samples(z_vals: torch.Tensor) -> torch.Tensor:
 class SphericalSampler(torch.nn.Module):
 
     def __init__(self, Rs_per_ds, min_distance=1.0, max_distance=2.0, n_samples=64, perturb=True,
-                 radial_weighting=False, radial_weight_power=2.0, radial_weight_grid_size=256):
+                 radial_weighting=False, radial_weight_power=2.0, radial_weight_grid_size=256, max_distance_by_instrument=None):
         super().__init__()
         if n_samples < 2:
             raise ValueError('n_samples must be at least 2.')
         if min_distance < 0 or max_distance <= min_distance:
             raise ValueError('Require 0 <= min_distance < max_distance.')
+        limits = max_distance_by_instrument or {}
+        if any(limit <= min_distance for limit in limits.values()):
+            raise ValueError('Instrument max_distance must exceed min_distance.')
+        self.max_distance_by_instrument = {key: limit / Rs_per_ds for key, limit in limits.items()}
         self.perturb = perturb
         self.radial_weighting = radial_weighting
         self.radial_weight_power = radial_weight_power
@@ -117,13 +121,10 @@ class SphericalSampler(torch.nn.Module):
         self.register_buffer('min_distance', torch.tensor(min_distance / Rs_per_ds, dtype=torch.float32))
         self.register_buffer('t_vals', torch.linspace(0.0, 1.0, n_samples, dtype=torch.float32)[None])
 
-    def forward(self, rays_o: torch.Tensor, rays_d: torch.Tensor):
-        r"""
-        Sample from near to solar surface. If no points are on the solar surface this
-        """
-
+    def forward(self, rays_o: torch.Tensor, rays_d: torch.Tensor, outer_radius=None):
+        """Sample each forward ray inside its simulation sphere (radii in model units)."""
         rays_o, rays_d, dist_near, dist_far, ray_valid = _front_shell_intersection(
-            rays_o, rays_d, self.min_distance, self.max_distance
+            rays_o, rays_d, self.min_distance, self.max_distance if outer_radius is None else outer_radius
         )
 
         if self.radial_weighting:

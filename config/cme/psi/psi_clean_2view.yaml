@@ -1,11 +1,11 @@
-base_path: "/glade/work/rjarolim/sunerf-cme-obs/psi_obs/clean_2view_v01"
-work_directory: "/glade/derecho/scratch/rjarolim/sunerf-cme-obs/psi_obs/clean_2view_v01"
+base_path: "/glade/work/rjarolim/sunerf-cme-obs/psi_obs/punch_l5/clean_2view_v01"
+work_directory: "/glade/derecho/scratch/rjarolim/sunerf-cme-obs/psi_obs/punch_l5/clean_2view_v01"
 
-# PSI views in the FOV of PUNCH (L5_wide), CCOR (L5, tB only), COR2 (L4).
+# PSI views in the FOV of PUNCH (L5), CCOR (L5, tB only), COR2 (L4).
 # Clean training views; polar view P1 held out.
 instruments:
   - type: default
-    key: L5_wide
+    key: PUNCH
     scaling: { type: "asinh", a: 1.0e-5 }
   - type: default
     key: L5
@@ -30,22 +30,22 @@ module:
 data:
   # 20 pre-event days (80 frames at 6 h) precede the eruption.
   ref_date: "2021-10-08T15:30:00"
-  cme_time: &cme_time ["2021-10-28T15:30:00", "2021-10-29T03:30:00"]
+  cme_time: &cme_time ["2021-10-28T15:30:00", "2021-11-03T15:31:12"]
   # Each view: 6 h background dataset plus full-cadence CME dataset.
   train_datasets:
     - type: psi_cme
-      key: L5_wide_background
-      instrument_key: L5_wide
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5_wide/pb/*"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5_wide/tb/*"
+      key: PUNCH_background
+      instrument_key: PUNCH
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs_render/clean/PUNCH/pb/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs_render/clean/PUNCH/tb/*"
       cadence: "6h"
       batch_size: 512
       debug: false
     - type: psi_cme
-      key: L5_wide_cme
-      instrument_key: L5_wide
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5_wide/pb/*"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5_wide/tb/*"
+      key: PUNCH_cme
+      instrument_key: PUNCH
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs_render/clean/PUNCH/pb/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs_render/clean/PUNCH/tb/*"
       time_range: *cme_time
       batch_size: 512
       debug: false
@@ -53,7 +53,7 @@ data:
       key: L5_background
       instrument_key: L5
       data_path_pB: null
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5/tb/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs_render/clean/L5/tb/*"
       cadence: "6h"
       batch_size: 512
       debug: false
@@ -61,28 +61,28 @@ data:
       key: L5_cme
       instrument_key: L5
       data_path_pB: null
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5/tb/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs_render/clean/L5/tb/*"
       time_range: *cme_time
       batch_size: 512
       debug: false
     - type: psi_cme
       key: L4_background
       instrument_key: L4
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L4/pb/*"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L4/tb/*"
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs_render/clean/L4/pb/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs_render/clean/L4/tb/*"
       cadence: "6h"
       batch_size: 1024
       debug: false
     - type: psi_cme
       key: L4_cme
       instrument_key: L4
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L4/pb/*"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L4/tb/*"
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs_render/clean/L4/pb/*"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs_render/clean/L4/tb/*"
       time_range: *cme_time
       batch_size: 1024
       debug: false
     - type: random
-      radius_range: [1.5, 30.2]
+      radius_range: [1.5, 236.46]
       unit: solRad
       batch_size: 4096
       volume_uniform_sampling: true
@@ -91,25 +91,25 @@ data:
   # Frame 0130 follows the 80 pre-event frames and renders cube 50.
   valid_datasets:
     - type: psi_cme
-      key: L5_wide
-      instrument_key: L5_wide
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5_wide/pb/L5_wide_pb0130.fts"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5_wide/tb/L5_wide_tb0130.fts"
+      key: PUNCH
+      instrument_key: PUNCH
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs_render/clean/PUNCH/pb/PUNCH_pb0130.fts"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs_render/clean/PUNCH/tb/PUNCH_tb0130.fts"
     - type: psi_cme
       key: L5
       instrument_key: L5
       data_path_pB: null
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L5/tb/L5_tb0130.fts"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs_render/clean/L5/tb/L5_tb0130.fts"
     - type: psi_cme
       key: L4
       instrument_key: L4
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L4/pb/L4_pb0130.fts"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/L4/tb/L4_tb0130.fts"
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs_render/clean/L4/pb/L4_pb0130.fts"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs_render/clean/L4/tb/L4_tb0130.fts"
     - type: psi_cme
       key: P1
       instrument_key: P1
-      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/P1/pb/P1_pb0130.fts"
-      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs/clean/P1/tb/P1_tb0130.fts"
+      data_path_pB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs_render/clean/P1/pb/P1_pb0130.fts"
+      data_path_tB: "/glade/work/rjarolim/data/sunerf-cme/psi_obs_render/clean/P1/tb/P1_tb0130.fts"
     - type: radial_slices
       key: valid_radial
       radii: [5, 10, 15, 20, 25]
@@ -127,7 +127,7 @@ data:
 
 callbacks:
   - type: thomson_image
-    ds_key: L5_wide
+    ds_key: PUNCH
   - type: thomson_image
     ds_key: L5
   - type: thomson_image
@@ -148,6 +148,7 @@ sampling:
   type: spherical
   n_samples: 64
   max_distance: 30.2
+  max_distance_by_instrument: {PUNCH: 236.46}
   radial_weighting: true
 
 lambda:

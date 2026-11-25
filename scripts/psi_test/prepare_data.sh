@@ -9,20 +9,19 @@ cd /glade/u/home/rjarolim/projects/SuNeRF
 ################################################################################
 # Configuration
 ################################################################################
-# Clean tB/pB sequences and density cubes come from scripts/psi_test/render_clean.sh,
-# which must run first. render_clean.sh prepends 80 pre-event frames (20 days at
-# 6 h), so frame 0130 renders cube 50.
-DATA_ROOT="/glade/work/rjarolim/data/sunerf-cme/psi_obs"
-PSI_CLEAN_DIR="${DATA_ROOT}/clean"
-PSI_DEGRADED_DIR="${DATA_ROOT}/degraded"
-PSI_MASK_DIR="${DATA_ROOT}/masks"
-PSI_TRUTH_DIR="${DATA_ROOT}/degradation_truth"
-PSI_PREVIEW_DIR="${DATA_ROOT}/degradation_previews"
+# Run render.sh first to produce the clean tB/pB sequences. It prepends 80 pre-event frames (20 days at
+# 6 h) for all views, followed by each release at its native cadence.
+RENDER_ROOT="/glade/work/rjarolim/data/sunerf-cme/psi_obs_render"
+PSI_CLEAN_DIR="${RENDER_ROOT}/clean"
+PSI_DEGRADED_DIR="${RENDER_ROOT}/degraded"
+PSI_MASK_DIR="${RENDER_ROOT}/masks"
+PSI_TRUTH_DIR="${RENDER_ROOT}/degradation_truth"
+PSI_PREVIEW_DIR="${RENDER_ROOT}/degradation_previews"
 # Second degradation with a per-view multiplicative gain on top of the same
 # additive, noise, and background subtraction.
-PSI_DEGRADED_GAIN_DIR="${DATA_ROOT}/degraded_gain"
-PSI_TRUTH_GAIN_DIR="${DATA_ROOT}/degradation_truth_gain"
-PSI_PREVIEW_GAIN_DIR="${DATA_ROOT}/degradation_previews_gain"
+PSI_DEGRADED_GAIN_DIR="${RENDER_ROOT}/degraded_gain"
+PSI_TRUTH_GAIN_DIR="${RENDER_ROOT}/degradation_truth_gain"
+PSI_PREVIEW_GAIN_DIR="${RENDER_ROOT}/degradation_previews_gain"
 TRUTH_FRAME="0130"
 # The pB masks are smoothed around the Sun to suppress their streamer structure:
 # Gaussian widths in position angle and, as a fraction of the image width, along
@@ -71,16 +70,6 @@ python -m sunerf.data.psi.extract_noise_mask \
   --smooth-fraction "${PB_SMOOTH_FRACTION}"
 
 python -m sunerf.data.psi.extract_noise_mask \
-  --input "${STEREO_PREP_ROOT}/stereo_b_cor2/tB/*" \
-  --output "${PSI_MASK_DIR}/STEREO_B_COR2_tB_daily_min.fts"
-
-python -m sunerf.data.psi.extract_noise_mask \
-  --input "${STEREO_PREP_ROOT}/stereo_b_cor2/pB/*" \
-  --output "${PSI_MASK_DIR}/STEREO_B_COR2_pB_daily_min.fts" \
-  --smooth-angle-deg "${PB_SMOOTH_ANGLE_DEG}" \
-  --smooth-fraction "${PB_SMOOTH_FRACTION}"
-
-python -m sunerf.data.psi.extract_noise_mask \
   --input "${PUNCH_PREP_ROOT}/tB/*" \
   --output "${PSI_MASK_DIR}/PUNCH_tB_daily_min.fts"
 
@@ -100,16 +89,16 @@ python -m sunerf.data.psi.extract_noise_mask \
 # view of each training view. The Python routine processes one target and has no
 # knowledge of how many viewpoints an experiment uses. P1 stays clear.
 ################################################################################
-# L5_wide, 15--30 R_sun: STEREO-B COR2 pattern.
+# PUNCH, 21–120 R_sun from L5: PUNCH pattern.
 python -m sunerf.data.psi.degrade_psi \
-  --input-dir "${PSI_CLEAN_DIR}/L5_wide" \
-  --output-dir "${PSI_DEGRADED_DIR}/L5_wide" \
-  --noise-instrument STEREO_B_COR2 \
+  --input-dir "${PSI_CLEAN_DIR}/PUNCH" \
+  --output-dir "${PSI_DEGRADED_DIR}/PUNCH" \
+  --noise-instrument PUNCH \
   --mask-fraction "${MASK_FRACTION}" \
   --noise-fraction 0.02 \
-  --pb-mask "${PSI_MASK_DIR}/STEREO_B_COR2_pB_daily_min.fts" \
-  --tb-mask "${PSI_MASK_DIR}/STEREO_B_COR2_tB_daily_min.fts" \
-  --truth-dir "${PSI_TRUTH_DIR}/L5_wide" \
+  --pb-mask "${PSI_MASK_DIR}/PUNCH_pB_daily_min.fts" \
+  --tb-mask "${PSI_MASK_DIR}/PUNCH_tB_daily_min.fts" \
+  --truth-dir "${PSI_TRUTH_DIR}/PUNCH" \
   --truth-frame "${TRUTH_FRAME}" \
   --overwrite
 
@@ -157,21 +146,21 @@ python -m sunerf.data.psi.degrade_psi \
 # Second degradation set with a variable gain per view: the same additive mask,
 # noise, and background subtraction, times calibration * radial * azimuthal.
 ################################################################################
-# L5_wide, 15--30 R_sun: STEREO-B COR2 pattern, gain 0.85 x (1.3->0.7, p=3) x (1 + 0.05 cos 2phi).
+# PUNCH, 21–120 R_sun from L5: PUNCH pattern, gain 0.85 x (1.3->0.7, p=3) x (1 + 0.05 cos 2phi).
 python -m sunerf.data.psi.degrade_psi \
-  --input-dir "${PSI_CLEAN_DIR}/L5_wide" \
-  --output-dir "${PSI_DEGRADED_GAIN_DIR}/L5_wide" \
+  --input-dir "${PSI_CLEAN_DIR}/PUNCH" \
+  --output-dir "${PSI_DEGRADED_GAIN_DIR}/PUNCH" \
   --calibration 0.85 \
   --inner-gain 1.3 \
   --outer-gain 0.7 \
   --gain-power 3 \
   --azimuthal-gain 0.05 \
-  --noise-instrument STEREO_B_COR2 \
+  --noise-instrument PUNCH \
   --mask-fraction "${MASK_FRACTION}" \
   --noise-fraction 0.02 \
-  --pb-mask "${PSI_MASK_DIR}/STEREO_B_COR2_pB_daily_min.fts" \
-  --tb-mask "${PSI_MASK_DIR}/STEREO_B_COR2_tB_daily_min.fts" \
-  --truth-dir "${PSI_TRUTH_GAIN_DIR}/L5_wide" \
+  --pb-mask "${PSI_MASK_DIR}/PUNCH_pB_daily_min.fts" \
+  --tb-mask "${PSI_MASK_DIR}/PUNCH_tB_daily_min.fts" \
+  --truth-dir "${PSI_TRUTH_GAIN_DIR}/PUNCH" \
   --truth-frame "${TRUTH_FRAME}" \
   --overwrite
 
@@ -237,7 +226,7 @@ python -m sunerf.evaluation.plot_psi_degradation \
   --degraded-dir "${PSI_DEGRADED_DIR}" \
   --output-dir "${PSI_PREVIEW_DIR}" \
   --truth-dir "${PSI_TRUTH_DIR}" \
-  --views L5_wide L5 L4 L1 \
+  --views PUNCH L5 L4 L1 \
   --sample-count 3
 
 python -m sunerf.evaluation.plot_psi_degradation \
@@ -245,5 +234,5 @@ python -m sunerf.evaluation.plot_psi_degradation \
   --degraded-dir "${PSI_DEGRADED_GAIN_DIR}" \
   --output-dir "${PSI_PREVIEW_GAIN_DIR}" \
   --truth-dir "${PSI_TRUTH_GAIN_DIR}" \
-  --views L5_wide L5 L4 L1 \
+  --views PUNCH L5 L4 L1 \
   --sample-count 3
